@@ -8,6 +8,32 @@ open; header enumeration alone does not establish complete hot-path coverage.
 Every numerical helper reached by supported flow5/SA/2EQ AoS perfect-gas paths
 must execute on CUDA. CPU OMP=1 remains the mathematical anchor.
 
+### Phase B LVR source checkpoint (unbuilt)
+
+CFV `LimitedVRPlan` now has retained queued CPU-inline/worker and CUDA seed /
+neighbor-maximum operators. Shared cell formulas preserve face-incidence
+multiplicity, boundary exclusion, history retention and saturation. Preparation
+allocates the incidence buffers before OMP row fill. The caller still owns every
+halo exchange and must order it before dependent work; core reads owned only.
+
+CUDA limited Jacobi preserves the CPU relaxation formula and its exact
+alpha-one neighbor/BC exclusion. A separate device penalty validation pass
+precedes the sweep; the existing sticky workspace status guards publication.
+The launch projects a compact sweep-only descriptor instead of carrying unused
+WBAP tables. No per-iteration allocation or host synchronization is introduced.
+
+Cauchy physical LVR CUDA leaves provide O2 target PP, scalar preparation,
+per-face sensors, deterministic cell gather, base merge and history/penalty
+publication. Setup publishes a local cell-face incidence CSR. These leaves
+preserve the current pure-flow5 LVR physical adapter; they do not imply a new
+RANS LVR scheme. Device operator/workspace wiring is still pending.
+
+New `CFV/test_LimitedVRCUDA.cu` and `Cauchy/test_LimitedVRCUDA.cu` sources cover
+CPU-oracle comparisons, queued sensor-to-gather dependencies, periodic incidences,
+core ghost isolation and the fixed-target exclusion. They have **not run**.
+The single grouped B build/test round remains pending until spatial editing is
+complete; neither kernel presence nor test source constitutes solver acceptance.
+
 ## Execution and ownership contract
 
 Shared solver/time policies call operator facades. Facades retain fields,

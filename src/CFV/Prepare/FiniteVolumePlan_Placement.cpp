@@ -487,6 +487,44 @@ namespace DNDS::CFV
             R::SubmitArrays(engine, stream, launch, R::Read(mean.Owned()), R::Read(mean.Ghost()), R::Read(input.Owned()), R::Read(input.Ghost()),
                             R::Read(boundary.values), R::Write(work.temporary.Owned()), R::Read(work.devicePeriodicVectorStarts), R::Read(work.deviceStatus));
     }
+    void VariationalReconstructionPlan::SubmitDeviceReconstructionIterLimitedTo(
+        R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &mean,
+        const FVField &input, ReconstructionWorkspace &work, const ReconstructionBoundaryValues &boundary,
+        const FVField &target, const R::Array<real> &alpha, ReconstructionRegion region) const
+    {
+        ValidateDeviceStream(*this, stream);
+        ValidateDeviceWorkspace(_device, work, input);
+        ValidateDeviceField(*this, mean, work.components);
+        ValidateDeviceField(*this, input, work.components * _device->view.n);
+        ValidateDeviceField(*this, target, work.components * _device->view.n);
+        DNDS_check_throw_info(mean.Space().Same(input.Space()) && input.Space().Same(target.Space()) &&
+                                  input.Space().Same(work.temporary.Space()),
+                              "limited Jacobi field spaces differ");
+        DNDS_check_throw_info(boundary.plan == _identity, "limited Jacobi boundary plan mismatch");
+        ValidateArray(boundary.values, Device(), NumBoundaryQuadrature(), work.components);
+        ValidateArray(alpha, Device(), input.Owned().RowCount(), 1);
+        for (const auto *array : {&mean.Owned(), &mean.Ghost(), &input.Owned(), &input.Ghost(),
+                                  &boundary.values, &target.Owned(), &target.Ghost(), &alpha})
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(array->Storage(), work.temporary.Owned().Storage()),
+                                  "limited Jacobi output aliases an input");
+        const auto selection = Selection(*_device, region);
+        auto pin = _device;
+        auto launch = [pin, selection](R::ExecutionContext context, auto mo, auto mg, auto ro, auto rg,
+                                       auto bc, auto wanted, auto penalty, auto output, auto blocks, auto status)
+        {
+            Detail::LaunchLimitedJacobi(context, pin->view, selection, {blocks}, {mo, mg}, {ro, rg},
+                                        bc, wanted, penalty, output, status);
+        };
+        if (region == ReconstructionRegion::Core)
+            R::SubmitArrays(engine, stream, [launch](R::ExecutionContext c, auto mo, auto ro, auto bc, auto wanted, auto penalty, auto output, auto blocks, auto status)
+                            { launch(c, mo, R::ArrayView<const real>{}, ro, R::ArrayView<const real>{}, bc,
+                                     wanted, penalty, output, blocks, status); }, R::Read(mean.Owned()), R::Read(input.Owned()), R::Read(boundary.values), R::Read(target.Owned()), R::Read(alpha), R::Write(work.temporary.Owned()), R::Read(work.devicePeriodicVectorStarts), R::Write(work.deviceStatus));
+        else
+            R::SubmitArrays(engine, stream, launch, R::Read(mean.Owned()), R::Read(mean.Ghost()),
+                            R::Read(input.Owned()), R::Read(input.Ghost()), R::Read(boundary.values),
+                            R::Read(target.Owned()), R::Read(alpha), R::Write(work.temporary.Owned()),
+                            R::Read(work.devicePeriodicVectorStarts), R::Write(work.deviceStatus));
+    }
     void VariationalReconstructionPlan::SubmitDeviceCommitReconstruction(
         R::EagerEngine &engine, const R::ExecutionStream &stream, FVField &coefficients,
         ReconstructionWorkspace &work) const
@@ -567,7 +605,7 @@ namespace DNDS::CFV
             return;
         ValidateDeviceWorkspace(_device, work);
         const auto host = work.deviceStatus.To(R::Device::Host());
-        DNDS_check_throw_info(host.Read().View()(0, 0) == 0, "device limiter indicator contains nonfinite values; output was not updated");
+        DNDS_check_throw_info(host.Read().View()(0, 0) == 0, "device reconstruction validation failed (indicator or LVR penalty); do not publish the queued result");
     }
     bool VariationalReconstructionPlan::SupportsKernel(ReconstructionDeviceKernel kernel) const
     {
@@ -594,6 +632,12 @@ namespace DNDS::CFV
         void LaunchJacobi(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks, R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<const int>)
         {
             DNDS_check_throw_info(false, "CUDA Jacobi unavailable");
+        }
+        void LaunchLimitedJacobi(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks,
+                                 R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<const real>,
+                                 R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<int>)
+        {
+            DNDS_check_throw_info(false, "CUDA limited Jacobi unavailable");
         }
         void LaunchWBAP(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks, R::PairReadView<real>, R::ArrayView<real>, R::ArrayView<real>, DeviceCharacteristicView, R::ArrayView<const real>, R::ArrayView<int>, index, index, real, index)
         {

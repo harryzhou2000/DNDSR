@@ -65,10 +65,40 @@ namespace DNDS::Cauchy
                     for (int d = 0; d < 3; ++d)
                         p(row + side, d) = point[side][d];
                 LimitedVRFace record{sample.cell, sample.other, {normal[0], normal[1], normal[2]}, {}};
+                record.changesFrame = sample.changesFrame;
                 for (int j = 0; j < 9; ++j)
                     record.rotation[j] = sample.rotation.data()[j];
                 faceValues(nextFace++, 0) = record;
             }
+        }
+        // Allocate then fill the owned gather stencil. Storage is proportional
+        // to local face incidences, never global entity count. GPU face kernels
+        // write one independent sensor row; this CSR avoids atomic scatter.
+        {
+            const index owned = data.metrics.NumCell();
+            std::vector<index> counts(owned, 0);
+            const auto faceRead = faces.Read();
+            const auto values = faceRead.View<R::FixedRows<1>>();
+            for (index iFace = 0; iFace < count; ++iFace)
+                for (const auto iCell : {values(iFace, 0).cell, values(iFace, 0).other})
+                    if (iCell >= 0 && iCell < owned)
+                        ++counts[iCell];
+            cellFaceOffsets = R::Array<index>(R::RowLayout::Dense(owned + 1, 1));
+            auto offsetWrite = cellFaceOffsets.Write();
+            const auto offsets = offsetWrite.View<R::FixedRows<1>>();
+            offsets(0, 0) = 0;
+            for (index iCell = 0; iCell < owned; ++iCell)
+            {
+                offsets(iCell + 1, 0) = offsets(iCell, 0) + counts[iCell];
+                counts[iCell] = offsets(iCell, 0);
+            }
+            cellFaces = R::Array<index>(R::RowLayout::Dense(offsets(owned, 0), 1));
+            auto incidenceWrite = cellFaces.Write();
+            const auto incidences = incidenceWrite.View<R::FixedRows<1>>();
+            for (index iFace = 0; iFace < count; ++iFace)
+                for (const auto iCell : {values(iFace, 0).cell, values(iFace, 0).other})
+                    if (iCell >= 0 && iCell < owned)
+                        incidences(counts[iCell]++, 0) = iFace;
         }
         DNDS_check_throw_info(data.reconstruction,
                               "LVR geometry requires variational reconstruction");

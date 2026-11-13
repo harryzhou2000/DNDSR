@@ -472,6 +472,8 @@ if(DNDS_USE_CUDA)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_positivity_cuda)
     dnds_add_unit_test(cauchy_gradient_cuda "Cauchy/test_GradientCUDA.cu" "cauchy;physics;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_gradient_cuda)
+    dnds_add_unit_test(cauchy_limited_vr_cuda "Cauchy/test_LimitedVRCUDA.cu" "cauchy;physics;dnds")
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_limited_vr_cuda)
     set_tests_properties(dnds_runtime_cuda_engine PROPERTIES TIMEOUT 60)
     add_dependencies(dnds_unit_tests dnds_test_runtime_cuda_engine)
     add_dependencies(dnds_unit_tests dnds_test_runtime_cuda)
@@ -810,6 +812,12 @@ if(DNDS_USE_CUDA)
     target_include_directories(cfv_benchmark_reconstruction_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
     target_link_libraries(cfv_benchmark_reconstruction_cuda PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
     cfv_add_cuda_mpi_test(reconstruction_cuda "CFV/test_ReconstructionCUDA.cu" "cfv;geom;dnds")
+    cfv_add_cuda_mpi_test(limited_vr_cuda "CFV/test_LimitedVRCUDA.cu" "cfv;geom;dnds")
+    add_test(NAME cfv_limited_vr_cuda_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+            ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+            $<TARGET_FILE:cfv_test_limited_vr_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(cfv_limited_vr_cuda_np2 PROPERTIES PROCESSORS 2 TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=1")
     cfv_add_cuda_mpi_test(device_transferable "CFV/test_DeviceTransferable.cu" "cfv;geom;dnds")
     add_test(NAME cfv_reconstruction_cuda_np2
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}

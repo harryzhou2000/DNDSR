@@ -457,6 +457,10 @@ namespace DNDS::CFV
                                               const FVField &, const FVField &, ReconstructionWorkspace &,
                                               const ReconstructionBoundaryValues &, ReconstructionRegion,
                                               ReconstructionDeviceKernel) const;
+        void SubmitDeviceReconstructionIterLimitedTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                                     const FVField &, const FVField &, ReconstructionWorkspace &,
+                                                     const ReconstructionBoundaryValues &, const FVField &,
+                                                     const Runtime::Array<real> &, ReconstructionRegion) const;
         void SubmitDeviceCommitReconstruction(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                               FVField &, ReconstructionWorkspace &) const;
         void SubmitDeviceLimiterWBAP_3OrderTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,

@@ -71,10 +71,32 @@ namespace DNDS::CFV
         }
     };
 
+    /// Immutable numerical controls. The variant string and orchestration's
+    /// layer counts stay in LimitedVRSettings; no host configuration object is
+    /// passed into a device kernel. Resolve/validate once at operator entry.
+    struct LimitedVRKernelParameters
+    {
+        real alphaMax, contactAlphaMax;
+        std::array<real, 2> pressureJump, compression, densityJump;
+        bool detectExpansion, contactCorrection;
+        std::array<real, 2> extremumThreshold, pressureSupport, contactSupport;
+        real retention, equalityTolerance;
+        int minimumEqualNeighbors;
+        static LimitedVRKernelParameters FromSettings(const LimitedVRSettings &settings)
+        {
+            settings.Validate();
+            return {settings.alphaMax, settings.contactAlphaMax, settings.pressureJump,
+                    settings.compression, settings.densityJump, settings.detectExpansion,
+                    settings.variant == "v3", settings.extremumThreshold, settings.pressureSupport,
+                    settings.contactSupport, settings.retention, settings.equalityTolerance,
+                    settings.minimumEqualNeighbors};
+        }
+    };
+
     namespace Math
     {
         /// Thresholds are validated at preparation, outside face/cell loops.
-        inline real LimitedVRCubicRamp(real value, const std::array<real, 2> &threshold)
+        DNDS_DEVICE_CALLABLE inline real LimitedVRCubicRamp(real value, const std::array<real, 2> &threshold)
         {
             if (value <= threshold[0])
                 return 0;
@@ -89,13 +111,14 @@ namespace DNDS::CFV
         };
         /// Equation supplies finalized O2 face density,p,normal speed and c.
         /// No EOS,energy convention or component ordering enters this operator.
-        inline LimitedVRFaceSensor EvaluateLimitedVRFaceSensor(real rhoLeft, real rhoRight, real pressureLeft, real pressureRight,
-                                                               real normalLeft, real normalRight, real soundLeft, real soundRight,
-                                                               const LimitedVRSettings &settings)
+        template <class Settings>
+        DNDS_DEVICE_CALLABLE inline LimitedVRFaceSensor EvaluateLimitedVRFaceSensor(real rhoLeft, real rhoRight, real pressureLeft, real pressureRight,
+                                                                                    real normalLeft, real normalRight, real soundLeft, real soundRight,
+                                                                                    const Settings &settings)
         {
-            const real pressureScale = std::max({std::abs(pressureLeft), std::abs(pressureRight), real(1e-30)});
-            const real acousticScale = std::max({std::abs(soundLeft), std::abs(soundRight), real(1e-30)});
-            const real densityScale = std::max({std::abs(rhoLeft), std::abs(rhoRight), real(1e-30)});
+            const real pressureScale = std::max(std::max(std::abs(pressureLeft), std::abs(pressureRight)), real(1e-30));
+            const real acousticScale = std::max(std::max(std::abs(soundLeft), std::abs(soundRight)), real(1e-30));
+            const real densityScale = std::max(std::max(std::abs(rhoLeft), std::abs(rhoRight)), real(1e-30));
             const real jp = 2 * std::abs(pressureRight - pressureLeft) / std::max(pressureLeft + pressureRight, smallReal * pressureScale);
             const real dv = normalLeft - normalRight;
             const real jc = (settings.detectExpansion ? std::abs(dv) : std::max(real(0), dv)) / std::max(.5 * (soundLeft + soundRight), smallReal * acousticScale);
@@ -110,9 +133,9 @@ namespace DNDS::CFV
             real lower = -std::numeric_limits<real>::infinity(), upper = std::numeric_limits<real>::infinity(), support = 0;
             int equal = 0;
             bool boundary = false;
-            void Observe(real value, real other, real neighborSupport, real tolerance)
+            DNDS_DEVICE_CALLABLE void Observe(real value, real other, real neighborSupport, real tolerance)
             {
-                const real scale = std::max({std::abs(value), std::abs(other), real(1e-30)});
+                const real scale = std::max(std::max(std::abs(value), std::abs(other)), real(1e-30));
                 if (other < value - tolerance * scale)
                     lower = std::max(lower, other);
                 else if (other > value + tolerance * scale)
@@ -121,16 +144,17 @@ namespace DNDS::CFV
                     ++equal;
                 support = std::max(support, neighborSupport);
             }
-            real Correction(real value, real previous, real cap, const std::array<real, 2> &supportThreshold,
-                            const LimitedVRSettings &settings) const
+            template <class Settings>
+            DNDS_DEVICE_CALLABLE real Correction(real value, real previous, real cap, const std::array<real, 2> &supportThreshold,
+                                                 const Settings &settings) const
             {
                 if (cap == 0 || boundary || equal < settings.minimumEqualNeighbors)
                     return 0;
                 real excess = 0;
                 if (std::isfinite(lower) && !std::isfinite(upper))
-                    excess = (value - lower) / std::max({std::abs(value), std::abs(lower), real(1e-30)});
+                    excess = (value - lower) / std::max(std::max(std::abs(value), std::abs(lower)), real(1e-30));
                 else if (std::isfinite(upper) && !std::isfinite(lower))
-                    excess = (upper - value) / std::max({std::abs(value), std::abs(upper), real(1e-30)});
+                    excess = (upper - value) / std::max(std::max(std::abs(value), std::abs(upper)), real(1e-30));
                 const real supported = LimitedVRCubicRamp(support / std::max(cap, real(1e-30)), supportThreshold);
                 const real response = LimitedVRCubicRamp(excess, settings.extremumThreshold) * supported;
                 const real retained = settings.retention * previous / std::max(cap, real(1e-30)) * supported;

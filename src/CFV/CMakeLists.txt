@@ -27,11 +27,13 @@ Prepare/FiniteVolumePlan_Placement.cpp
 Prepare/GradientPlan.cpp
 Prepare/GradientPlan_Placement.cpp
 Prepare/LimitedVRPlan.cpp
+Prepare/LimitedVRPlan_Placement.cpp
 Operators/GradientPlan_Operators.cpp
 Operators/GradientPlan_Queued.cpp
 Operators/GradientPlan_Conversion.cpp
 Operators/GradientPlan_Limiter.cpp
 CPU/GradientKernels.cpp
+CPU/LimitedVRKernels.cpp
 Operators/PolynomialSamplingPlan.cpp
 CPU/PolynomialSamplingKernels.cpp
 CPU/PolynomialSamplingKernels_Values.cpp
@@ -39,6 +41,7 @@ CPU/PolynomialSamplingKernels_ValueGradient.cpp
 Operators/PolynomialSamplingPlan_Values.cpp
 Operators/PolynomialSamplingPlan_ValueGradient.cpp
 Operators/LimitedVRPlan_Operators.cpp
+Operators/LimitedVRPlan_Queued.cpp
 Prepare/PolynomialSamplingPlan.cpp
 Plans/DistributedInterfaceSamplingPlan.cpp
 CPU/DistributedInterfaceSamplingKernels.cpp
@@ -47,7 +50,7 @@ Operators/FiniteVolumePlan_Reconstruction.cpp
 Operators/FiniteVolumePlan_Linear.cpp
 )
 if (DNDS_USE_CUDA)
-list(APPEND CPPS Operators/CUDA/GradientKernels_CUDA.cu Operators/CUDA/PolynomialSamplingKernels_CUDA.cu Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu Operators/CUDA/ReconstructionTensorShared.cu)
+list(APPEND CPPS Operators/CUDA/GradientKernels_CUDA.cu Operators/CUDA/LimitedVRKernels_CUDA.cu Operators/CUDA/PolynomialSamplingKernels_CUDA.cu Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu Operators/CUDA/ReconstructionTensorShared.cu)
 endif()
 
 file(GLOB EXPLICIT_INST_CPP_FILES CONFIGURE_DEPENDS "Legacy/ExplicitInstantiations/*.cpp")

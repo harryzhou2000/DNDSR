@@ -53,7 +53,10 @@ namespace DNDS::Cauchy::CPU
         for (index iFace = 0; iFace < faces.RowCount(); ++iFace)
         {
             const auto &face = faces(iFace, 0);
-            const auto left = Load(samples, 2 * iFace), right = RotateState(Load(samples, 2 * iFace + 1), Eigen::Map<const Geom::tGPoint>(face.rotation.data()));
+            const auto left = Load(samples, 2 * iFace);
+            auto right = Load(samples, 2 * iFace + 1);
+            if (face.changesFrame)
+                right = RotateState(right, Eigen::Map<const Geom::tGPoint>(face.rotation.data()));
             if (!(ThermallyAdmissible(left, bounds) && ThermallyAdmissible(right, bounds)))
                 return NumericalStatus{NumericalError::InvalidState, 1, iFace};
             const auto l = gas.Primitive(left), r = gas.Primitive(right);

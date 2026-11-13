@@ -13,6 +13,9 @@ namespace DNDS::Cauchy
         CFV::GradientPlan gradient;
         CFV::LimitedVRPlan gates;
         Runtime::Array<LimitedVRFace> faces;
+        /// Owned-cell incidence CSR for deterministic CUDA gather of face
+        /// sensors. Incidences preserve both slots of a self-periodic face.
+        Runtime::Array<index> cellFaceOffsets, cellFaces;
         std::optional<CFV::PolynomialSamplingPlan> sampling;
         explicit LimitedVRGeometry(const Data &data);
     };

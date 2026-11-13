@@ -9,5 +9,8 @@ namespace DNDS::Cauchy
         index cell, other;
         std::array<real, 3> normal;
         std::array<real, 9> rotation;
+        /// Exact preparation-time frame test. Default true preserves manually
+        /// supplied nonidentity records; production skips ordinary face maps.
+        bool changesFrame = true;
     };
 }

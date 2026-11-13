@@ -5,19 +5,51 @@
 namespace DNDS::CFV::Detail
 {
     namespace R = Runtime;
-    __global__ void Jacobi(ReconstructionDeviceView plan, DeviceWorkSelection selection, DevicePeriodicBlocks blocks,
+    /// Sweep-only argument projection. Limiter tables and work lists do not
+    /// belong in the kernel argument block (especially with LVR operands).
+    struct JacobiView
+    {
+        R::ArrayView<const index> offsets, neighbors, boundaryOffsets;
+        R::ArrayView<const uint8_t> rotationActive;
+        R::ArrayView<const real> matrixAInvB, vectorAInvB, boundaryInjection, rotation;
+        index n;
+        real relax;
+        bool rotated;
+        explicit JacobiView(const ReconstructionDeviceView &p)
+            : offsets(p.offsets), neighbors(p.neighbors), boundaryOffsets(p.boundaryOffsets),
+              rotationActive(p.rotationActive), matrixAInvB(p.matrixAInvB), vectorAInvB(p.vectorAInvB),
+              boundaryInjection(p.boundaryInjection), rotation(p.rotation), n(p.n), relax(p.relax), rotated(p.rotated) {}
+    };
+    template <bool limited, class Status>
+    __global__ void Jacobi(JacobiView plan, DeviceWorkSelection selection, DevicePeriodicBlocks blocks,
                            R::PairReadView<real> mean, R::PairReadView<real> input,
-                           R::ArrayView<const real> boundary, R::ArrayView<real> output, R::ArrayView<const int> status)
+                           R::ArrayView<const real> boundary, R::ArrayView<real> output, Status status,
+                           R::ArrayView<const real> target, R::ArrayView<const real> alpha)
     {
         if (status(0, 0))
             return;
         for (index iWork = blockIdx.x; iWork < selection.count; iWork += gridDim.x)
         {
             const auto iCell = selection.Cell(iWork);
+            real penalty = 0;
+            if constexpr (limited)
+                penalty = alpha(iCell, 0);
+            const real scale = plan.relax * (1 - penalty);
             for (index i = threadIdx.x; i < output.width; i += blockDim.x)
             {
                 const index mode = i % plan.n, component = i / plan.n;
                 real value = input(iCell, i) * (1 - plan.relax);
+                if constexpr (limited)
+                    if (penalty > 0)
+                        value += (plan.relax * penalty) * target(iCell, i);
+                // A fully constrained cell must not read a neighbor or BC.
+                // Post-blending an unlimited sweep would propagate NaNs from
+                // values which the CPU LVR operator deliberately never reads.
+                if (scale == 0)
+                {
+                    output(iCell, i) = value;
+                    continue;
+                }
                 for (index entry = plan.offsets(iCell, 0); entry < plan.offsets(iCell + 1, 0); ++entry)
                 {
                     const auto other = plan.neighbors(entry, 0);
@@ -26,7 +58,7 @@ namespace DNDS::CFV::Detail
                         real product = 0;
                         for (index j = 0; j < plan.n; ++j)
                             product += plan.matrixAInvB(entry, j * plan.n + mode) * input(other, component * plan.n + j);
-                        value += plan.relax * product;
+                        value += scale * product;
                         const auto first = plan.rotated && plan.rotationActive(entry, 0)
                                                ? blocks.First(component)
                                                : -1;
@@ -41,7 +73,7 @@ namespace DNDS::CFV::Detail
                                                (plan.rotation(entry, d * 3 + component - first) - (component - first == d ? 1 : 0));
                                 correction += plan.matrixAInvB(entry, j * plan.n + mode) * rotated;
                             }
-                            value += plan.relax * correction;
+                            value += scale * correction;
                         }
                         real otherMean = mean(other, component);
                         if (first >= 0)
@@ -50,11 +82,11 @@ namespace DNDS::CFV::Detail
                             for (index d = 0; d < 3; ++d)
                                 otherMean += plan.rotation(entry, d * 3 + component - first) * mean(other, first + d);
                         }
-                        value += plan.vectorAInvB(entry, mode) * (plan.relax * (otherMean - mean(iCell, component)));
+                        value += plan.vectorAInvB(entry, mode) * (scale * (otherMean - mean(iCell, component)));
                     }
                     else
                         for (index q = plan.boundaryOffsets(entry, 0); q < plan.boundaryOffsets(entry + 1, 0); ++q)
-                            value += plan.boundaryInjection(q, mode) * (plan.relax * (boundary(q, component) - mean(iCell, component)));
+                            value += plan.boundaryInjection(q, mode) * (scale * (boundary(q, component) - mean(iCell, component)));
                 }
                 output(iCell, i) = value;
             }
@@ -64,6 +96,12 @@ namespace DNDS::CFV::Detail
     {
         for (index i = index(blockIdx.x) * blockDim.x + threadIdx.x; i < indicator.rows; i += index(gridDim.x) * blockDim.x)
             if (!isfinite(indicator(i, 0)))
+                atomicExch(&status(0, 0), 1);
+    }
+    __global__ void ValidatePenalty(R::ArrayView<const real> alpha, R::ArrayView<int> status)
+    {
+        for (index iCell = index(blockIdx.x) * blockDim.x + threadIdx.x; iCell < alpha.rows; iCell += index(gridDim.x) * blockDim.x)
+            if (!isfinite(alpha(iCell, 0)) || alpha(iCell, 0) < 0 || alpha(iCell, 0) > 1)
                 atomicExch(&status(0, 0), 1);
     }
     __device__ real Biway(real center, real other, real epsilon)
@@ -215,12 +253,33 @@ namespace DNDS::CFV::Detail
     {
         DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA Jacobi requires a CUDA context");
         R::ValidateViewDevices(context.device, plan, selection, blocks, mean, input, boundary, output, status);
-        R::CheckKernelArgumentBudget<decltype(plan), decltype(selection), decltype(blocks), decltype(mean),
-                                     decltype(input), decltype(boundary), decltype(output), decltype(status)>();
+        R::CheckKernelArgumentBudget<JacobiView, decltype(selection), decltype(blocks), decltype(mean),
+                                     decltype(input), decltype(boundary), decltype(output), decltype(status),
+                                     R::ArrayView<const real>, R::ArrayView<const real>>();
         if (!selection.count)
             return;
-        Jacobi<<<unsigned(std::min<index>(selection.count, 256)), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(plan, selection, blocks, mean, input, boundary, output, status);
+        Jacobi<false><<<unsigned(std::min<index>(selection.count, 256)), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(JacobiView(plan), selection, blocks, mean, input, boundary, output, status, {}, {});
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA Jacobi launch failed");
+    }
+    void LaunchLimitedJacobi(R::ExecutionContext context, ReconstructionDeviceView plan, DeviceWorkSelection selection,
+                             DevicePeriodicBlocks blocks, R::PairReadView<real> mean, R::PairReadView<real> input,
+                             R::ArrayView<const real> boundary, R::ArrayView<const real> target, R::ArrayView<const real> alpha,
+                             R::ArrayView<real> output, R::ArrayView<int> status)
+    {
+        DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA limited Jacobi requires a CUDA context");
+        R::ValidateViewDevices(context.device, plan, selection, blocks, mean, input, boundary, target, alpha, output, status);
+        DNDS_check_throw_info(target.rows == output.rows && target.width == output.width && alpha.rows == output.rows && alpha.width == 1,
+                              "CUDA limited Jacobi penalty/target shape mismatch");
+        R::CheckKernelArgumentBudget<JacobiView, decltype(selection), decltype(blocks), decltype(mean), decltype(input),
+                                     decltype(boundary), decltype(output), decltype(status), decltype(target), decltype(alpha)>();
+        if (!selection.count)
+            return;
+        // A separate stream-ordered validation pass avoids a status read/write
+        // race between cell blocks and prevents partial publication on error.
+        ValidatePenalty<<<unsigned(std::min<index>(256, (alpha.rows + 127) / 128)), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(alpha, status);
+        Jacobi<true><<<unsigned(std::min<index>(selection.count, 256)), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(
+            JacobiView(plan), selection, blocks, mean, input, boundary, output, status, target, alpha);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA limited Jacobi launch failed");
     }
     void LaunchWBAP(R::ExecutionContext context, ReconstructionDeviceView plan, DeviceWorkSelection selection, DevicePeriodicBlocks blocks,
                     R::PairReadView<real> input, R::ArrayView<real> output, R::ArrayView<real> scratch, DeviceCharacteristicView transform,

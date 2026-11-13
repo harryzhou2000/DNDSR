@@ -321,7 +321,15 @@ namespace DNDS::CFV
                                                                       const ReconstructionBoundaryValues &boundary, const FVField &target,
                                                                       const R::Array<real> &alpha, ReconstructionRegion region) const
     {
-        DNDS_check_throw_info(!_device, "limited LVR reconstruction has no device kernel in this placement");
+        if (_device)
+        {
+            R::EagerEngine engine;
+            const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
+            SubmitDeviceReconstructionIterLimitedTo(engine, stream, mean, input, work, boundary, target, alpha, region);
+            engine.Synchronize();
+            CheckStatus(work);
+            return;
+        }
         DoReconstructionIterImpl(mean, input, work, boundary, region, &target, &alpha);
     }
     void VariationalReconstructionPlan::SubmitReconstructionIterTo(
@@ -373,7 +381,11 @@ namespace DNDS::CFV
         ReconstructionWorkspace &work, const ReconstructionBoundaryValues &boundary, const FVField &target,
         const R::Array<real> &alpha, ReconstructionRegion region) const
     {
-        DNDS_check_throw_info(!_device, "limited LVR reconstruction has no device kernel in this placement");
+        if (_device)
+        {
+            SubmitDeviceReconstructionIterLimitedTo(engine, stream, mean, input, work, boundary, target, alpha, region);
+            return;
+        }
         Require(ReconstructionOperation::Sweep);
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                               "CPU limited reconstruction submission needs a matching host stream");
