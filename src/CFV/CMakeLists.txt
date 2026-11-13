@@ -46,11 +46,14 @@ Prepare/PolynomialSamplingPlan.cpp
 Plans/DistributedInterfaceSamplingPlan.cpp
 CPU/DistributedInterfaceSamplingKernels.cpp
 CPU/ReconstructionBasisKernels.cpp
+CPU/ReconstructionKernels.cpp
 Operators/FiniteVolumePlan_Reconstruction.cpp
 Operators/FiniteVolumePlan_Linear.cpp
 )
 if (DNDS_USE_CUDA)
 list(APPEND CPPS Operators/CUDA/CharacteristicKernels_CUDA.cu Operators/CUDA/GradientKernels_CUDA.cu Operators/CUDA/LimitedVRKernels_CUDA.cu Operators/CUDA/PolynomialSamplingKernels_CUDA.cu Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu Operators/CUDA/ReconstructionTensorShared.cu)
+list(APPEND CPPS Operators/CUDA/ReconstructionDeviceKernels_TF32.cu)
+list(APPEND CPPS Operators/CUDA/DistributedInterfaceSamplingKernels.cu)
 endif()
 
 file(GLOB EXPLICIT_INST_CPP_FILES CONFIGURE_DEPENDS "Legacy/ExplicitInstantiations/*.cpp")

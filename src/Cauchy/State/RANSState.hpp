@@ -45,7 +45,7 @@ namespace DNDS::Cauchy
         /// exponential scalar repair and SA-only 1e-6 floor, not a new common
         /// line search. Precondition: the old mean is admissible and finite.
         template <class Mean, class Delta>
-        void RepairIncrement(const Mean &mean, Delta &&delta) const
+        DNDS_DEVICE_CALLABLE void RepairIncrement(const Mean &mean, Delta &&delta) const
         {
             for (int j = 0; j < components; ++j)
             {
@@ -66,7 +66,7 @@ namespace DNDS::Cauchy
         /// Apply after adding the repaired increment. Omega's floor references
         /// the prescribed far-field conservative value, not the local density.
         template <class Row>
-        void RepairMean(real density, Row &&values) const
+        DNDS_DEVICE_CALLABLE void RepairMean(real density, Row &&values) const
         {
             if (kind == Physics::RANS::ModelKind::SA)
                 values[0] = std::min(values[0], saUpperLimit * density);

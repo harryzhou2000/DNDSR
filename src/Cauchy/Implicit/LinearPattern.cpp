@@ -17,7 +17,8 @@ namespace DNDS::Cauchy
         }
         std::vector<index> Copy(const Runtime::Array<index> &values)
         {
-            const auto read = values.Read();
+            const auto host = values.GetDevice() == Runtime::Device::Host() ? values : values.To(Runtime::Device::Host());
+            const auto read = host.Read();
             const auto view = read.View<Runtime::FixedRows<1>>();
             std::vector<index> result(view.RowCount());
             for (index iRow = 0; iRow < view.RowCount(); ++iRow)
@@ -43,9 +44,20 @@ namespace DNDS::Cauchy
             for (index j = 0; j < index(columns[iRow].size()); ++j)
                 view(iRow, j) = columns[iRow][j];
     }
+    LinearPatternStorage LinearPatternStorage::Placed(Runtime::Device device, Runtime::ExecutionContext context) const
+    {
+        LinearPatternStorage result;
+        result._columns = _columns.To(device, context);
+        result._order = _order.To(device, context);
+        result._position = _position.To(device, context);
+        result._core = _core.To(device, context);
+        result._dependent = _dependent.To(device, context);
+        return result;
+    }
     std::vector<std::vector<index>> LinearPatternStorage::CopyColumns() const
     {
-        const auto read = _columns.Read();
+        const auto host = _columns.GetDevice() == Runtime::Device::Host() ? _columns : _columns.To(Runtime::Device::Host());
+        const auto read = host.Read();
         const auto view = read.View<Runtime::CSRRows>();
         std::vector<std::vector<index>> result(view.RowCount());
         for (index iRow = 0; iRow < view.RowCount(); ++iRow)

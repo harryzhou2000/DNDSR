@@ -144,3 +144,38 @@ validates and appends at those cursors without duplicating the initial/accepted
 row. Choosing a new prefix starts a new output bundle from the restored
 numerical state.
 
+## Asynchronous accepted-step output
+
+`output.asynchronous` defaults to `false`. When enabled, `OutputCoordinator`
+uses one FIFO writer with capacity for two accepted-step output batches,
+including the currently running batch. It waits for capacity **before** making
+another snapshot. Capturing fields, numerical output preparation and required
+device-to-host transfers remain ordered controller work; subsequent computation
+can overlap file writing. Enqueue does not mean the files are complete.
+
+`PreparedCheckpoint` owns the accepted means, optional reconstruction/history,
+nonlinear/control metadata, persistent IDs and mesh envelope. CPU snapshots
+are independent copies; device payloads use accounted pinned host allocations.
+`PreparedVisualization` owns prepared cell fields and serialized surface rows,
+and retains a mesh read until writing finishes. No live Domain, coefficient
+buffer or physics worker is borrowed by the writer. Mesh mutation or external
+CGNS/HDF5 operations must first drain this service.
+
+The current backend is parallel HDF5 and **requires MPI_THREAD_MULTIPLE**.
+FUNNELED/SERIALIZED configurations reject this option explicitly. Dedicated
+congruent control/domain communicators are duplicated once at service setup
+and shared by requests, separating I/O collectives from solver collectives.
+SerializerH5 file sessions and Geom VTKHDF transactions share a process-local
+recursive lock, including builds with HDF5 thread safety disabled. This lock
+does not order distributed collectives and does not cover external raw
+HDF5/CGNS calls; callers must respect the drain boundary.
+
+Accepted-step schemas, per-domain shards and naming stay unchanged. The worker
+publishes completion manifests only after every required file has closed
+successfully across its ranks/domains. Exceptions from collective file paths
+trigger an independent abort, with no collective exception recovery. Internal
+nonlinear output retains its synchronous semantics after draining older work.
+Final output and shutdown also drain; the final summary never reports merely
+queued files as complete. The Phase C implementation remains subject to its
+grouped build and distributed validation gate.
+

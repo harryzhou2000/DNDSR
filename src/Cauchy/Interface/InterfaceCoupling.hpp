@@ -24,6 +24,8 @@ namespace DNDS::Cauchy
     /// implicit.collectiveChecks. All-off retains local fail-fast validation,
     /// required routing collectives and numerical communication. The selected
     /// context shares the supplied communicator resource and tag namespace.
+    /// Payload mapping follows each receiver's execution.checkAccess policy;
+    /// shared checked/unchecked lane pairs preserve mixed-domain settings.
     /// No conservative interface flux is imposed by this point-value coupling.
     class InterfaceCoupling
     {
@@ -33,9 +35,9 @@ namespace DNDS::Cauchy
     public:
         /// Move-only posted value refresh. BeginRefresh freezes donor samples
         /// and posts every connection in canonical order. CompletionEvent is a
-        /// backend-neutral dependency; Complete performs packet mapping and one
-        /// atomic publication after that event. Destruction of an unfinished
-        /// operation is a solver error, never an implicit MPI wait.
+        /// backend-neutral dependency covering transfer and receiver mapping;
+        /// Complete validates and publishes after that event. Destruction of
+        /// an unfinished operation is a solver error, never an implicit MPI wait.
         class RefreshOperation
         {
             struct State;
@@ -62,6 +64,11 @@ namespace DNDS::Cauchy
             /// ordinary packet generation checks still reject later reuse of
             /// its mutable staging storage. Freeze a packet to keep stages.
             std::optional<BoundaryInputs> Inputs(index domain) const;
+            /// Stable receiver allocations and round-specific publication slot,
+            /// available before completion for declaring queued consumers.
+            /// Import CompletionEvent and execute PublishReady before consuming
+            /// the publication. This handle never follows a later round.
+            std::optional<BoundaryInputs> PendingInputs(index domain) const;
             void Discard();
             bool Finished() const;
         };

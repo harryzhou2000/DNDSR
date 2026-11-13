@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeReconstructionKernels.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
+#include "Cauchy/Config/SimulationConfig.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 
@@ -27,8 +28,8 @@ namespace
 
 TEST_CASE("CUDA analytic mean characteristics match CPU inverse and canonical periodic face frames")
 {
-    const C::PerfectGas gas;
-    const C::EquationSystem equation(gas, false);
+    const auto equation = C::EquationSystem::Resolve(C::EquationSettings{});
+    const auto &gas = equation.Gas();
     const std::array<C::FlowState, 4> states{
         gas.Conservative({1., .4, .2, -.1, 1.}),
         gas.Conservative({2., -.3, .1, .2, 1.3}),

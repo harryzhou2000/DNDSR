@@ -1,6 +1,8 @@
 #pragma once
 
 #include "DNDS/Core/Defines.hpp"
+#include <array>
+#include <utility>
 
 namespace DNDS::Physics
 {
@@ -12,7 +14,8 @@ namespace DNDS::Physics
         real rho0 = 1, U0 = 1, L0 = 1, T0 = 1;
         void Validate(const std::string &prefix = "ReferenceScales") const
         {
-            for (const auto &[name, value] : {std::pair<const char *, real>{"rho0", rho0}, {"U0", U0}, {"L0", L0}, {"T0", T0}})
+            const std::array<std::pair<const char *, real>, 4> scales{{{"rho0", rho0}, {"U0", U0}, {"L0", L0}, {"T0", T0}}};
+            for (const auto &[name, value] : scales)
                 DNDS_check_throw_info(std::isfinite(value) && value > 0, prefix + "." + name + " must be finite and > 0");
         }
         real Pressure() const { return rho0 * U0 * U0; }

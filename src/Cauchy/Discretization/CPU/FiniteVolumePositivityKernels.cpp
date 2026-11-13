@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -21,46 +22,57 @@ namespace DNDS::Cauchy::CPU
     }
     NumericalStatus ValidateReconstructionMeans(const PolynomialPositivityRequest &r) noexcept
     {
-        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+        return OMP::ForRowsStatus(0, r.means.ownedRows, [&](index iCell) -> NumericalStatus
+                                  {
             if (!(r.bounds.Admissible(ThermalAdmissibilityDetail::PointRow<PPInput>{r.means, iCell})))
                 return NumericalStatus{NumericalError::InvalidState, 1, iCell};
-        return {};
+            return {}; });
     }
     NumericalResult<bool> MarkAdmissibleDegrees(const PolynomialPositivityRequest &r, PPInput samples, PPIndexOutput degrees) noexcept
     {
-        for (index q = 0; q < samples.RowCount(); ++q)
+        const auto finite = OMP::ForRowsStatus(0, samples.RowCount(), [&](index q) -> NumericalStatus
+                                               {
             for (index j = 0; j < samples.ComponentNumber(); ++j)
-                if (!(std::isfinite(samples(q, j))))
+                if (!std::isfinite(samples(q, j)))
                     return NumericalStatus{NumericalError::InvalidState, 1, q};
+            return {}; });
+        if (!finite)
+            return finite;
         bool allGood = true;
+        const int threads = OMP::DistributedThreads();
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static) num_threads(threads) if (threads > 1) reduction(&& : allGood)
+#endif
         for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
         {
             bool good = true;
             for (index q = r.offsets(iCell, 0); q < r.offsets(iCell + 1, 0); ++q)
                 good = good && ReferenceGood(samples, q, r.bounds);
             degrees(iCell, 0) = good ? r.maxOrder : -1;
-            allGood = allGood && good;
             // Flow acceptance excludes RANS; the fast exit must prove its
             // independent scalar repair unnecessary as well.
-            if (allGood && r.rans.components)
-                allGood = r.rans.Compute(RepeatedMean{r.means, iCell}, samples, r.ransFirst,
-                                         r.offsets(iCell, 0), r.offsets(iCell + 1, 0)) == 1;
+            if (good && r.rans.components)
+                good = r.rans.Compute(RepeatedMean{r.means, iCell}, samples, r.ransFirst,
+                                      r.offsets(iCell, 0), r.offsets(iCell + 1, 0)) == 1;
+            allGood = allGood && good;
         }
         return allGood;
     }
     void TruncateReferenceModes(const PolynomialPositivityRequest &r, PPIndexInput degrees, PPOutput coefficients, int keep)
     {
-        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+        OMP::ForRows(0, r.means.ownedRows, [&](index iCell)
+                     {
             if (degrees(iCell, 0) < 0)
                 for (index j = 0; j < r.means.ComponentNumber(); ++j)
                     if (r.bounds.CompressesReconstructionComponent(j))
                         for (int mode = keep; mode < r.modes; ++mode)
-                            coefficients(iCell, j * r.modes + mode) = 0;
+                            coefficients(iCell, j * r.modes + mode) = 0; });
     }
     void SelectReferenceDegree(const PolynomialPositivityRequest &r, PPInput samples, PPInput reference,
                                PPIndexOutput degrees, PPOutput coefficients, int order)
     {
-        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+        OMP::ForRows(0, r.means.ownedRows, [&](index iCell)
+                     {
             if (degrees(iCell, 0) < 0)
             {
                 bool good = true;
@@ -73,13 +85,13 @@ namespace DNDS::Cauchy::CPU
                         if (r.bounds.CompressesReconstructionComponent(component))
                             for (int mode = 0; mode < r.modes; ++mode)
                                 coefficients(iCell, component * r.modes + mode) = reference(iCell, component * r.modes + mode);
-            }
+            } });
     }
     NumericalStatus CompressPolynomial(const PolynomialPositivityRequest &r, PPInput higher, std::optional<PPInput> base,
                                        std::optional<PPInput> reference, PPIndexInput degrees, PPOutput coefficients, PPScalarOutput cellBeta) noexcept
     {
-        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
-        {
+        return OMP::ForRowsStatus(0, r.means.ownedRows, [&](index iCell) -> NumericalStatus
+                                  {
             cellBeta(iCell, 0) = 1;
             const ThermalAdmissibilityDetail::PointRow<PPInput> mean{r.means, iCell};
             const RepeatedMean meanBase{r.means, iCell};
@@ -94,7 +106,7 @@ namespace DNDS::Cauchy::CPU
                     for (int mode = 0; mode < r.modes; ++mode)
                         coefficients(iCell, (r.ransFirst + component) * r.modes + mode) *= scale;
             if (degrees(iCell, 0) == r.maxOrder)
-                continue;
+                return {};
             real beta = 1;
             if (r.segmentBounds)
             {
@@ -120,23 +132,20 @@ namespace DNDS::Cauchy::CPU
                             const real value = reference ? (*reference)(iCell, j) : 0;
                             coefficients(iCell, j) = value + beta * (coefficients(iCell, j) - value);
                         }
-        }
-        return {};
+            return {}; });
     }
     NumericalResult<bool> MarkPolynomialRecovery(const PolynomialPositivityRequest &r, PPInput samples, PPScalarOutput beta,
                                                  PPFlagOutput recover, PPScalarOutput recoveryScale) noexcept
     {
-        bool any = false;
-        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
-        {
+        const auto status = OMP::ForRowsStatus(0, r.means.ownedRows, [&](index iCell) -> NumericalStatus
+                                               {
             bool clippedGood = true;
             for (index q = r.offsets(iCell, 0); q < r.offsets(iCell + 1, 0); ++q)
                 clippedGood = clippedGood && r.bounds.ClippedReferenceAdmissible(
                                                  ThermalAdmissibilityDetail::PointRow<PPInput>{samples, q});
             recover(iCell, 0) = uint8_t(!clippedGood);
             if (!recover(iCell, 0))
-                continue;
-            any = true;
+                return {};
             const real previous = beta(iCell, 0);
             beta(iCell, 0) = r.clippedPolicy == ReconstructionClippedReferencePolicy::FallbackToBase ? 0 : previous * .9;
             if (beta(iCell, 0) < r.betaCutoff)
@@ -144,13 +153,23 @@ namespace DNDS::Cauchy::CPU
             if (!(previous > 0))
                 return NumericalStatus{NumericalError::InvalidState, 1, iCell};
             recoveryScale(iCell, 0) = beta(iCell, 0) / previous;
-        }
+            return {}; });
+        if (!status)
+            return status;
+        bool any = false;
+        const int threads = OMP::DistributedThreads();
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static) num_threads(threads) if (threads > 1) reduction(|| : any)
+#endif
+        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+            any = any || bool(recover(iCell, 0));
         return any;
     }
     void RecoverPolynomial(const PolynomialPositivityRequest &r, std::optional<PPInput> reference,
                            PPOutput coefficients, PPFlagInput recover, PPScalarInput recoveryScale)
     {
-        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+        OMP::ForRows(0, r.means.ownedRows, [&](index iCell)
+                     {
             if (recover(iCell, 0))
                 for (index component = 0; component < r.means.ComponentNumber(); ++component)
                     if (r.bounds.CompressesReconstructionComponent(component))
@@ -159,23 +178,28 @@ namespace DNDS::Cauchy::CPU
                             const index j = component * r.modes + mode;
                             const real value = reference ? (*reference)(iCell, j) : 0;
                             coefficients(iCell, j) = value + recoveryScale(iCell, 0) * (coefficients(iCell, j) - value);
-                        }
+                        } });
     }
     NumericalStatus VerifyReconstructedPoints(const PolynomialPositivityRequest &r, PPInput samples) noexcept
     {
         // PP POLICY -- raw rhoY remains in the polynomial and fluxes. This
         // final predicate uses only the clipped EOS/T composition. Sampling
         // actual post-layout storage makes the guarantee about published values.
-        for (index q = 0; q < samples.RowCount(); ++q)
+        return OMP::ForRowsStatus(0, samples.RowCount(), [&](index q) -> NumericalStatus
+                                  {
             if (!(r.bounds.ClippedReferenceAdmissible(
                     ThermalAdmissibilityDetail::PointRow<PPInput>{samples, q})))
                 return NumericalStatus{NumericalError::InvalidState, 1, q};
-        return {};
+            return {}; });
     }
     std::pair<index, real> PolynomialPositivityStatistics(PPScalarInput beta)
     {
         index limited = 0;
         real minimum = 1;
+        const int threads = OMP::DistributedThreads();
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static) num_threads(threads) if (threads > 1) reduction(+ : limited) reduction(min : minimum)
+#endif
         for (index iCell = 0; iCell < beta.RowCount(); ++iCell)
             if (beta(iCell, 0) < 1)
             {
@@ -190,15 +214,21 @@ namespace DNDS::Cauchy::CPU
     {
         index limited = 0;
         real minimum = 1;
-        std::vector<real> increment(size_t(mean.ComponentNumber()));
-        for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
+        struct Increment
         {
+            PPInput values;
+            index row;
+            real dtScale, volume;
+            real operator[](index j) const { return dtScale * values(row, j) / volume; }
+        };
+        const auto evaluate = [&](index iCell) -> NumericalResult<real>
+        {
+            const Increment increment{rhs, iCell, dt * scale, metric.GetCellVol(iCell)};
             const ThermalAdmissibilityDetail::PointRow<decltype(mean)> row{mean, iCell};
             if (!(thermal.Admissible(row)))
                 return NumericalStatus{NumericalError::InvalidState, 1, iCell};
             for (index j = 0; j < mean.ComponentNumber(); ++j)
             {
-                increment[j] = (dt * scale) * rhs(iCell, j) / metric.GetCellVol(iCell);
                 if (!(std::isfinite(increment[j])))
                     return NumericalStatus{NumericalError::InvalidState, 2, iCell};
             }
@@ -210,12 +240,35 @@ namespace DNDS::Cauchy::CPU
             const real alpha = thermal.IncrementFraction(row, increment, relax, 1, compressionPower);
             if (!(std::isfinite(alpha) && alpha >= 0 && alpha <= 1))
                 return NumericalStatus{NumericalError::InvalidState, 3, iCell};
-            if (alpha < 1)
+            return alpha;
+        };
+        const int threads = OMP::DistributedThreads();
+        NumericalStatus failure;
+        index firstFailure = mean.RowCount();
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static) num_threads(threads) if (threads > 1) reduction(+ : limited) reduction(min : minimum)
+#endif
+        for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
+        {
+            const auto alpha = evaluate(iCell);
+            if (!alpha)
+            {
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp critical(DNDS_PHYSICAL_STEP_FAILURE)
+#endif
+                {
+                    if (iCell < firstFailure)
+                        firstFailure = iCell, failure = alpha.status;
+                }
+            }
+            else if (alpha.value < 1)
             {
                 ++limited;
-                minimum = std::min(minimum, alpha);
+                minimum = std::min(minimum, alpha.value);
             }
         }
+        if (!failure)
+            return failure;
         return std::pair<index, real>{limited, minimum};
     }
 }

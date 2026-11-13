@@ -19,7 +19,7 @@ namespace DNDS::CFV
             DNDS_check_throw_info(valid(transform.forward) && valid(transform.inverse),
                                   "gradient characteristic matrix shape or placement differs");
             const bool queued = transform.validation == CharacteristicValidation::Queued;
-            DNDS_check_throw_info((queued ? device.space == R::MemorySpace::CUDA : (transform.validation == CharacteristicValidation::Frozen && transform.forwardVersion != 0 && transform.forwardVersion == transform.forward.Version() && transform.inverseVersion == transform.inverse.Version())) &&
+            DNDS_check_throw_info((queued || (transform.validation == CharacteristicValidation::Frozen && transform.forwardVersion != 0 && transform.forwardVersion == transform.forward.Version() && transform.inverseVersion == transform.inverse.Version())) &&
                                       transform.forwardIdentity == transform.forward.Identity() && transform.inverseIdentity == transform.inverse.Identity(),
                                   "gradient characteristic matrices changed; finalize them before limiting");
         }
@@ -27,8 +27,14 @@ namespace DNDS::CFV
     GradientFaceCharacteristicTransform GradientPlan::BuildQueuedFaceTransform(index first, index count) const
     {
         _data->metrics.Validate();
-        DNDS_check_throw_info(Device().space == R::MemorySpace::CUDA && first >= 0 && count >= 0 && count <= 64,
-                              "queued gradient characteristics require CUDA placement and a valid component range");
+        DNDS_check_throw_info(first >= 0 && count >= 0 && count <= 64,
+                              "queued gradient characteristics require a valid component range");
+        if (Device() == R::Device::Host())
+        {
+            auto result = BuildFaceTransform(first, count);
+            result.validation = CharacteristicValidation::Queued;
+            return result;
+        }
         GradientFaceCharacteristicTransform result{first, count, {}, {}, _data->identity};
         result.validation = CharacteristicValidation::Queued;
         if (!count)

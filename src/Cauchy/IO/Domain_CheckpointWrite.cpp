@@ -16,9 +16,29 @@ namespace DNDS::Cauchy
     void Domain::WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction,
                                  const Json &outputController) const
     {
+        const auto prepared = PrepareCheckpoint(_problem.finiteVolume.Metrics().Communication(),
+                                                {includeReconstruction, false});
+        prepared.Write(path, resolved, outputController);
+    }
+    PreparedCheckpoint Domain::PrepareCheckpoint(std::shared_ptr<Runtime::CommunicationContext> communication,
+                                                 CheckpointPreparation options) const
+    {
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
-        includeReconstruction = includeReconstruction && bool(_problem.finiteVolume.PolynomialReconstruction());
-        const auto snapshot = CaptureStateSnapshot(includeReconstruction);
+        const bool includeReconstruction = options.includeReconstruction && bool(_problem.finiteVolume.PolynomialReconstruction());
+        MPI::LocalStage(mpi, [&]
+                        {
+            DNDS_check_throw_info(communication, "checkpoint preparation needs a retained I/O context");
+            int relation = MPI_UNEQUAL;
+            DNDS_check_throw_info(MPI_Comm_compare(mpi.comm, communication->Communicator(), &relation) == MPI_SUCCESS &&
+                                      (relation == MPI_IDENT || relation == MPI_CONGRUENT),
+                                  "checkpoint I/O communicator must preserve domain membership and rank order"); });
+        auto snapshot = CaptureStateSnapshot(includeReconstruction);
+        // Host-only serializers never receive device allocations. The detached
+        // copy pins the entire source epoch until all field copies complete.
+        const bool detached = options.detached || snapshot.Means().Device() != Runtime::Device::Host();
+        MPI::LocalStage(mpi, [&]
+                        {
+            if (detached) snapshot = snapshot.DetachedHost(_execution.ComputeStream().Context()); });
         const bool history = bool(snapshot.PreviousState());
         const bool limitedVRHistory = bool(snapshot.LimitedVRHistory());
         int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history), int(limitedVRHistory), -int(limitedVRHistory)};
@@ -33,35 +53,14 @@ namespace DNDS::Cauchy
         if (includeReconstruction)
             metadata["reconstruction_storage"] = DescribeEquationStorage(*snapshot.Reconstruction());
         metadata["source_integration"] = snapshot.SourceStrang() ? "strang" : "coupled";
-        auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
-        serializer->OpenFile(path, false);
-        serializer->WriteInt("cauchy_format", 5);
-        serializer->WriteString("resolved_config", resolved.dump());
-        serializer->WriteString("metadata_json", metadata.dump());
-        if (!outputController.is_null())
-            serializer->WriteString("output_controller_json", outputController.dump());
-        serializer->WriteString("domain_name", snapshot.Name());
-        serializer->WriteReal("accepted_time", snapshot.Time());
-        serializer->WriteReal("last_accepted_dt", snapshot.LastAcceptedDt());
-        serializer->WriteIndex("accepted_step", index(snapshot.Epoch().acceptedStep));
-        Runtime::WriteArray(CellIds(*this), serializer, "cell_ids", mpi);
+        Runtime::Array<index> ids;
         std::optional<MeshEnvelope> envelope;
         MPI::LocalStage(mpi, [&]
-                        { envelope.emplace(DescribeMesh(*this)); });
-        Runtime::WriteArray(envelope->topology, serializer, "mesh_topology", mpi);
-        Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
-        Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
-        WriteEquationArrays(snapshot.Means(), serializer, "state_field_", mpi);
-        if (includeReconstruction)
-            WriteEquationArrays(*snapshot.Reconstruction(), serializer, "reconstruction_field_", mpi);
-        if (limitedVRHistory)
-            Runtime::WriteArray(*snapshot.LimitedVRHistory(), serializer, "limited_vr_history", mpi);
-        if (history)
-        {
-            serializer->WriteReal("history_dt", snapshot.PreviousDt());
-            WriteEquationArrays(*snapshot.PreviousState(), serializer, "history_field_", mpi);
-        }
-        serializer->CloseFile();
+                        {
+            ids = CellIds(*this);
+            envelope.emplace(DescribeMesh(*this)); });
+        return PreparedCheckpoint(std::move(snapshot), std::move(metadata), std::move(ids),
+                                  std::move(*envelope), std::move(communication), detached);
     }
     void Domain::WriteInternalCheckpoint(const std::string &path, const Json &resolved,
                                          const NonlinearSolveState &state,
@@ -77,6 +76,9 @@ namespace DNDS::Cauchy
                                       _state.trialEpoch.trial && state.stage >= 0 && state.iteration >= 0,
                                   "exact internal checkpoint has no active implicit trial");
             active.emplace(_state.timeStepper->CaptureActive(_state.trial)); });
+        // Method-owned snapshot copies use queued algebra, just like stepping.
+        // Observe them before the host-only serializer acquires the payloads.
+        _execution.Synchronize();
         const bool ditr = _state.timeStepper->Method() == "ditr";
         MPI::LocalStage(mpi, [&]
                         { DNDS_check_throw_info(!ditr || (_coupledMiddle && _coupledMiddle->state),
@@ -166,35 +168,35 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(envelope->topology, serializer, "mesh_topology", mpi);
         Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
         Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
-        WriteEquationArrays(acceptedSnapshot.Means(), serializer, "state_field_", mpi);
+        WriteEquationArrays(acceptedSnapshot.Means(), serializer, "state_field_", mpi, _execution.ComputeStream().Context());
         if (polynomial)
-            WriteEquationArrays(*acceptedSnapshot.Reconstruction(), serializer, "reconstruction_field_", mpi);
+            WriteEquationArrays(*acceptedSnapshot.Reconstruction(), serializer, "reconstruction_field_", mpi, _execution.ComputeStream().Context());
         if (acceptedLimitedVR)
-            Runtime::WriteArray(*acceptedSnapshot.LimitedVRHistory(), serializer, "limited_vr_history", mpi);
+            WriteStateArray(*acceptedSnapshot.LimitedVRHistory(), serializer, "limited_vr_history", mpi, _execution.ComputeStream().Context());
         if (acceptedHistory)
         {
             serializer->WriteReal("history_dt", acceptedSnapshot.PreviousDt());
-            WriteEquationArrays(*acceptedSnapshot.PreviousState(), serializer, "history_field_", mpi);
+            WriteEquationArrays(*acceptedSnapshot.PreviousState(), serializer, "history_field_", mpi, _execution.ComputeStream().Context());
         }
         for (index i = 0; i < index(active->fields.size()); ++i)
             WriteEquationArrays(active->fields[size_t(i)], serializer,
-                                "internal_time_" + std::to_string(i) + "_field_", mpi);
+                                "internal_time_" + std::to_string(i) + "_field_", mpi, _execution.ComputeStream().Context());
         if (polynomial)
         {
             WriteEquationArrays(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction), serializer,
-                                "internal_endpoint_warm_field_", mpi);
+                                "internal_endpoint_warm_field_", mpi, _execution.ComputeStream().Context());
             WriteEquationArrays(_problem.finiteVolume.FluxReconstruction(*_state.reconstruction, *_execution.workspace), serializer,
-                                "internal_endpoint_final_field_", mpi);
+                                "internal_endpoint_final_field_", mpi, _execution.ComputeStream().Context());
             if (const auto history = _problem.finiteVolume.LimitedVRHistory(*_state.reconstruction))
-                Runtime::WriteArray(*history, serializer, "internal_endpoint_limited_vr_history", mpi);
+                WriteStateArray(*history, serializer, "internal_endpoint_limited_vr_history", mpi, _execution.ComputeStream().Context());
             if (ditr)
             {
                 WriteEquationArrays(_problem.finiteVolume.ReconstructionGuess(*_coupledMiddle->state), serializer,
-                                    "internal_middle_warm_field_", mpi);
+                                    "internal_middle_warm_field_", mpi, _execution.ComputeStream().Context());
                 WriteEquationArrays(_problem.finiteVolume.FluxReconstruction(*_coupledMiddle->state, *_execution.workspace), serializer,
-                                    "internal_middle_final_field_", mpi);
+                                    "internal_middle_final_field_", mpi, _execution.ComputeStream().Context());
                 if (const auto history = _problem.finiteVolume.LimitedVRHistory(*_coupledMiddle->state))
-                    Runtime::WriteArray(*history, serializer, "internal_middle_limited_vr_history", mpi);
+                    WriteStateArray(*history, serializer, "internal_middle_limited_vr_history", mpi, _execution.ComputeStream().Context());
             }
         }
         serializer->CloseFile();

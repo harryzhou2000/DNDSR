@@ -3,11 +3,72 @@
 
 #include "Cauchy/IO/ProgressOutput.hpp"
 #include "Cauchy/IO/OutputPlan.hpp"
+#include "Cauchy/IO/OutputQueue.hpp"
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <future>
+#include <thread>
+#include <atomic>
+
+TEST_CASE("Output queue snapshots precede later mutations and writes stay ordered")
+{
+    using Queue = DNDS::Cauchy::OutputQueue;
+    std::atomic<bool> failed{false}, wrongThread{false};
+    const auto controller = std::this_thread::get_id();
+    std::vector<int> source{1, 2, 3}, observed;
+    std::promise<void> started, release;
+    auto startedEvent = started.get_future();
+    auto releaseEvent = release.get_future().share();
+    Queue queue([&](std::exception_ptr)
+                { failed = true; }, 2);
+    queue.Enqueue([&]() -> Queue::Action
+                  {
+        CHECK(std::this_thread::get_id() == controller);
+        auto snapshot = source;
+        return [&, snapshot = std::move(snapshot)]
+        {
+            wrongThread.store(std::this_thread::get_id() == controller);
+            started.set_value();
+            releaseEvent.wait();
+            observed.insert(observed.end(), snapshot.begin(), snapshot.end());
+        }; });
+    startedEvent.wait();
+    source = {4, 5};
+    queue.Enqueue([&]() -> Queue::Action
+                  {
+        auto snapshot = source;
+        return [&, snapshot = std::move(snapshot)] { observed.insert(observed.end(), snapshot.begin(), snapshot.end()); }; });
+    source = {99};
+    release.set_value();
+    queue.Drain();
+    CHECK_FALSE(failed.load());
+    CHECK_FALSE(wrongThread.load());
+    CHECK(observed == std::vector<int>{1, 2, 3, 4, 5});
+    queue.Close();
+}
+
+TEST_CASE("Output queue records a terminal writer failure without running later work")
+{
+    using Queue = DNDS::Cauchy::OutputQueue;
+    std::atomic<int> failures{0};
+    // Returning from this handler is specifically a UT allowance. Solver
+    // collective writers must abort locally, never catch and resume.
+    Queue queue([&](std::exception_ptr)
+                { ++failures; });
+    queue.Enqueue([]() -> Queue::Action
+                  { return []
+                    { throw std::runtime_error("test writer failure"); }; });
+    CHECK_THROWS_AS(queue.Drain(), std::runtime_error);
+    bool preparedAgain = false;
+    CHECK_THROWS(queue.Enqueue([&]() -> Queue::Action
+                               { preparedAgain = true; return [] {}; }));
+    CHECK_FALSE(preparedAgain);
+    CHECK(failures.load() == 1);
+    queue.Close();
+}
 
 namespace C = DNDS::Cauchy;
 

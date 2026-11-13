@@ -9,6 +9,8 @@
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -73,6 +75,34 @@ namespace DNDS::Cauchy::CPU
         bool useStencil = false, preparedWaveJump = false, preparedPressureMinimum = false, produceLow = false;
         real time = 0;
     };
+    /// Point-local dynamic storage allocated once by the operator. Face output
+    /// and cell output fields remain explicit views in EquationRHSRequest.
+    struct EquationRHSPointScratch
+    {
+        EquationFVDetail::PointScratch left, right, face, cellMean;
+        std::vector<real> integrated, flux, speciesFlux, integratedLow, lowFlux;
+        ViscousFluxScratch transport;
+        CFV::Math::SmallMatrix basis;
+        EquationRHSPointScratch(index width, int species, bool low)
+            : left(width), right(width), face(width), cellMean(width), integrated(size_t(width)),
+              flux(size_t(width)), speciesFlux(size_t(std::max(0, species - 1))),
+              integratedLow(low ? size_t(width) : 0), lowFlux(low ? size_t(width) : 0), transport(species) {}
+    };
+    struct EquationRHSWorkerScratch
+    {
+        PointEvaluator evaluator;
+        EquationRHSPointScratch scratch;
+        NumericalResult<index> result{index(0)};
+        EquationRHSWorkerScratch(PointEvaluator value, index width, int species, bool low)
+            : evaluator(std::move(value)), scratch(width, species, low) {}
+    };
+    /// Two independent passes separated by the OMP join: face evaluation first,
+    /// then cell gather. Mutable physics and scratch are exclusive per slot.
+    NumericalResult<index> EvaluateEquationFlux(const EquationRHSRequest &, const EquationSystem &,
+                                                const BoundaryPointOperator &, const Riemann::RiemannFlux &,
+                                                SpanView<EquationRHSWorkerScratch>, EquationLayoutView<const real>,
+                                                EquationLayoutView<const real>, EquationLayoutView<real>,
+                                                EquationLayoutView<real>, CFV::ReconstructionRegion) noexcept;
     /// Shape dispatch and all numeric instantiations stay in the CPU TU.
     /// Returns local fallback count; the facade publishes diagnostics afterward.
     NumericalResult<index> EvaluateEquationFlux(const EquationRHSRequest &, const EquationSystem &,

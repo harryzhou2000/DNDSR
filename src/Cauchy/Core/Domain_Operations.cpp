@@ -161,12 +161,13 @@ namespace DNDS::Cauchy
                 (!_state.timeStepper || _state.timeStepper->HasPendingTrial()),
             "domain has no complete candidate");
         auto data = std::make_unique<CandidateReservation::Data>(*this);
+        _execution.Synchronize();
         try
         {
             data->destination =
-                std::make_unique<EquationDofs::WriteScope>(_state.accepted.WriteOwned());
+                std::make_unique<EquationDofs::WriteScope>(_state.accepted.WriteOwned(_execution.ComputeStream().Context()));
             data->source =
-                std::make_unique<EquationDofs::ReadScope>(_state.trial.ReadOwned());
+                std::make_unique<EquationDofs::ReadScope>(_state.trial.ReadOwned(_execution.ComputeStream().Context()));
         }
         catch (...)
         {

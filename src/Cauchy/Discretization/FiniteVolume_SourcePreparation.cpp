@@ -5,6 +5,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Cauchy/Physics/PhysicalFlux.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/PointWorkerContexts.hpp"
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Physics/ViscousFlux.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
@@ -14,6 +15,24 @@ namespace DNDS::Cauchy
 {
     namespace R = Runtime;
     using namespace EquationFVDetail;
+
+    namespace
+    {
+        NumericalStatus PrepareSourceJacobianCPU(const CPU::SourceKernelRequest &request,
+                                                 const EquationSystem &equation, PointEvaluator &evaluator, bool quadrature)
+        {
+            // The caller already holds the mixture lease. Reuse it rather than
+            // reserving another bounded-pool worker and risking self-starvation.
+            if (equation.HasMixture() || OMP::DistributedThreads() == 1)
+                return quadrature ? CPU::AddQuadratureSourceJacobian(request, equation, evaluator)
+                                  : CPU::AddMeanSourceJacobian(request, equation, evaluator);
+            auto workers = MakeCPUPointWorkers<CPU::SourceWorkerScratch>(equation, std::nullopt,
+                                                                         {request.ransFirst >= 0, false, bool(request.linearization), request.chemical, request.chemical}, request.components);
+            const SpanView<CPU::SourceWorkerScratch> slots{workers.data(), index(workers.size())};
+            return quadrature ? CPU::AddQuadratureSourceJacobian(request, equation, slots)
+                              : CPU::AddMeanSourceJacobian(request, equation, slots);
+        }
+    }
 
     void FiniteVolume::Workspace::SampleSourceState(const EquationDofs &state, real time)
     {
@@ -160,7 +179,7 @@ namespace DNDS::Cauchy
         request.ransMean = ransMean;
         const R::MetadataBuffer<RHSScalarView> sampleMetadata(samples);
         request.samples = sampleMetadata.HostView();
-        RequireNumericalSuccess(CPU::AddQuadratureSourceJacobian(request, owner->equation, evaluator), "quadrature source Jacobian");
+        RequireNumericalSuccess(PrepareSourceJacobianCPU(request, owner->equation, evaluator, true), "quadrature source Jacobian");
         return true;
     }
 
@@ -269,7 +288,7 @@ namespace DNDS::Cauchy
             request.linearization = *linearization;
         const R::MetadataBuffer<EquationBlockReadView> blockMetadata(blocks);
         request.blocks = blockMetadata.HostView();
-        RequireNumericalSuccess(CPU::AddMeanSourceJacobian(request, owner->equation, evaluator), "mean source Jacobian");
+        RequireNumericalSuccess(PrepareSourceJacobianCPU(request, owner->equation, evaluator, false), "mean source Jacobian");
         return true;
     }
 
@@ -294,13 +313,13 @@ namespace DNDS::Cauchy
             return true;
         if (!sourceState || sourceTime != time)
             return false;
-        const auto means = state.ReadOwned();
+        const auto means = state.ReadOwned({state.Device(), nullptr});
         std::optional<EquationDofs::ReadScope> coefficients;
         if (activeFluxCoefficients)
         {
             if (!sourceCoefficients)
                 return false;
-            coefficients.emplace(FluxCoefficients().ReadOwned());
+            coefficients.emplace(FluxCoefficients().ReadOwned({state.Device(), nullptr}));
             if (!sourceCoefficients->Current(FluxCoefficients()))
                 return false;
         }

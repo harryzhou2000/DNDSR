@@ -1,5 +1,6 @@
 #include "Cauchy/Discretization/PerfectGasKernelPoint.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
+#include "Physics/RANS/Model.hpp"
 
 namespace DNDS::Cauchy
 {

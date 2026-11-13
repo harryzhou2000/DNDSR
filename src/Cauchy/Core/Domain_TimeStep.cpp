@@ -45,9 +45,17 @@ namespace DNDS::Cauchy
         }
         _problem.finiteVolume.EvaluateMean(_state.accepted, *_execution.timePPResidual, *_execution.timePPWorkspace,
                                            _execution.Engine(), _execution.ComputeStream(), _state.time);
-        result = _problem.finiteVolume.LimitPhysicalStep(_state.accepted, *_execution.timePPResidual,
-                                                         _problem.admissibility->View().thermal, requestedDt,
-                                                         _timePP.relax, _timePP.scale, _timeCompressionPower);
+        MPI::LocalStage(mpi, [&]
+                        {
+            if (!_execution.timeStages)
+                _execution.timeStages.emplace(_problem.finiteVolume.Metrics(), _execution.ComputeStream().Context());
+            result = _execution.timeStages->LimitPhysicalStep(_execution.Engine(), _execution.ComputeStream(),
+                _state.accepted, *_execution.timePPResidual, *_problem.admissibility,
+                requestedDt, _timePP.relax, _timePP.scale, _timeCompressionPower); });
+        result.minimumAlpha = MPI::AllreduceValue<MPI::Reduction::Min>(result.minimumAlpha, mpi.comm);
+        result.limitedCells = MPI::AllreduceValue<MPI::Reduction::Sum>(result.limitedCells, mpi.comm);
+        if (result.limitedCells)
+            result.dt *= result.minimumAlpha;
         // Last accepted dt, never a rejected/prepared proposal, controls growth.
         // Division avoids overflow in an unnecessary previousDt*limit product.
         if (_state.lastAcceptedDt > 0 && result.dt / _state.lastAcceptedDt > _timePP.increaseLimit)

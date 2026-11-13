@@ -4,6 +4,19 @@
 #include "DNDS/Core/OMP.hpp"
 namespace DNDS::Cauchy::CPU
 {
+    NumericalStatus ValidateFaceCharacteristicMatrices(
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::TableRows> forward,
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::TableRows> inverse) noexcept
+    {
+        using Matrix = Eigen::Matrix<real, 5, 5>;
+        return OMP::ForRowsStatus(0, forward.RowCount(), [&](index iFace) -> NumericalStatus
+                                  {
+            const Eigen::Map<const Matrix> left(forward[iFace].data()), right(inverse[iFace].data());
+            const Matrix product = left * right;
+            if (!left.allFinite() || !right.allFinite() || !product.isApprox(Matrix::Identity(), 1e-10))
+                return NumericalStatus{NumericalError::InvalidState}.At(-1, iFace);
+            return {}; });
+    }
     NumericalResult<index> PrepareFaceCharacteristicMatrices(FiniteVolumeStencilView stencil, Geom::UnstructuredMeshView mesh,
                                                              CFV::FiniteVolumeHostView metric, RHSFieldView u, index firstComponent,
                                                              Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> l,

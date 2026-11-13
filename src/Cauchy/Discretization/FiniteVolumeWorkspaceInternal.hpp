@@ -5,6 +5,7 @@
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
+#include "Cauchy/Discretization/BoundaryForceReduction.hpp"
 
 #include <chrono>
 #include <atomic>
@@ -78,6 +79,24 @@ namespace DNDS::Cauchy
         bool profileAllRanks = std::getenv("DNDS_CAUCHY_PROFILE_ALL_RANKS") != nullptr;
         std::array<real, ProfilePhases> profileSeconds{};
         std::array<index, ProfilePhases> profileCalls{};
+        /// Optional CPU-lane interval, retained independently of the workspace.
+        /// Includes work and scheduling gaps between the two queued markers;
+        /// it is not a CUDA kernel duration or a sum of exclusive CPU cycles.
+        struct QueuedPhaseSample
+        {
+            ProfilePhase phase;
+            std::chrono::steady_clock::time_point start;
+            real seconds = 0;
+            std::atomic<bool> complete{false};
+            explicit QueuedPhaseSample(ProfilePhase value) : phase(value) {}
+        };
+        std::vector<std::shared_ptr<QueuedPhaseSample>> queuedPhaseSamples;
+        std::shared_ptr<QueuedPhaseSample> BeginQueuedPhase(Runtime::EagerEngine &, const Runtime::ExecutionStream &, ProfilePhase);
+        static void EndQueuedPhase(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                   const std::shared_ptr<QueuedPhaseSample> &);
+        /// Merge completed optional samples on the controller after the join.
+        /// No atomics or shared counters occur inside numerical loops.
+        void PublishQueuedPhases();
         struct PhaseTime
         {
             using Clock = std::chrono::steady_clock;
@@ -97,12 +116,13 @@ namespace DNDS::Cauchy
                 const int rank = work->owner->mesh->getMPI().rank;
                 if (++work->profileCalls[phase] % 32 == 0 && phase == TotalPhase && (!rank || work->profileAllRanks))
                 {
-                    const auto record = Json{{"rank", rank}, {"owned_cells", work->owner->metrics.NumCell()}, {"meanOnly", work->meanOnly}, {"reconstruction", work->owner->settings.numerics.reconstruction}, {"firstOrderConvection", work->owner->settings.numerics.firstOrderConvection}, {"phases", {"boundary", "gradient", "vr", "pp", "rhs", "sampling", "source", "evaluate"}}, {"seconds", work->profileSeconds}, {"calls", work->profileCalls}}.dump();
+                    const auto record = Json{{"rank", rank}, {"owned_cells", work->owner->metrics.NumCell()}, {"meanOnly", work->meanOnly}, {"reconstruction", work->owner->settings.numerics.reconstruction}, {"firstOrderConvection", work->owner->settings.numerics.firstOrderConvection}, {"phase_timing", work->owner->metrics.Device() == Runtime::Device::Host() ? "cpu_lane_intervals" : "host_total_only"}, {"phases", {"boundary", "gradient", "vr", "pp", "rhs", "sampling", "source", "evaluate"}}, {"seconds", work->profileSeconds}, {"calls", work->profileCalls}}.dump();
                     std::fprintf(stdout, "CAUCHY_EQUATION_FV_PROFILE %s\n", record.c_str());
                 }
             }
         };
         const bool meanOnly;
+        mutable std::optional<BoundaryForceReduction> boundaryForceReduction;
         index componentNumber = 0, physicalFieldNumber = 0;
         std::vector<Field> fields;
         EquationDofs boundary;
@@ -136,6 +156,23 @@ namespace DNDS::Cauchy
         std::optional<PreparationStatusStorage> preparationStatus;
         struct DeviceFluxData;
         std::shared_ptr<DeviceFluxData> deviceFlux;
+        struct DeviceJacobianData;
+        std::shared_ptr<DeviceJacobianData> deviceJacobian;
+        struct CharacteristicDeviceStorage;
+        std::shared_ptr<CharacteristicDeviceStorage> characteristicDevice;
+        struct ReconstructionNormStorage
+        {
+            R::Array<real> partial, result;
+        };
+        std::optional<ReconstructionNormStorage> reconstructionNorm;
+        struct CharacteristicSubmission
+        {
+            index fallbacks = 0;
+            std::atomic<bool> completed{false};
+            bool published = false;
+            std::shared_ptr<CharacteristicDeviceStorage> device;
+            uint64_t resultEpoch = 0;
+        };
         std::optional<R::TransferBinding> primitiveGradientHalo;
         struct DirectGradientPublication
         {
@@ -161,9 +198,9 @@ namespace DNDS::Cauchy
                          const std::optional<BoundaryInputs> &incoming,
                          real stageTime)
             {
-                const auto meanRead = meanValues.Read();
-                const auto inputRead = inputValues.Read();
-                const auto outputRead = outputValues.Read();
+                const auto meanRead = meanValues.Read({meanValues.GetDevice(), nullptr});
+                const auto inputRead = inputValues.Read({inputValues.GetDevice(), nullptr});
+                const auto outputRead = outputValues.Read({outputValues.GetDevice(), nullptr});
                 mean = meanValues.SharedStorage();
                 input = inputValues.SharedStorage();
                 output = outputValues.SharedStorage();
@@ -186,7 +223,7 @@ namespace DNDS::Cauchy
                          iField < values.PhysicalFieldNumber(); ++iField)
                     {
                         const auto &array = values.PhysicalField(iField).Owned();
-                        const auto read = array.Read();
+                        const auto read = array.Read({array.GetDevice(), nullptr});
                         boundary.push_back({array.SharedStorage(),
                                             array.ShapeVersion(),
                                             array.Version()});
@@ -206,9 +243,9 @@ namespace DNDS::Cauchy
             {
                 // Acquire before reading generations: checking first would
                 // permit a writer to publish a new generation in the gap.
-                const auto meanRead = meanValues.Read();
-                const auto inputRead = inputValues.Read();
-                const auto outputRead = outputValues.Read();
+                const auto meanRead = meanValues.Read({meanValues.GetDevice(), nullptr});
+                const auto inputRead = inputValues.Read({inputValues.GetDevice(), nullptr});
+                const auto outputRead = outputValues.Read({outputValues.GetDevice(), nullptr});
                 if (time != stageTime || !geometry.Valid() ||
                     reconstruction != plan.settings.numerics.reconstruction ||
                     gradient != plan.settings.numerics.gradient ||
@@ -235,7 +272,7 @@ namespace DNDS::Cauchy
                      iField < values.PhysicalFieldNumber(); ++iField)
                 {
                     const auto &array = values.PhysicalField(iField).Owned();
-                    const auto read = array.Read();
+                    const auto read = array.Read({array.GetDevice(), nullptr});
                     const auto &saved = boundary[size_t(iField)];
                     if (saved.storage.lock() != array.SharedStorage() ||
                         saved.shape != array.ShapeVersion() ||
@@ -343,6 +380,7 @@ namespace DNDS::Cauchy
         /// Reused direct-P1 CPU scratch. Workspace session access serializes
         /// these buffers; no allocation occurs in the cell/point operator.
         R::Array<real> directLimiterScratch, directPPSamples;
+        index cpuGradientWorkers = 1;
         struct WeakPublication
         {
             std::vector<std::weak_ptr<const R::ArrayStorage>> storage;
@@ -438,6 +476,16 @@ namespace DNDS::Cauchy
                   std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, bool meanTrial);
         void BindHalos(EquationDofs &state);
         void RefreshDirectGradients(const EquationDofs &state, bool ghost, real time);
+        /// Queue physical-gradient copies/projections without acquiring
+        /// mutable payload leases on the controller. Native direct gradients
+        /// and aliased P0 source gradients already contain their final values.
+        /// Dependencies are caller ordered; completed-version caching cannot
+        /// skip work while a new mean/coefficient producer is pending.
+        void SubmitDirectGradients(R::EagerEngine &, const R::ExecutionStream &,
+                                   const EquationDofs &state, bool ghost);
+        /// Record completed direct-gradient provenance after the enclosing
+        /// schedule drains. This never submits work or synchronizes a device.
+        void PublishDirectGradients(const EquationDofs &state, bool ghost, real time);
         void PrepareDirectGradientLimiter(const EquationDofs &state, bool barth);
         void ApplyDirectGradientPositivity(const EquationDofs &state);
         void PreparePrimitiveGradient(const EquationDofs &state, CFV::ReconstructionRegion region);
@@ -445,13 +493,20 @@ namespace DNDS::Cauchy
                           PointEvaluator &evaluator, RHSScalarView incoming = {});
         /// Common queued boundary producer. Mutable fields are reserved at
         /// submission, including split CPU equation layouts. The CPU evaluator
-        /// is retained until completion; CUDA uses its placed immutable policy.
+        /// is retained until completion; if absent, the CPU launcher acquires
+        /// a private evaluator from the workspace pool during execution.
+        /// CUDA uses its placed immutable policy.
         /// The caller must not share a mutable chemistry evaluator across lanes.
         void SubmitBoundary(R::EagerEngine &, const R::ExecutionStream &,
                             const EquationDofs &, bool polynomial, real time,
                             std::shared_ptr<PointEvaluator> evaluator = {},
                             OptionalRef<const R::Array<real>> incoming = {});
         void BuildPreparationStatus();
+        /// One backend-neutral numerical status segment per spatial call.
+        /// CPU leaves report during execution; CUDA summaries are inspected
+        /// only after the caller's final drain. Neither method waits implicitly.
+        void BeginNumericalStatus(R::EagerEngine &, const R::ExecutionStream &, bool withRHS);
+        void CheckNumericalStatus(bool withRHS);
         void ResetPreparationStatus(R::EagerEngine &, const R::ExecutionStream &);
         void CheckPreparationStatus();
         void AppendPreparationStatus(R::EagerEngine &, const R::ExecutionStream &, const R::Array<NumericalStatus> &);
@@ -459,8 +514,49 @@ namespace DNDS::Cauchy
         /// Primitive conversion is an operator-local backend dispatch; neither
         /// this entry nor CFV hides halo communication or host observation.
         void SubmitGradients(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, CFV::ReconstructionRegion);
+        void BuildCharacteristicStorage();
+        /// Mean-based flow-five producer; scalar extension equations remain
+        /// untouched. CPU consumes inline gas or declared cached mixture
+        /// properties, CUDA evaluates perfect-gas thermodynamics inline.
+        /// Matrices and all payload reads are reserved at submission. Follow
+        /// by WBAP on the same lane or import its event on another lane.
+        std::shared_ptr<CharacteristicSubmission> SubmitCharacteristics(
+            R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &,
+            OptionalRef<const AuxiliaryValues> auxiliary = {});
+        /// Inspect mandatory status and merge fallback counts after drain.
+        void PublishCharacteristics(const std::shared_ptr<CharacteristicSubmission> &);
+        /// Queue owned reconstruction update/reference norms, with a bounded
+        /// reusable device reduction. Observe only at a requested stopping
+        /// interval; the global reduction remains outside the async segment.
+        void SubmitReconstructionNorm(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &current);
+        std::array<real, 2> ReadReconstructionNorm() const;
         void SubmitDeviceGradientLimiter(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, bool barth, CFV::ReconstructionRegion);
         void SubmitDeviceGradientPositivity(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &);
+        /// Unsplit common direct-gradient limiter. Input/output and scratch
+        /// accesses are reserved at submission; equation dispatch stays local.
+        void SubmitGradientLimiter(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, bool barth);
+        struct GradientPositivitySubmission
+        {
+            index limited = 0;
+            real minimum = 1;
+            std::optional<R::Array<index>> deviceCount;
+            std::optional<R::Array<real>> deviceMinimum;
+            uint64_t countEpoch = 0, minimumEpoch = 0;
+            std::atomic<bool> completed{false};
+            bool published = false;
+        };
+        struct LimiterStatisticsStorage
+        {
+            R::Array<index> partialCount, count;
+            R::Array<real> partialMinimum, minimum;
+        };
+        std::optional<LimiterStatisticsStorage> gradientStatistics;
+        std::shared_ptr<GradientPositivitySubmission> pendingGradientStatistics;
+        /// Record CPU results or device scalar reductions. Publish after the
+        /// enclosing drain and numerical-status check, before reusing scratch.
+        std::shared_ptr<GradientPositivitySubmission> SubmitGradientPositivity(
+            R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &);
+        void PublishGradientPositivity(const std::shared_ptr<GradientPositivitySubmission> &);
         /// Device branch of the boundary operator; called by the common
         /// spatial schedule, never from a numerical leaf. No host wait.
         void SubmitDeviceBoundary(R::EagerEngine &, const R::ExecutionStream &,
@@ -525,7 +621,19 @@ namespace DNDS::Cauchy
         /// quadrature as CPU. Errors append to the active preparation segment.
         /// Sampling-only calls omit result; publication follows caller drain.
         void SubmitDeviceVolumeSource(R::EagerEngine &, const R::ExecutionStream &,
-                                      const EquationDofs &, OptionalRef<EquationDofs> result, real time);
+                                      const EquationDofs &, OptionalRef<EquationDofs> result, real time,
+                                      OptionalRef<EquationDofs> lowOrder = {});
+        /// Common CPU/CUDA source addition. Direct RANS gradients must already
+        /// be prepared; modal samples are submitted through CFV. Only rigid-
+        /// frame flow sources are also added to the explicit lowOrder output,
+        /// preserving the synchronous source contract. An optional evaluator
+        /// is retained and exclusive to this lane; otherwise a worker from
+        /// the retained workspace pool is acquired only during execution.
+        /// Source provenance is published separately after the caller's drain.
+        void SubmitVolumeSource(R::EagerEngine &, const R::ExecutionStream &,
+                                const EquationDofs &, OptionalRef<EquationDofs> result, real time,
+                                std::shared_ptr<PointEvaluator> evaluator = {},
+                                OptionalRef<EquationDofs> lowOrder = {});
         bool AddRHSQuadratureSourceJacobian(
             const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
             DiagonalStorage storage, real scale, PointEvaluator &evaluator,

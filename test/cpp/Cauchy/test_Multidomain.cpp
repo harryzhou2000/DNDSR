@@ -387,6 +387,10 @@ TEST_CASE("DITR freezes distinct rotating midpoint and endpoint interface packet
         input["domains"][1]["overrides"] = {
             {"motion",
              {{"angularVelocity", {0, 0, .02}}, {"center", {5, 5, 0}}}}};
+        // The shared receiver schedule also supports different access-check
+        // policies and launchers without a host wait at the packet boundary.
+        input["domains"][0]["overrides"]["execution"]["checkAccess"] = false;
+        input["domains"][1]["overrides"]["execution"]["hostThreads"] = 1;
         for (auto &connection : input["interfaces"])
             connection["refreshCadence"] = "nonlinearIteration";
         const auto factory = [](I iDomain, const auto &, const auto &domainMPI)
@@ -444,12 +448,24 @@ TEST_CASE("DITR freezes distinct rotating midpoint and endpoint interface packet
                 epoch.couplingIteration = round;
                 auto refresh = round == 0 ? coupling.BeginRefresh(donors, time, epoch)
                                           : coupling.BeginValueRefresh(donors, time, epoch);
+                // A receiver can retain its exact round before completion;
+                // copying the handle must not lose the deferred publication.
+                std::vector<std::optional<C::BoundaryInputs>> pending(2);
+                for (I iDomain = 0; iDomain < 2; ++iDomain)
+                    if (local[iDomain])
+                    {
+                        pending[size_t(iDomain)] = refresh.PendingInputs(iDomain);
+                        REQUIRE(pending[size_t(iDomain)]);
+                        CHECK_THROWS(pending[size_t(iDomain)]->Time());
+                    }
                 refresh.Complete();
                 for (I iDomain = 0; iDomain < 2; ++iDomain)
                     if (local[iDomain])
                     {
                         const auto packet = refresh.Inputs(iDomain);
                         REQUIRE(packet);
+                        CHECK(pending[size_t(iDomain)]->SamePublication(*packet));
+                        CHECK_NOTHROW(local[iDomain]->ValidateBoundaryInputs(*pending[size_t(iDomain)], time));
                         CHECK(packet->Epoch().coupledStage == uint64_t(slot));
                         CHECK(packet->Epoch().couplingIteration == uint64_t(round));
                         CHECK(packet->Time() == time);

@@ -1,7 +1,9 @@
 #include "CFV/Detail/ReconstructionData.hpp"
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"
+#include "CFV/CPU/ReconstructionKernels.hpp"
 #include "DNDS/Algebra/EigenView.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "DNDS/Runtime/Execution/EagerArrayBatch.hpp"
 
 namespace DNDS::CFV
 {
@@ -33,22 +35,212 @@ namespace DNDS::CFV
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(coefficients.Owned().Storage(), work.temporary.Owned().Storage()),
                                   "reconstruction input and temporary storage overlap");
         }
-        void AddScheduledAccess(std::vector<R::ScheduledBufferAccess> &accesses, const R::Buffer &buffer, R::AccessMode mode)
+        void CheckRegion(const Detail::ReconstructionData &data, ReconstructionRegion region)
         {
-            const auto identity = buffer.Identity();
-            for (auto &entry : accesses)
-                if (entry.allocation == identity)
-                {
-                    if (entry.mode != mode)
-                        entry.mode = R::AccessMode::ReadWrite;
-                    return;
-                }
-            accesses.emplace_back(buffer, mode);
+            data.workPartition->Validate();
+            DNDS_check_throw_info(region == ReconstructionRegion::All || region == ReconstructionRegion::Core || region == ReconstructionRegion::HaloDependent,
+                                  "invalid reconstruction work region");
         }
-        template <class T>
-        void AddScheduledAccess(std::vector<R::ScheduledBufferAccess> &accesses, const R::Array<T> &array, R::AccessMode mode)
+        void CheckSweep(const Detail::ReconstructionData &data, const FVField &mean, const FVField &input,
+                        const ReconstructionWorkspace &work, const ReconstructionBoundaryValues &boundary,
+                        ReconstructionRegion region, const FVField *target, const R::Array<real> *alpha)
         {
-            AddScheduledAccess(accesses, array.Storage(), mode);
+            CheckWorkspace(&data, work, input);
+            Detail::ValidateVectorBlocks(work.components, work.periodicVectorStarts);
+            data.metrics.ValidateField(mean, work.components);
+            DNDS_check_throw_info(boundary.plan == data.identity, "boundary quadrature values belong to another plan");
+            CheckArray(boundary.values, data.boundaryPoints.RowCount(), work.components);
+            R::TableRows::Validate(boundary.values.Layout());
+            CheckRegion(data, region);
+            for (const auto *source : {&input.Owned(), &input.Ghost(), &mean.Owned(), &mean.Ghost(), &boundary.values})
+                DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), work.temporary.Owned().Storage()),
+                                      "reconstruction output aliases input");
+            DNDS_check_throw_info(bool(target) == bool(alpha), "limited reconstruction requires both target and alpha");
+            if (target)
+            {
+                data.metrics.ValidateField(*target, data.n * work.components);
+                CheckArray(*alpha, data.metrics.NumCell(), 1);
+                for (const auto *source : {&target->Owned(), &target->Ghost(), alpha})
+                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), work.temporary.Owned().Storage()),
+                                          "reconstruction output aliases penalty input");
+            }
+        }
+        void CheckLimiter(const Detail::ReconstructionData &data, const FVField &coefficients,
+                          const ReconstructionWorkspace &work, int order, FaceCharacteristicTransformRef transform,
+                          ReconstructionRegion region, const R::Array<real> *indicator, real threshold)
+        {
+            CheckWorkspace(&data, work, coefficients);
+            R::TableRows::Validate(work.scratch.Layout());
+            CheckRegion(data, region);
+            DNDS_check_throw_info(order >= 1 && order <= data.settings.maxOrder && std::isfinite(threshold),
+                                  "invalid limiter order or threshold");
+            Detail::ValidateVectorBlocks(work.components, work.periodicVectorStarts);
+            if (indicator)
+                CheckArray(*indicator, data.metrics.NumCell(), 1);
+            if (!transform)
+                return;
+            const auto &value = transform->get();
+            DNDS_check_throw_info(value.plan == data.identity && value.first >= 0 && value.count >= 0 &&
+                                      value.first <= work.components && value.count <= work.components - value.first,
+                                  "invalid face characteristic transform range/plan");
+            if (!value.count)
+                return;
+            CheckArray(value.forward, data.metrics.NumFaceProc(), value.count * value.count);
+            CheckArray(value.inverse, data.metrics.NumFaceProc(), value.count * value.count);
+            R::TableRows::Validate(value.forward.Layout());
+            R::TableRows::Validate(value.inverse.Layout());
+            DNDS_check_throw_info(value.forwardIdentity == value.forward.Identity() && value.inverseIdentity == value.inverse.Identity(),
+                                  "face characteristic buffers replaced");
+            if (value.validation == CharacteristicValidation::Frozen)
+                DNDS_check_throw_info(value.forwardVersion == value.forward.Version() && value.inverseVersion == value.inverse.Version() && value.forwardVersion != 0,
+                                      "face characteristic matrices changed; finalize them before limiting");
+            else
+                DNDS_check_throw_info(value.validation == CharacteristicValidation::Queued, "unknown characteristic publication policy");
+        }
+
+        /// Immutable setup arrays may retain ordinary read scopes from
+        /// submission through execution; no queued producer writes these plan
+        /// arrays. Mutable field operands below instead reserve access through
+        /// SubmitArrayBatch at submission, never by an execution-time Read().
+        struct HostReconstructionRead
+        {
+            std::shared_ptr<const Detail::ReconstructionData> data;
+            Geom::MeshReadAccess mesh;
+            std::vector<index> vectorStarts;
+            R::Array<index>::ReadLease offsets, neighbors;
+            R::Array<real>::ReadLease rotations;
+            R::Array<uint8_t>::ReadLease rotationActive;
+            std::optional<R::Array<index>::ReadLease> boundaryOffsets, faces;
+            std::optional<R::Array<real>::ReadLease> matrices, vectors, injection, secondary;
+            CPU::ReconstructionWorkSelection selection;
+
+            HostReconstructionRead(std::shared_ptr<const Detail::ReconstructionData> values, Geom::MeshReadAccess meshRead,
+                                   const ReconstructionWorkspace &work, ReconstructionRegion region, bool limiter)
+                : data(std::move(values)), mesh(std::move(meshRead)), vectorStarts(work.periodicVectorStarts),
+                  offsets(data->offsets.Read()), neighbors(data->neighbors.Read()), rotations(data->neighborRotation.Read()),
+                  rotationActive(data->neighborRotationActive.Read())
+            {
+                const auto &rows = region == ReconstructionRegion::Core ? data->workPartition->Core() : data->workPartition->HaloDependent();
+                selection.rows = {rows.data(), index(rows.size())};
+                selection.coreFirstPosition = {data->coreFirstPosition.data(), index(data->coreFirstPosition.size())};
+                selection.partitionStarts = data->hostPartitionStarts.HostView();
+                selection.vectorStarts = {vectorStarts.data(), index(vectorStarts.size())};
+                selection.owned = data->metrics.NumCell();
+                selection.coreCount = index(data->workPartition->Core().size());
+                selection.workers = data->hostThreads;
+                selection.all = region == ReconstructionRegion::All;
+                selection.core = region == ReconstructionRegion::Core;
+                selection.coreFirst = !selection.all || data->settings.coreFirst;
+                if (limiter)
+                {
+                    faces.emplace(data->faces.Read());
+                    secondary.emplace(data->secondary->Read());
+                }
+                else
+                {
+                    boundaryOffsets.emplace(data->boundaryOffsets.Read());
+                    matrices.emplace(data->matrixAInvB->Read());
+                    vectors.emplace(data->vectorAInvB->Read());
+                    injection.emplace(data->boundaryInjection->Read());
+                }
+            }
+            CPU::ReconstructionSweepView Sweep(index components) const
+            {
+                CPU::ReconstructionSweepView result;
+                result.offsets = offsets.View<R::FixedRows<1>>();
+                result.neighbors = neighbors.View<R::FixedRows<1>>();
+                result.boundaryOffsets = boundaryOffsets->View<R::FixedRows<1>>();
+                result.matrices = matrices->View<R::TableRows>();
+                result.vectors = vectors->View<R::TableRows>();
+                result.injection = injection->View<R::TableRows>();
+                result.rotations = rotations.View<R::FixedRows<9>>();
+                result.rotationActive = rotationActive.View<R::FixedRows<1>>();
+                result.modes = data->n;
+                result.components = components;
+                result.relaxation = data->settings.jacobiRelax;
+                result.sor = data->settings.SORInstead;
+                result.rotated = data->hasRotatedPeriodicity;
+                return result;
+            }
+            CPU::ReconstructionLimiterView Limiter(index components, int order) const
+            {
+                CPU::ReconstructionLimiterView result;
+                result.offsets = offsets.View<R::FixedRows<1>>();
+                result.neighbors = neighbors.View<R::FixedRows<1>>();
+                result.faces = faces->View<R::FixedRows<1>>();
+                result.secondary = secondary->View<R::TableRows>();
+                result.rotations = rotations.View<R::FixedRows<9>>();
+                result.rotationActive = rotationActive.View<R::FixedRows<1>>();
+                result.modes = data->n;
+                result.components = components;
+                result.begin = order == 1 ? 0 : Math::PolynomialSize(data->metrics.Dimension(), order - 1) - 1;
+                result.orderModes = Math::PolynomialSize(data->metrics.Dimension(), order) - 1 - result.begin;
+                result.centralWeight = data->settings.WBAP_nStd;
+                result.rotated = data->hasRotatedPeriodicity;
+                return result;
+            }
+        };
+        template <class T>
+        R::ArrayView<T, R::AccessBoundsChecks, R::TableRows> TableView(R::ArrayView<T, R::AccessBoundsChecks, R::UniformTableRows> view)
+        {
+            // TableRows physical-layout validity is checked before submission.
+            return {view.data, view.offsets, view.rows, view.width, view.stride, view.sizes, view.kind, view.device};
+        }
+        using ReadRows = CPU::ReconstructionReadRows;
+        using WriteRows = CPU::ReconstructionWriteRows;
+        using ReadOperand = R::ArrayOperand<real, false, R::UniformTableRows>;
+        using WriteOperand = R::ArrayOperand<real, true, R::UniformTableRows>;
+
+        void SubmitHostSweep(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                             std::shared_ptr<const Detail::ReconstructionData> data, Geom::MeshReadAccess mesh,
+                             const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                             const ReconstructionBoundaryValues &boundary, ReconstructionRegion region,
+                             const FVField *target, const R::Array<real> *alpha)
+        {
+            CheckSweep(*data, mean, input, work, boundary, region, target, alpha);
+            auto retained = std::make_shared<HostReconstructionRead>(data, std::move(mesh), work, region, false);
+            auto view = retained->Sweep(work.components);
+            std::vector<ReadOperand> reads{R::ReadAs<R::UniformTableRows>(mean.Owned()),
+                                           R::ReadAs<R::UniformTableRows>(input.Owned()),
+                                           R::ReadAs<R::UniformTableRows>(boundary.values)};
+            index meanGhost = -1, inputGhost = -1, targetSlot = -1, alphaSlot = -1;
+            const auto add = [&](const R::Array<real> &array)
+            {
+                const index slot = index(reads.size());
+                reads.push_back(R::ReadAs<R::UniformTableRows>(array));
+                return slot;
+            };
+            if (region != ReconstructionRegion::Core)
+            {
+                meanGhost = add(mean.Ghost());
+                inputGhost = add(input.Ghost());
+            }
+            if (target)
+            {
+                targetSlot = add(target->Owned());
+                alphaSlot = add(*alpha);
+                view.limited = true;
+            }
+            // Split SOR consumes core results already written to this output.
+            // Its dependent pass is therefore a read/write operand, not merely
+            // a write reservation, even though the input coefficients stay frozen.
+            std::vector<WriteOperand> writes{view.sor && region == ReconstructionRegion::HaloDependent
+                                                 ? R::ReadWriteAs<R::UniformTableRows>(work.temporary.Owned())
+                                                 : R::WriteAs<R::UniformTableRows>(work.temporary.Owned())};
+            R::SubmitArrayBatch(engine, stream, [retained, view, meanGhost, inputGhost, targetSlot, alphaSlot](R::ExecutionContext, SpanView<const ReadRows> inputs, SpanView<const WriteRows> outputs) mutable
+                                {
+                                    view.means = {inputs[0], meanGhost >= 0 ? inputs[meanGhost] : ReadRows{}};
+                                    view.current = inputs[1];
+                                    view.boundary = TableView(inputs[2]);
+                                    view.ghost = inputGhost >= 0 ? inputs[inputGhost] : ReadRows{};
+                                    view.output = outputs[0];
+                                    if (view.limited)
+                                    {
+                                        view.target = inputs[targetSlot];
+                                        view.penalty = inputs[alphaSlot];
+                                    }
+                                    const auto status = CPU::ReconstructionSweep(view, retained->selection);
+                                    DNDS_check_throw_info(status, "reconstruction penalty alpha must be finite and in [0,1]"); }, std::move(reads), std::move(writes));
         }
     }
     const FiniteVolumePlan &VariationalReconstructionPlan::Metrics() const
@@ -345,38 +537,12 @@ namespace DNDS::CFV
             return;
         }
         Require(ReconstructionOperation::Sweep);
+        Validate();
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                               "CPU reconstruction submission needs a matching host stream");
-        std::vector<R::ScheduledBufferAccess> accesses;
-        const auto add = [&](const auto &array, R::AccessMode mode)
-        { AddScheduledAccess(accesses, array, mode); };
-        add(mean.Owned(), R::AccessMode::Read);
-        add(input.Owned(), R::AccessMode::Read);
-        if (region != ReconstructionRegion::Core)
-        {
-            add(mean.Ghost(), R::AccessMode::Read);
-            add(input.Ghost(), R::AccessMode::Read);
-        }
-        add(boundary.values, R::AccessMode::Read);
-        add(work.temporary.Owned(), R::AccessMode::Write);
-        add(_data->offsets, R::AccessMode::Read);
-        add(_data->neighbors, R::AccessMode::Read);
-        add(_data->boundaryOffsets, R::AccessMode::Read);
-        add(_data->neighborRotation, R::AccessMode::Read);
-        add(_data->neighborRotationActive, R::AccessMode::Read);
-        for (const auto *array : {&*_data->matrixAInvB, &*_data->vectorAInvB, &*_data->boundaryInjection})
-            add(*array, R::AccessMode::Read);
-        auto plan = *this;
-        auto retainedMean = mean;
-        auto retainedInput = input;
-        auto retainedWork = work;
-        auto retainedBoundary = boundary;
-        engine.SubmitOperation(
-            stream,
-            [plan = std::move(plan), retainedMean = std::move(retainedMean), retainedInput = std::move(retainedInput),
-             retainedWork = std::move(retainedWork), retainedBoundary = std::move(retainedBoundary), region](R::ExecutionContext) mutable
-            { plan.DoReconstructionIterTo(retainedMean, retainedInput, retainedWork, retainedBoundary, region); },
-            [](std::exception_ptr) noexcept {}, std::move(accesses));
+        SubmitHostSweep(engine, stream, _data,
+                        Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()),
+                        mean, input, work, boundary, region, nullptr, nullptr);
     }
     void VariationalReconstructionPlan::SubmitReconstructionIterLimitedTo(
         R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &mean, const FVField &input,
@@ -389,220 +555,47 @@ namespace DNDS::CFV
             return;
         }
         Require(ReconstructionOperation::Sweep);
+        Validate();
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                               "CPU limited reconstruction submission needs a matching host stream");
-        std::vector<R::ScheduledBufferAccess> accesses;
-        const auto add = [&](const auto &array, R::AccessMode mode)
-        { AddScheduledAccess(accesses, array, mode); };
-        add(mean.Owned(), R::AccessMode::Read);
-        add(input.Owned(), R::AccessMode::Read);
-        if (region != ReconstructionRegion::Core)
-        {
-            add(mean.Ghost(), R::AccessMode::Read);
-            add(input.Ghost(), R::AccessMode::Read);
-        }
-        add(boundary.values, R::AccessMode::Read);
-        add(target.Owned(), R::AccessMode::Read);
-        add(alpha, R::AccessMode::Read);
-        add(work.temporary.Owned(), R::AccessMode::Write);
-        add(_data->offsets, R::AccessMode::Read);
-        add(_data->neighbors, R::AccessMode::Read);
-        add(_data->boundaryOffsets, R::AccessMode::Read);
-        add(_data->neighborRotation, R::AccessMode::Read);
-        add(_data->neighborRotationActive, R::AccessMode::Read);
-        for (const auto *array : {&*_data->matrixAInvB, &*_data->vectorAInvB, &*_data->boundaryInjection})
-            add(*array, R::AccessMode::Read);
-        auto plan = *this;
-        auto retainedMean = mean;
-        auto retainedInput = input;
-        auto retainedWork = work;
-        auto retainedBoundary = boundary;
-        auto retainedTarget = target;
-        auto retainedAlpha = alpha;
-        engine.SubmitOperation(
-            stream,
-            [plan = std::move(plan), retainedMean = std::move(retainedMean), retainedInput = std::move(retainedInput),
-             retainedWork = std::move(retainedWork), retainedBoundary = std::move(retainedBoundary),
-             retainedTarget = std::move(retainedTarget), retainedAlpha = std::move(retainedAlpha), region](R::ExecutionContext) mutable
-            { plan.DoReconstructionIterLimitedTo(retainedMean, retainedInput, retainedWork, retainedBoundary,
-                                                 retainedTarget, retainedAlpha, region); },
-            [](std::exception_ptr) noexcept {}, std::move(accesses));
+        SubmitHostSweep(engine, stream, _data,
+                        Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()),
+                        mean, input, work, boundary, region, &target, &alpha);
     }
     void VariationalReconstructionPlan::DoReconstructionIterImpl(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
                                                                  const ReconstructionBoundaryValues &boundary, ReconstructionRegion region,
                                                                  const FVField *target, const R::Array<real> *alpha) const
     {
         Require(ReconstructionOperation::Sweep);
-        auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
-        CheckWorkspace(_data.get(), work, input);
-        const index nv = work.components, n = _data->n;
-        Detail::ValidateVectorBlocks(nv, work.periodicVectorStarts);
-        Metrics().ValidateField(mean, nv);
-        DNDS_check_throw_info(boundary.plan == _identity, "boundary quadrature values belong to another plan");
-        CheckArray(boundary.values, NumBoundaryQuadrature(), nv);
-        // All leases and layout projection happen before the numerical loops.
-        Metrics().ValidateField(input, n * nv);
-        _data->workPartition->Validate();
-        DNDS_check_throw_info(region == ReconstructionRegion::All || region == ReconstructionRegion::Core || region == ReconstructionRegion::HaloDependent,
-                              "invalid reconstruction region");
-        DNDS_check_throw_info(!Algebra::Detail::Overlaps(input.Owned().Storage(), work.temporary.Owned().Storage()) &&
-                                  !Algebra::Detail::Overlaps(input.Ghost().Storage(), work.temporary.Owned().Storage()),
-                              "reconstruction output aliases input");
-        for (const auto *source : {&mean.Owned(), &mean.Ghost(), &boundary.values})
-            DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), work.temporary.Owned().Storage()),
-                                  "reconstruction output aliases mean or boundary input");
-        std::optional<R::Array<real>::ReadLease> targetRead, alphaRead;
-        R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> targetValues, penalty;
-        if (target)
-        {
-            Metrics().ValidateField(*target, n * nv);
-            CheckArray(*alpha, Metrics().NumCell(), 1);
-            for (const auto *source : {&target->Owned(), &target->Ghost(), alpha})
-                DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), work.temporary.Owned().Storage()),
-                                      "reconstruction output aliases penalty input");
-            targetRead.emplace(target->Owned().Read());
-            alphaRead.emplace(alpha->Read());
-            targetValues = targetRead->View<R::UniformTableRows>();
-            penalty = alphaRead->View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                DNDS_check_throw_info(std::isfinite(penalty(iCell, 0)) && penalty(iCell, 0) >= 0 && penalty(iCell, 0) <= 1,
-                                      "reconstruction penalty alpha must be finite and in [0,1]");
-        }
-        auto meanOwned = mean.Owned().Read();
-        std::optional<R::Array<real>::ReadLease> meanGhost, recGhost;
+        CheckSweep(*_data, mean, input, work, boundary, region, target, alpha);
+        HostReconstructionRead retained(_data,
+                                        Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()),
+                                        work, region, false);
+        auto view = retained.Sweep(work.components);
+        auto meanOwned = mean.Owned().Read(), recOwned = input.Owned().Read(), boundaryRead = boundary.values.Read();
+        auto next = work.temporary.Owned().Write();
+        std::optional<R::Array<real>::ReadLease> meanGhost, recGhost, targetRead, alphaRead;
         if (region != ReconstructionRegion::Core)
         {
             meanGhost.emplace(mean.Ghost().Read());
             recGhost.emplace(input.Ghost().Read());
         }
-        auto recOwned = input.Owned().Read();
-        const auto current = recOwned.View<R::UniformTableRows>();
-        auto nextWrite = work.temporary.Owned().Write();
-        auto next = nextWrite.View<R::UniformTableRows>();
-        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{meanOwned.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
-        const auto ghost = recGhost ? recGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
-        auto bRead = boundary.values.Read();
-        const auto bValues = bRead.View<R::TableRows>();
-        auto oRead = _data->offsets.Read(), nbRead = _data->neighbors.Read(), boRead = _data->boundaryOffsets.Read();
-        auto mRead = _data->matrixAInvB->Read(), vRead = _data->vectorAInvB->Read(), injectionRead = _data->boundaryInjection->Read();
-        const auto offsets = oRead.View<R::FixedRows<1>>(), neighbors = nbRead.View<R::FixedRows<1>>(), bOffsets = boRead.View<R::FixedRows<1>>();
-        const auto matrices = mRead.View<R::TableRows>(), vectors = vRead.View<R::TableRows>(), injection = injectionRead.View<R::TableRows>();
-        const real relax = _data->settings.jacobiRelax;
-        auto rotationRead = _data->neighborRotation.Read();
-        auto rotationActiveRead = _data->neighborRotationActive.Read();
-        const auto rotations = rotationRead.View<R::FixedRows<9>>();
-        const auto rotationActive = rotationActiveRead.View<R::FixedRows<1>>();
-        const auto nextMatrices = Algebra::MakeEigenRowMatrices(next, n, nv);
-        const auto currentMatrices = Algebra::MakeEigenRowMatrices(current, n, nv);
-        std::optional<decltype(Algebra::MakeEigenRowMatrices(current, n, nv))> targetMatrices;
+        view.means = {meanOwned.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : ReadRows{}};
+        view.current = recOwned.View<R::UniformTableRows>();
+        view.ghost = recGhost ? recGhost->View<R::UniformTableRows>() : ReadRows{};
+        view.boundary = boundaryRead.View<R::TableRows>();
+        view.output = next.View<R::UniformTableRows>();
         if (target)
-            targetMatrices.emplace(Algebra::MakeEigenRowMatrices(targetValues, n, nv));
-        const R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> nextRead{
-            next.data, next.offsets, next.rows, next.width, next.stride, next.sizes, next.kind, next.device};
-        const auto visitedMatrices = Algebra::MakeEigenRowMatrices(nextRead, n, nv);
-        const auto ghostMatrices = Algebra::MakeEigenRowMatrices(ghost, n, nv);
-        const bool coreFirst = region != ReconstructionRegion::All || Settings().coreFirst;
-        const auto position = [&](index iCell)
-        { return coreFirst ? _data->coreFirstPosition[iCell] : iCell; };
-        auto compute = [&](index iCell, index partBegin, index partEnd)
         {
-            Math::SmallMatrix rotatedRec;
-            auto output = nextMatrices[iCell];
-            output = currentMatrices[iCell] * (1 - relax);
-            const real alphaCell = target ? penalty(iCell, 0) : 0;
-            const real scale = relax * (1 - alphaCell);
-            if (alphaCell > 0)
-                output.noalias() += (relax * alphaCell) * (*targetMatrices)[iCell];
-            if (scale == 0)
-                return;
-            for (index iEntry = offsets(iCell, 0); iEntry < offsets(iCell + 1, 0); ++iEntry)
-            {
-                const index other = neighbors(iEntry, 0);
-                if (other != UnInitIndex)
-                {
-                    const bool rotatedEntry = _data->hasRotatedPeriodicity && rotationActive(iEntry, 0);
-                    // SOR reads completed predecessors from a separate output,
-                    // leaving the whole input immutable for direct MPI sends.
-                    const auto otherCoefficients = other < Metrics().NumCell()
-                                                       ? (Settings().SORInstead && other >= partBegin && other < partEnd && position(other) < position(iCell) ? visitedMatrices[other] : currentMatrices[other])
-                                                       : ghostMatrices[other - Metrics().NumCell()];
-                    // Component rotation is independent of spatial derivative
-                    // pullback, already included in the prepared B block.
-                    // Apply scalar columns directly, then correct vector blocks.
-                    output.noalias() += scale * ConstMap(matrices[iEntry].data(), n, n) * otherCoefficients;
-                    if (rotatedEntry)
-                        for (auto first : work.periodicVectorStarts)
-                        {
-                            const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
-                            rotatedRec = otherCoefficients.middleCols(first, 3) * (rotation.transpose() - Geom::tGPoint::Identity());
-                            output.middleCols(first, 3).noalias() += scale * ConstMap(matrices[iEntry].data(), n, n) * rotatedRec;
-                        }
-                    for (index variable = 0; variable < nv; ++variable)
-                    {
-                        real value = u(other, variable);
-                        if (rotatedEntry)
-                            for (auto first : work.periodicVectorStarts)
-                                if (variable >= first && variable < first + 3)
-                                {
-                                    const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
-                                    value = 0;
-                                    for (int d = 0; d < 3; ++d)
-                                        value += rotation(variable - first, d) * u(other, first + d);
-                                }
-                        output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(vectors[iEntry].data(), n) * (scale * (value - u(iCell, variable)));
-                    }
-                }
-                else
-                    for (index iQ = bOffsets(iEntry, 0); iQ < bOffsets(iEntry + 1, 0); ++iQ)
-                        for (index variable = 0; variable < nv; ++variable)
-                            output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(injection[iQ].data(), n) * (scale * (bValues(iQ, variable) - u(iCell, variable)));
-            }
-        };
-        const index owned = Metrics().NumCell();
-        if (!Settings().SORInstead)
-        {
-            if (region == ReconstructionRegion::All)
-                OMP::ForRows(0, owned, [&](index iCell)
-                             { compute(iCell, 0, owned); });
-            else
-            {
-                const auto &rows = region == ReconstructionRegion::Core ? _data->workPartition->Core() : _data->workPartition->HaloDependent();
-                OMP::ForRows(0, index(rows.size()), [&](index iRow)
-                             { compute(rows[iRow], 0, owned); });
-            }
+            targetRead.emplace(target->Owned().Read());
+            alphaRead.emplace(alpha->Read());
+            view.target = targetRead->View<R::UniformTableRows>();
+            view.penalty = alphaRead->View<R::UniformTableRows>();
+            view.limited = true;
         }
-        else
-        {
-            // OMP=1 is the canonical serial sweep. With multiple threads, each
-            // mesh subpartition is one ordered block; cross-block reads remain
-            // frozen input. A split call preserves core-first logical ordering.
-            const auto sweep = [&](index begin, index end)
-            {
-                const index coreCount = index(_data->workPartition->Core().size());
-                const auto run = [&](bool core)
-                {
-                    for (index iCell = begin; iCell < end; ++iCell)
-                        if ((_data->coreFirstPosition[iCell] < coreCount) == core)
-                            compute(iCell, begin, end);
-                };
-                if (!coreFirst)
-                    for (index iCell = begin; iCell < end; ++iCell)
-                        compute(iCell, begin, end);
-                else
-                {
-                    if (region != ReconstructionRegion::HaloDependent)
-                        run(true);
-                    if (region != ReconstructionRegion::Core)
-                        run(false);
-                }
-            };
-            if (OMP::DistributedThreads() == 1)
-                sweep(0, owned);
-            else
-                OMP::ForRows(0, index(_data->hostPartitionStarts.size()) - 1, [&](index part)
-                             { sweep(_data->hostPartitionStarts[part], _data->hostPartitionStarts[part + 1]); });
-        }
+        const auto status = CPU::ReconstructionSweep(view, retained.selection);
+        DNDS_check_throw_info(status, "reconstruction penalty alpha must be finite and in [0,1]");
     }
     void VariationalReconstructionPlan::DoReconstructionIter(const FVField &mean, FVField &coefficients,
                                                              ReconstructionWorkspace &work,
@@ -640,8 +633,7 @@ namespace DNDS::CFV
         auto destination = coefficients.Owned().Write();
         const auto src = source.View<R::UniformTableRows>();
         const auto dst = destination.View<R::UniformTableRows>();
-        OMP::ForRows(0, Metrics().NumCell(), [&](index iCell)
-                     { std::copy(src[iCell].begin(), src[iCell].end(), dst[iCell].begin()); });
+        CPU::CommitReconstruction(src, dst);
     }
     void VariationalReconstructionPlan::SubmitCommitReconstruction(
         R::EagerEngine &engine, const R::ExecutionStream &stream, FVField &coefficients,
@@ -652,20 +644,14 @@ namespace DNDS::CFV
             SubmitDeviceCommitReconstruction(engine, stream, coefficients, work);
             return;
         }
+        Validate();
+        CheckWorkspace(_data.get(), work, coefficients);
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                               "CPU reconstruction commit needs a matching host stream");
-        std::vector<R::ScheduledBufferAccess> accesses;
-        AddScheduledAccess(accesses, work.temporary.Owned(), R::AccessMode::Read);
-        AddScheduledAccess(accesses, coefficients.Owned(), R::AccessMode::Write);
-        auto plan = *this;
-        auto retainedWork = work;
-        auto retainedCoefficients = coefficients;
-        engine.SubmitOperation(
-            stream,
-            [plan = std::move(plan), retainedCoefficients = std::move(retainedCoefficients),
-             retainedWork = std::move(retainedWork)](R::ExecutionContext) mutable
-            { plan.CommitReconstruction(retainedCoefficients, retainedWork); },
-            [](std::exception_ptr) noexcept {}, std::move(accesses));
+        auto mesh = std::make_shared<Geom::MeshReadAccess>(
+            Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()));
+        R::SubmitArrays(engine, stream, [plan = _data, mesh](R::ExecutionContext, auto source, auto destination)
+                        { CPU::CommitReconstruction(source, destination); }, R::ReadAs<R::UniformTableRows>(work.temporary.Owned()), R::WriteAs<R::UniformTableRows>(coefficients.Owned()));
     }
     void VariationalReconstructionPlan::DoLimiterWBAP_3OrderTo(const FVField &coefficients,
                                                                ReconstructionWorkspace &work, int order,
@@ -683,142 +669,39 @@ namespace DNDS::CFV
             return;
         }
         Require(ReconstructionOperation::WBAP);
-        auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
-        CheckWorkspace(_data.get(), work, coefficients);
-        DNDS_check_throw_info(order >= 1 && order <= Settings().maxOrder, "invalid WBAP polynomial order");
-        const index n = NRecDOF(), nv = work.components;
-        Detail::ValidateVectorBlocks(nv, work.periodicVectorStarts);
-        _data->workPartition->Validate();
-        DNDS_check_throw_info(region == ReconstructionRegion::All || region == ReconstructionRegion::Core || region == ReconstructionRegion::HaloDependent,
-                              "invalid limiter region");
-        DNDS_check_throw_info(std::isfinite(threshold), "limiter threshold must be finite");
-        std::optional<R::Array<real>::ReadLease> indicatorRead;
-        R::ArrayView<const real, false, R::FixedRows<1>> activation;
+        CheckLimiter(*_data, coefficients, work, order, transform, region, indicatorArray, threshold);
+        HostReconstructionRead retained(_data,
+                                        Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()),
+                                        work, region, true);
+        auto view = retained.Limiter(work.components, order);
+        auto owned = coefficients.Owned().Read();
+        std::optional<R::Array<real>::ReadLease> ghost, forward, inverse, activation;
+        if (region != ReconstructionRegion::Core)
+            ghost.emplace(coefficients.Ghost().Read());
+        view.coefficients = {owned.View<R::UniformTableRows>(), ghost ? ghost->View<R::UniformTableRows>() : ReadRows{}};
+        if (transform && transform->get().count)
+        {
+            const auto &selected = transform->get();
+            forward.emplace(selected.forward.Read());
+            inverse.emplace(selected.inverse.Read());
+            view.forward = forward->View<R::TableRows>();
+            view.inverse = inverse->View<R::TableRows>();
+            view.characteristicFirst = selected.first;
+            view.characteristicCount = selected.count;
+        }
         if (indicatorArray)
         {
-            CheckArray(*indicatorArray, Metrics().NumCell(), 1);
-            indicatorRead.emplace(indicatorArray->Read());
-            activation = indicatorRead->View<R::FixedRows<1>>();
-            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                DNDS_check_throw_info(std::isfinite(activation(iCell, 0)), "limiter indicator must be finite");
+            activation.emplace(indicatorArray->Read());
+            view.indicator = activation->View<R::UniformTableRows>();
+            view.hasIndicator = true;
         }
-        const auto *selectedTransform = transform && transform->get().count ? &transform->get() : nullptr;
-        if (transform && !selectedTransform)
-            DNDS_check_throw_info(transform->get().plan == _identity && transform->get().first >= 0 && transform->get().first <= nv,
-                                  "disabled face characteristic transform belongs to another plan or has an invalid offset");
-        if (selectedTransform)
-        {
-            DNDS_check_throw_info(selectedTransform->plan == _identity && selectedTransform->first >= 0 && selectedTransform->count > 0 &&
-                                      selectedTransform->first <= nv && selectedTransform->count <= nv - selectedTransform->first,
-                                  "invalid face characteristic transform range/plan");
-            CheckArray(selectedTransform->forward, Metrics().NumFaceProc(), selectedTransform->count * selectedTransform->count);
-            CheckArray(selectedTransform->inverse, Metrics().NumFaceProc(), selectedTransform->count * selectedTransform->count);
-            DNDS_check_throw_info(selectedTransform->forwardVersion == selectedTransform->forward.Version() &&
-                                      selectedTransform->inverseVersion == selectedTransform->inverse.Version() && selectedTransform->forwardVersion != 0,
-                                  "face characteristic matrices changed; finalize them before limiting");
-            DNDS_check_throw_info(selectedTransform->forwardIdentity == selectedTransform->forward.Identity() && selectedTransform->inverseIdentity == selectedTransform->inverse.Identity(),
-                                  "face characteristic buffers replaced; finalize them before limiting");
-        }
-        const int begin = order == 1 ? 0 : Math::PolynomialSize(Metrics().Dimension(), order - 1) - 1;
-        const int end = Math::PolynomialSize(Metrics().Dimension(), order) - 1, modes = end - begin;
-        {
-            auto owned = coefficients.Owned().Read();
-            std::optional<R::Array<real>::ReadLease> ghostRead;
-            if (region != ReconstructionRegion::Core)
-                ghostRead.emplace(coefficients.Ghost().Read());
-            R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> rec{owned.View<R::UniformTableRows>(), ghostRead ? ghostRead->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
-            auto outputWrite = work.temporary.Owned().Write(), scratchWrite = work.scratch.Write();
-            const auto output = outputWrite.View<R::UniformTableRows>();
-            const auto scratch = scratchWrite.View<R::TableRows>();
-            auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read(), faceRead = _data->faces.Read();
-            auto secondaryRead = _data->secondary->Read();
-            const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>(), faces = faceRead.View<R::FixedRows<1>>();
-            const auto secondary = secondaryRead.View<R::TableRows>();
-            auto rotationRead = _data->neighborRotation.Read();
-            auto rotationActiveRead = _data->neighborRotationActive.Read();
-            const auto rotations = rotationRead.View<R::FixedRows<9>>();
-            const auto rotationActive = rotationActiveRead.View<R::FixedRows<1>>();
-            std::optional<R::Array<real>::ReadLease> forward, inverse;
-            if (selectedTransform)
-                forward.emplace(selectedTransform->forward.Read()), inverse.emplace(selectedTransform->inverse.Read());
-            const auto forwardView = selectedTransform ? forward->View<R::TableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows>{};
-            const auto inverseView = selectedTransform ? inverse->View<R::TableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows>{};
-            const auto scratchMatrices = Algebra::MakeEigenRowMatrices(scratch, modes, nv);
-            const auto outputMatrices = Algebra::MakeEigenRowMatrices(output, n, nv);
-            const auto recMatrices = Algebra::MakeEigenRowMatrices(rec, n, nv);
-            const real epsilon = std::pow(verySmallReal, .25);
-            auto compute = [&](index iCell, index worker)
-            {
-                auto center = scratchMatrices[6 * worker], other = scratchMatrices[6 * worker + 1], limited = scratchMatrices[6 * worker + 2];
-                auto up = scratchMatrices[6 * worker + 3], down = scratchMatrices[6 * worker + 4], valid = scratchMatrices[6 * worker + 5];
-                auto out = outputMatrices[iCell];
-                out = recMatrices[iCell];
-                if (indicatorArray && activation(iCell, 0) < threshold)
-                    return;
-                up.setConstant(Settings().WBAP_nStd), down.setConstant(Settings().WBAP_nStd), valid.setOnes();
-                for (index iEntry = offsets(iCell, 0); iEntry < offsets(iCell + 1, 0); ++iEntry)
-                {
-                    const index neighbor = neighbors(iEntry, 0);
-                    if (neighbor == UnInitIndex)
-                        continue;
-                    center = out.middleRows(begin, modes);
-                    other.noalias() = ConstMap(secondary[iEntry].data(), n, n).middleRows(begin, modes) * recMatrices[neighbor];
-                    const auto iFace = faces(iEntry, 0);
-                    if (_data->hasRotatedPeriodicity && rotationActive(iEntry, 0))
-                        for (auto first : work.periodicVectorStarts)
-                        {
-                            const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
-                            other.middleCols(first, 3) = (other.middleCols(first, 3) * rotation.transpose()).eval();
-                        }
-                    if (selectedTransform)
-                    {
-                        const index start = selectedTransform->first, count = selectedTransform->count;
-                        const ConstMap left(forwardView[iFace].data(), count, count);
-                        // A reusable output scratch avoids Eigen alias temporaries.
-                        limited.leftCols(count).noalias() = center.middleCols(start, count) * left.transpose();
-                        center.middleCols(start, count) = limited.leftCols(count);
-                        limited.leftCols(count).noalias() = other.middleCols(start, count) * left.transpose();
-                        other.middleCols(start, count) = limited.leftCols(count);
-                    }
-                    for (index v = 0; v < nv; ++v)
-                        for (int mode = 0; mode < modes; ++mode)
-                            limited(mode, v) = Math::WBAPBiway(center(mode, v), other(mode, v));
-                    if (selectedTransform)
-                    {
-                        const index start = selectedTransform->first, count = selectedTransform->count;
-                        const ConstMap right(inverseView[iFace].data(), count, count);
-                        other.leftCols(count).noalias() = limited.middleCols(start, count) * right.transpose();
-                        limited.middleCols(start, count) = other.leftCols(count);
-                    }
-                    for (index v = 0; v < nv; ++v)
-                        for (int mode = 0; mode < modes; ++mode)
-                        {
-                            const real value = limited(mode, v);
-                            const real ratio = out(begin + mode, v) / (std::abs(value) + epsilon) * ((value > 0) - (value < 0));
-                            up(mode, v) += ratio * ratio * ratio;
-                            down(mode, v) += sqr(sqr(ratio));
-                            if (value == 0)
-                                valid(mode, v) = 0;
-                        }
-                }
-                for (index v = 0; v < nv; ++v)
-                    for (int mode = 0; mode < modes; ++mode)
-                        out(begin + mode, v) *= valid(mode, v) * up(mode, v) / down(mode, v);
-            };
-            const auto &rows = region == ReconstructionRegion::Core ? _data->workPartition->Core() : _data->workPartition->HaloDependent();
-            const index count = region == ReconstructionRegion::All ? Metrics().NumCell() : index(rows.size());
-            const index workers = _data->hostThreads;
-            OMP::ForRows(0, workers, [&](index worker)
-                         {
-                // Explicit worker slots own six scratch matrices. This remains
-                // valid when a nested caller executes the slots serially.
-                const index quotient = count / workers, remainder = count % workers;
-                const index begin = worker * quotient + std::min(worker, remainder);
-                const index end = begin + quotient + (worker < remainder);
-                for (index iRow = begin; iRow < end; ++iRow)
-                    compute(region == ReconstructionRegion::All ? iRow : rows[iRow], worker); });
-        }
+        auto output = work.temporary.Owned().Write(), scratch = work.scratch.Write();
+        view.output = output.View<R::UniformTableRows>();
+        view.scratch = scratch.View<R::TableRows>();
+        view.threshold = threshold;
+        const auto status = CPU::ReconstructionLimiterWBAP(view, retained.selection);
+        DNDS_check_throw_info(status, "limiter indicator must be finite");
     }
     void VariationalReconstructionPlan::SubmitLimiterWBAP_3OrderTo(
         R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &coefficients,
@@ -833,56 +716,61 @@ namespace DNDS::CFV
             return;
         }
         Require(ReconstructionOperation::WBAP);
+        Validate();
+        CheckLimiter(*_data, coefficients, work, order, transform, region, indicatorArray, threshold);
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                               "CPU WBAP submission needs a matching host stream");
-        std::vector<R::ScheduledBufferAccess> accesses;
-        const auto add = [&](const auto &array, R::AccessMode mode)
-        { AddScheduledAccess(accesses, array, mode); };
-        add(coefficients.Owned(), R::AccessMode::Read);
-        if (region != ReconstructionRegion::Core)
-            add(coefficients.Ghost(), R::AccessMode::Read);
-        add(work.temporary.Owned(), R::AccessMode::Write);
-        add(work.scratch, R::AccessMode::Write);
-        add(_data->offsets, R::AccessMode::Read);
-        add(_data->neighbors, R::AccessMode::Read);
-        add(_data->faces, R::AccessMode::Read);
-        add(_data->neighborRotation, R::AccessMode::Read);
-        add(_data->neighborRotationActive, R::AccessMode::Read);
-        add(*_data->secondary, R::AccessMode::Read);
-        std::optional<FaceCharacteristicTransform> retainedTransform;
-        if (transform)
+        auto retained = std::make_shared<HostReconstructionRead>(_data,
+                                                                 Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()), work, region, true);
+        auto view = retained->Limiter(work.components, order);
+        view.threshold = threshold;
+        std::vector<ReadOperand> reads{R::ReadAs<R::UniformTableRows>(coefficients.Owned())};
+        index ghostSlot = -1, forwardSlot = -1, inverseSlot = -1, indicatorSlot = -1;
+        const auto add = [&](const R::Array<real> &array)
         {
-            retainedTransform.emplace(transform->get());
-            if (retainedTransform->count)
-            {
-                add(retainedTransform->forward, R::AccessMode::Read);
-                add(retainedTransform->inverse, R::AccessMode::Read);
-            }
+            const index slot = index(reads.size());
+            reads.push_back(R::ReadAs<R::UniformTableRows>(array));
+            return slot;
+        };
+        if (region != ReconstructionRegion::Core)
+            ghostSlot = add(coefficients.Ghost());
+        std::optional<FaceCharacteristicTransform> publication;
+        if (transform && transform->get().count)
+        {
+            publication = transform->get();
+            forwardSlot = add(publication->forward);
+            inverseSlot = add(publication->inverse);
+            view.characteristicFirst = publication->first;
+            view.characteristicCount = publication->count;
         }
-        std::optional<R::Array<real>> retainedIndicator;
         if (indicatorArray)
         {
-            retainedIndicator.emplace(*indicatorArray);
-            add(*retainedIndicator, R::AccessMode::Read);
+            indicatorSlot = add(*indicatorArray);
+            view.hasIndicator = true;
         }
-        auto plan = *this;
-        auto retainedWork = work;
-        auto retainedCoefficients = coefficients;
-        engine.SubmitOperation(
-            stream,
-            [plan = std::move(plan), retainedCoefficients = std::move(retainedCoefficients),
-             retainedWork = std::move(retainedWork), order,
-             retainedTransform = std::move(retainedTransform), region,
-             retainedIndicator = std::move(retainedIndicator), threshold](R::ExecutionContext) mutable
-            {
-                const FaceCharacteristicTransformRef selected = retainedTransform
-                                                                    ? FaceCharacteristicTransformRef(std::cref(*retainedTransform))
-                                                                    : std::nullopt;
-                plan.DoLimiterWBAP_3OrderTo(retainedCoefficients, retainedWork, order, selected, region,
-                                            retainedIndicator ? LimiterIndicatorRef(std::cref(*retainedIndicator)) : std::nullopt,
-                                            threshold);
-            },
-            [](std::exception_ptr) noexcept {}, std::move(accesses));
+        std::vector<WriteOperand> writes{R::WriteAs<R::UniformTableRows>(work.temporary.Owned()),
+                                         R::WriteAs<R::UniformTableRows>(work.scratch)};
+        R::SubmitArrayBatch(engine, stream, [retained, view, publication, ghostSlot, forwardSlot, inverseSlot, indicatorSlot](R::ExecutionContext, SpanView<const ReadRows> inputs, SpanView<const WriteRows> outputs) mutable
+                            {
+                                // Frozen publications retain their completed-version
+                                // contract even if an earlier queued producer changed
+                                // them after this operation was submitted.
+                                if (publication && publication->validation == CharacteristicValidation::Frozen)
+                                    DNDS_check_throw_info(publication->forwardVersion == publication->forward.Version() &&
+                                                              publication->inverseVersion == publication->inverse.Version(),
+                                                          "frozen characteristic matrices changed before queued limiting");
+                                view.coefficients = {inputs[0], ghostSlot >= 0 ? inputs[ghostSlot] : ReadRows{}};
+                                if (publication)
+                                {
+                                    view.forward = TableView(inputs[forwardSlot]);
+                                    view.inverse = TableView(inputs[inverseSlot]);
+                                }
+                                if (view.hasIndicator)
+                                    view.indicator = inputs[indicatorSlot];
+                                view.output = outputs[0];
+                                view.scratch = TableView(outputs[1]);
+                                const auto status = CPU::ReconstructionLimiterWBAP(view, retained->selection);
+                                DNDS_check_throw_info(status, "limiter indicator must be finite"); }, std::move(reads), std::move(writes));
     }
     void VariationalReconstructionPlan::DoLimiterWBAP_3Order(FVField &coefficients,
                                                              ReconstructionWorkspace &work, int order,

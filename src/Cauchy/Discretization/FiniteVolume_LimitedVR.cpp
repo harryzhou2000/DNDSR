@@ -119,9 +119,9 @@ namespace DNDS::Cauchy
           gradients(data.metrics.BuildField(prototype.components * data.metrics.Dimension())), scalars(data.metrics.BuildField(2)),
           branches(data.metrics.BuildField(3)), seeds(data.metrics.BuildField(3)), temporary(data.metrics.BuildField(3)),
           gradientExecution(data.limitedVRGeometry->gradient.BuildWorkspace(prototype.components, prototype.periodicVectorStarts)),
-          base(R::RowLayout::Dense(data.metrics.NumCell(), 2)),
-          alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1)), sampledFaces(R::RowLayout::Dense(data.limitedVRGeometry ? 2 * data.limitedVRGeometry->faces.RowCount() : 0, prototype.components)),
-          sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components)), targetHalo(data.BindHalo(targetCoefficients)),
+          base(R::RowLayout::Dense(data.metrics.NumCell(), 2), data.metrics.Device()),
+          alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1), data.metrics.Device()), sampledFaces(R::RowLayout::Dense(data.limitedVRGeometry ? 2 * data.limitedVRGeometry->faces.RowCount() : 0, prototype.components), data.metrics.Device()),
+          sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components), data.metrics.Device()), targetHalo(data.BindHalo(targetCoefficients)),
           branchHalo(data.BindHalo(branches)), seedHalo(data.BindHalo(seeds))
     {
         // Current physical adapter dispatches only compressible flow5. Generic
@@ -129,10 +129,13 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(prototype.components == 5 && data.limitedVRGeometry && data.positivitySamples, "LVR compressible target setup is incomplete");
         Algebra::Fill(targetCoefficients, 0.);
         Algebra::Fill(target.temporary, 0.);
-        auto penalty = alpha.Write();
-        for (index iCell = 0; iCell < data.metrics.NumCell(); ++iCell)
+        if (data.metrics.Device() == R::Device::Host())
         {
-            penalty.View()(iCell, 0) = 0;
+            auto penalty = alpha.Write();
+            for (index iCell = 0; iCell < data.metrics.NumCell(); ++iCell)
+                penalty.View()(iCell, 0) = 0;
         }
+        // Device allocation is already zero-initialized. Private status and
+        // sensor scratch is allocated lazily at the first queued Build.
     }
 }

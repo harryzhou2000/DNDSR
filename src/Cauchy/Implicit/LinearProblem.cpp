@@ -29,13 +29,19 @@ namespace DNDS::Cauchy
 
     }
     std::shared_ptr<const LinearProblemContext::Pattern> LinearProblemContext::BuildPattern(
-        const Algebra::DofSpace &space, std::vector<std::vector<index>> columns, std::vector<index> core)
+        const Algebra::DofSpace &space, std::vector<std::vector<index>> columns, std::vector<index> core, LinearSweepPartitions partitions)
     {
         DNDS_check_throw_info(space.OwnedRows() <= size_t(INT64_MAX) && space.GhostRows() <= size_t(INT64_MAX) - space.OwnedRows(),
                               "linear row space exceeds signed index range");
         auto data = std::make_shared<Pattern>(space.Pin());
         std::vector<index> dependent, order, position;
         const index rows = index(data->partition->owned), allRows = rows + index(data->partition->ghost);
+        if (partitions.starts.empty())
+            partitions.starts = {0, rows};
+        DNDS_check_throw_info(partitions.starts.size() >= 2 && partitions.starts.front() == 0 &&
+                                  partitions.starts.back() == rows && std::is_sorted(partitions.starts.begin(), partitions.starts.end()),
+                              "invalid linear SGS subpartition starts");
+        data->sweepPartitions = R::MetadataBuffer<index>(std::move(partitions.starts));
         DNDS_check_throw_info(index(columns.size()) == rows, "linear stencil row count differs from its DOF space");
         std::vector<unsigned char> isCore(rows, 0);
         for (auto iCell : core)
@@ -67,19 +73,29 @@ namespace DNDS::Cauchy
     }
     LinearProblemContext::LinearProblemContext(Algebra::DofSpace space, index components,
                                                std::vector<std::vector<index>> columns,
-                                               std::vector<index> core, DiagonalStorage diagonal, OffDiagonalStorage offDiagonal)
-        : _space(std::move(space)), _pattern(BuildPattern(_space, std::move(columns), std::move(core))), _components(components), _diagonalStorage(diagonal),
-          _diagonal(R::RowLayout::Dense(_pattern->partition->owned, DiagonalWidth(components, diagonal))),
-          _inverse(_diagonal.Layout()), _offDiagonalStorage(offDiagonal)
+                                               std::vector<index> core, DiagonalStorage diagonal, OffDiagonalStorage offDiagonal, R::Device device, LinearSweepPartitions partitions)
+        : _space(std::move(space)), _pattern(BuildPattern(_space, std::move(columns), std::move(core), std::move(partitions))), _components(components), _diagonalStorage(diagonal),
+          _diagonal(R::RowLayout::Dense(_pattern->partition->owned, DiagonalWidth(components, diagonal)), device),
+          _inverse(_diagonal.Layout(), device), _offDiagonalStorage(offDiagonal)
     {
         DNDS_check_throw_info(offDiagonal == OffDiagonalStorage::Assembled || offDiagonal == OffDiagonalStorage::DirectEvaluated,
                               "invalid off-diagonal storage mode");
         if (offDiagonal == OffDiagonalStorage::Assembled)
-            _offDiagonal.emplace(Counts(Columns()), components);
+            _offDiagonal.emplace(Counts(Columns()), components, device);
+        if (device != R::Device::Host())
+        {
+            auto placed = std::make_shared<Pattern>(_pattern->partition);
+            placed->hostColumns = _pattern->rows.ColumnsArray();
+            placed->rows = _pattern->rows.Placed(device, {device, nullptr});
+            placed->hasGhostColumns = _pattern->hasGhostColumns;
+            placed->sweepPartitions = _pattern->sweepPartitions;
+            _pattern = std::move(placed);
+        }
         _diagonalStoragePin = _diagonal.SharedStorage();
         _diagonalShape = _diagonal.ShapeVersion();
         if (_offDiagonal)
             _offDiagonalStoragePin = _offDiagonal->Values().SharedStorage();
+        PrepareActionWorkspace();
     }
     void LinearProblemContext::ValidateMatrix() const
     {
@@ -117,14 +133,14 @@ namespace DNDS::Cauchy
     void LinearProblemContext::PublishOffDiagonalEvaluator(std::shared_ptr<const OffDiagonalEvaluator> evaluator)
     {
         ValidateMatrix();
-        DNDS_check_throw_info(!_offDiagonal && evaluator && evaluator->Components() == _components &&
+        DNDS_check_throw_info(!_offDiagonal && evaluator && evaluator->Device() == Device() && evaluator->Components() == _components &&
                                   evaluator->RowSpaceIdentity() == _pattern->partition &&
                                   _offDiagonalGeneration < UINT64_MAX,
                               "invalid evaluated off-diagonal publication");
         // Compare retained CSR rows directly. Columns() is a diagnostic copy;
         // rebuilding nested host vectors here would allocate every update.
-        const auto patternRead = _pattern->rows.Read();
-        const auto columns = patternRead.View().columns;
+        const auto patternRead = (_pattern->hostColumns ? *_pattern->hostColumns : _pattern->rows.ColumnsArray()).Read();
+        const auto columns = patternRead.View<R::CSRRows>();
         DNDS_check_throw_info(evaluator->RowNumber() == columns.RowCount(), "evaluated row count differs");
         for (index iRow = 0; iRow < columns.RowCount(); ++iRow)
         {
@@ -134,7 +150,7 @@ namespace DNDS::Cauchy
                                       std::equal(actual.begin(), actual.end(), expected.begin()),
                                   "evaluated column order differs");
         }
-        auto publication = _diagonal.Write();
+        auto publication = _diagonal.Write({Device(), nullptr});
         _offDiagonalEvaluator = std::move(evaluator);
         ++_offDiagonalGeneration;
         publication.CancelUnmodified();
@@ -143,17 +159,18 @@ namespace DNDS::Cauchy
     {
         return _offDiagonal ? _offDiagonal->Values().Version() : _offDiagonalGeneration;
     }
-    LinearProblemContext::OffDiagonalReadAccess LinearProblemContext::ReadOffDiagonal() const
+    LinearProblemContext::OffDiagonalReadAccess LinearProblemContext::ReadOffDiagonal(R::ExecutionContext context) const
     {
         ValidateMatrix();
         if (_offDiagonal)
-            return {_offDiagonal->Read(), _components};
-        auto publication = _diagonal.Read();
+            return {_offDiagonal->Read(context), _components};
+        auto publication = _diagonal.Read(context);
         DNDS_check_throw_info(_offDiagonalEvaluator, "semi-matrix-free off-diagonal data have not been prepared");
         return {std::move(publication), _offDiagonalEvaluator, _components};
     }
     void LinearProblemContext::InvertDiagonal()
     {
+        DNDS_check_throw_info(!_inversePending, "diagonal inverse preparation is already pending");
         _inverseCurrent = false;
         _inverseFallbacks = 0;
         ValidateMatrix();
@@ -168,10 +185,13 @@ namespace DNDS::Cauchy
                                                         {input, output, _components,
                                                          _diagonalStorage == DiagonalStorage::Block}),
                                                     "InvertLinearDiagonal");
+        _inverseSVDCells = _inverseFallbacks;
         _diagonalVersion = _diagonal.Version();
         // Publish before recording the inverse generation.
         write.reset();
         _inverseVersion = _inverse.Version();
+        _inverseSourceEpoch = _diagonal.MutationEpoch();
+        _inverseEpoch = _inverse.MutationEpoch();
         _inverseCurrent = true;
     }
     void LinearProblemContext::Apply(const Field &input, Field &output, LinearRegion region) const

@@ -41,13 +41,13 @@ namespace DNDS::Cauchy::CPU
     template <class Mean, class Residual, class Constant, class Output, class Metric, class Active, class Norm>
     NumericalStatus AssembleDefectRows(Mean mean, Residual residual, Constant constant, Output output,
                                        const Metric &metric, index components, real mass, real rhsScale, const Active &active,
-                                       int normOrder, bool measureNorm, Norm &norm) noexcept
+                                       int normOrder, bool measureNorm, Norm &norm, SpanView<real> partials = {}) noexcept
     {
-        for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
+        const auto row = [&](index iCell, SpanView<real> sum) -> NumericalStatus
         {
             const real volume = metric.GetCellVol(iCell);
             if (measureNorm)
-                norm[components] += volume;
+                sum[components] += volume;
             for (index j = 0; j < components; ++j)
             {
                 const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
@@ -55,10 +55,14 @@ namespace DNDS::Cauchy::CPU
                     return NumericalStatus{NumericalError::InvalidState, 1, iCell};
                 output(iCell, j) = active(j) ? value : 0;
                 if (measureNorm)
-                    norm[j] += normOrder == 1 ? std::abs(value) : value * value / volume;
+                    sum[j] += normOrder == 1 ? std::abs(value) : value * value / volume;
             }
-        }
-        return {};
+            return {};
+        };
+        if (!measureNorm)
+            return OMP::ForRowsStatus(0, mean.RowCount(), [&](index iCell)
+                                      { return row(iCell, {}); });
+        return OMP::SumRows(mean.RowCount(), {norm.data(), components + 1}, partials, row);
     }
 
     /// Assemble mass*u-rhsScale*R(u)/volume and optionally publish the spatial
@@ -105,16 +109,25 @@ namespace DNDS::Cauchy::CPU
         real minimum = 1;
         bool frozen = true;
     };
+    /// Operator-owned scratch, one result and independent-species slice per
+    /// contiguous row partition. No allocation or shared counter in the leaf.
+    struct CorrectionWorkspace
+    {
+        SpanView<real> species;
+        SpanView<CorrectionResult> partials;
+    };
     /// Euler-compatible solved-increment compression, repaired species target,
     /// final thermal line search, then independent RANS repair. No MPI/access.
     NumericalResult<CorrectionResult> ApplyCorrection(const CorrectionControls &,
                                                       Algebra::DofComponentView<const real> mean, Algebra::DofComponentView<const real> delta,
-                                                      Algebra::DofComponentView<real> candidate) noexcept;
-    NumericalStatus ValidateImplicitMeans(EquationLayoutView<const real>, AdmissibilityView) noexcept;
+                                                      Algebra::DofComponentView<real> candidate, CorrectionWorkspace) noexcept;
+    NumericalStatus MeasureRateNorm(Algebra::DofComponentView<const real> rate,
+                                    Algebra::DofComponentView<const real> reference, CFV::FiniteVolumeHostView metric,
+                                    int normOrder, SpanView<real> sum, SpanView<real> partials = {}) noexcept;
     NumericalStatus AssembleDefect(EquationLayoutView<const real> mean, EquationLayoutView<const real> residual,
                                    EquationLayoutView<const real> constant, EquationLayoutView<real> output,
                                    CFV::FiniteVolumeHostView metric, real mass, real rhsScale, SpanView<const uint8_t> active,
-                                   int normOrder, bool measureNorm, SpanView<real> norm) noexcept;
+                                   int normOrder, bool measureNorm, SpanView<real> norm, SpanView<real> partials = {}) noexcept;
 
     struct PseudoTimeRequest
     {

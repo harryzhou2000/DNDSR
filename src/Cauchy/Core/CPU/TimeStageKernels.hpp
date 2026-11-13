@@ -1,4 +1,5 @@
 #pragma once
+#include "Cauchy/Core/TimeStageValues.hpp"
 #include "DNDS/Core/NumericalStatus.hpp"
 #include "Cauchy/Discretization/FiniteVolumeViews.hpp"
 #include "Cauchy/State/RANSState.hpp"
@@ -15,12 +16,6 @@ namespace DNDS::Cauchy::CPU
                                         EquationBlockArrayView<real> state, EquationBlockArrayView<const real> flow,
                                         CFV::FiniteVolumeHostView metric, RANSStateView ransState, bool rans,
                                         real dt, real historyWeight, real stageWeight) noexcept;
-    struct ExplicitBlendStatistics
-    {
-        real alpha = 1;
-        index limited = 0;
-        std::array<int, 2> safe{1, 1};
-    };
     NumericalResult<ExplicitBlendStatistics> MeasureExplicitBlend(RHSScalarView initial, RHSScalarView state, RHSScalarView high,
                                                                   RHSScalarView low, CFV::FiniteVolumeHostView metrics, ThermalBounds bounds,
                                                                   real dt, real historyWeight, real stageWeight) noexcept;

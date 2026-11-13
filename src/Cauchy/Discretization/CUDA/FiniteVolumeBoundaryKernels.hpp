@@ -40,6 +40,7 @@ namespace DNDS::Cauchy::CUDA
         real time = 0;
         int components = 5, modes = 0;
         bool useSourceRows = false, polynomial = false, exterior = false, hasIncoming = false, repairRANS = true;
+        bool forcePointFallback = false;
     };
 
     /** Host launchers receive borrowed, device-tagged array views. Operators

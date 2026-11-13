@@ -1,11 +1,13 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.hpp"
 #include "Cauchy/State/RANSState.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include "Cauchy/Discretization/RANSReconstruction.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
     using namespace EquationFVDetail;
-    NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
+    static NumericalStatus AddMeanSourceJacobianRows(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator,
+                                                     PointScratch &point, index first, index last) noexcept
     {
         // Direction descriptors have exactly three entries. Validate once,
         // before both the point scratch fill and any output mutation.
@@ -14,8 +16,7 @@ namespace DNDS::Cauchy::CPU
             return NumericalStatus{NumericalError::InvalidInput};
         const index nv = request.components;
         const int independent = request.independentSpecies;
-        PointScratch point(nv);
-        for (index iCell = 0; iCell < request.cells; ++iCell)
+        for (index iCell = first; iCell < last; ++iCell)
         {
             Gather(request.blocks, iCell, point, false);
             if (request.ransFirst >= 0)
@@ -68,17 +69,17 @@ namespace DNDS::Cauchy::CPU
         }
         return {};
     }
-    NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
+    static NumericalStatus AddQuadratureSourceJacobianRows(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator,
+                                                           PointScratch &point, index first, index last) noexcept
     {
         const int dimension = request.dimension;
         if (dimension < 1 || dimension > 3)
             return NumericalStatus{NumericalError::InvalidInput};
         const index nv = request.components;
         const int independent = request.independentSpecies;
-        PointScratch point(nv);
         if (request.linearization)
         {
-            for (index iCell = 0; iCell < request.cells; ++iCell)
+            for (index iCell = first; iCell < last; ++iCell)
             {
                 Gather(request.blocks, iCell, point, false);
                 PointProperties properties;
@@ -127,7 +128,7 @@ namespace DNDS::Cauchy::CPU
                 }
             return {};
         };
-        for (index iCell = 0; iCell < request.cells; ++iCell)
+        for (index iCell = first; iCell < last; ++iCell)
         {
             for (index iPoint = request.offsets(iCell, 0); iPoint < request.offsets(iCell + 1, 0); ++iPoint)
             {
@@ -168,15 +169,15 @@ namespace DNDS::Cauchy::CPU
         }
         return {};
     }
-    NumericalStatus AddVolumeSources(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
+    static NumericalStatus AddVolumeSourcesRows(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator,
+                                                PointScratch &point, index first, index last) noexcept
     {
         const int dimension = request.dimension;
         if (dimension < 1 || dimension > 3)
             return NumericalStatus{NumericalError::InvalidInput};
         const index nv = request.components;
         const int independent = request.independentSpecies;
-        PointScratch point(nv);
-        for (index iCell = 0; iCell < request.cells; ++iCell)
+        for (index iCell = first; iCell < last; ++iCell)
             for (index iPoint = request.offsets(iCell, 0); iPoint < request.offsets(iCell + 1, 0); ++iPoint)
             {
                 for (index iBlock = 0; iBlock < request.locations.size(); ++iBlock)
@@ -225,20 +226,71 @@ namespace DNDS::Cauchy::CPU
             }
         return {};
     }
+    namespace
+    {
+        template <class Operation>
+        NumericalStatus SourceWorkers(const SourceKernelRequest &request, const EquationSystem &equation,
+                                      SpanView<SourceWorkerScratch> workers, Operation operation) noexcept
+        {
+            if (workers.empty())
+                return NumericalStatus{NumericalError::InvalidInput};
+            OMP::ForRows(0, workers.size(), [&](index iWorker)
+                         {
+                const index quotient = request.cells / workers.size(), remainder = request.cells % workers.size();
+                const index first = iWorker * quotient + std::min(iWorker, remainder);
+                auto &worker = workers[iWorker];
+                DNDS_assert(index(worker.point.values.size()) == request.components);
+                worker.status = operation(request, equation, worker.evaluator, worker.point,
+                                          first, first + quotient + (iWorker < remainder)); });
+            // Contiguous ranges make the first failing slot the earliest cell.
+            for (const auto &worker : workers)
+                if (!worker.status)
+                    return worker.status;
+            return {};
+        }
+    }
+    NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
+    {
+        PointScratch point(request.components);
+        return AddMeanSourceJacobianRows(request, equation, evaluator, point, 0, request.cells);
+    }
+    NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, SpanView<SourceWorkerScratch> workers) noexcept
+    {
+        return SourceWorkers(request, equation, workers, AddMeanSourceJacobianRows);
+    }
+    NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
+    {
+        PointScratch point(request.components);
+        return AddQuadratureSourceJacobianRows(request, equation, evaluator, point, 0, request.cells);
+    }
+    NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, SpanView<SourceWorkerScratch> workers) noexcept
+    {
+        return SourceWorkers(request, equation, workers, AddQuadratureSourceJacobianRows);
+    }
+    NumericalStatus AddVolumeSources(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
+    {
+        PointScratch point(request.components);
+        return AddVolumeSourcesRows(request, equation, evaluator, point, 0, request.cells);
+    }
+    NumericalStatus AddVolumeSources(const SourceKernelRequest &request, const EquationSystem &equation, SpanView<SourceWorkerScratch> workers) noexcept
+    {
+        return SourceWorkers(request, equation, workers, AddVolumeSourcesRows);
+    }
     void ReplicateSourceValues(Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> offsets,
                                RHSScalarView input, RHSOutputView output, int stride, int direction)
     {
-        for (index iCell = 0; iCell + 1 < offsets.RowCount(); ++iCell)
+        OMP::ForRows(0, offsets.RowCount() - 1, [&](index iCell)
+                     {
             for (index iPoint = offsets(iCell, 0); iPoint < offsets(iCell + 1, 0); ++iPoint)
                 for (index j = 0; j < output.Width(); ++j)
-                    output(iPoint, j) = input(iCell, j * stride + direction);
+                    output(iPoint, j) = input(iCell, j * stride + direction); });
     }
     void AddEquationRotationSource(CFV::FiniteVolumeHostView metric, const RigidFrame &frame,
                                    EquationBlockReadView flow, EquationBlockArrayView<real> output,
                                    std::optional<EquationBlockArrayView<real>> lowOutput)
     {
-        for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-        {
+        OMP::ForRows(0, output.RowCount(), [&](index iCell)
+                     {
             FlowState mean{};
             for (int j = 0; j < 5; ++j)
                 mean[j] = flow(iCell, j);
@@ -248,7 +300,6 @@ namespace DNDS::Cauchy::CPU
                 output(iCell, j) += metric.GetCellVol(iCell) * source[j];
                 if (lowOutput)
                     (*lowOutput)(iCell, j) += metric.GetCellVol(iCell) * source[j];
-            }
-        }
+            } });
     }
 }

@@ -41,6 +41,7 @@
 /// - ArrayGlobalOffset_Parts auto-offset
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Serializer/SerializerBase.hpp"
+#include "DNDS/Serializer/HDF5Access.hpp"
 
 #include <hdf5.h>
 #include <fstream>
@@ -60,7 +61,8 @@ namespace DNDS::Serializer
         MPIInfo mpi;
         MPI_Comm commDup{MPI_COMM_NULL};
 
-        hid_t h5file{NULL};
+        hid_t h5file{H5I_INVALID_HID};
+        HDF5Access hdf5Access;
 
         int64_t chunksize{0};
         int deflateLevel{0};

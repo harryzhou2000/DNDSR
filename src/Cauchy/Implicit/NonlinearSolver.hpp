@@ -195,6 +195,12 @@ namespace DNDS::Cauchy
         /// Pointwise volume normalization writes owned values only. State/rate
         /// must be distinct; caller coordinates state/time/cache usage on ranks.
         void EvaluateRate(EquationDofs &state, EquationDofs &rate, real time);
+        /// Observe rank-local volume-weighted L1/L2-squared contributions and
+        /// final volume for a method's stopping residual. Optional reference
+        /// subtracts a same-space rate for FAS. Uses the solver's managed
+        /// backend operator; domain MPI reduction remains with the controller.
+        std::vector<real> MeasureRateNorm(const EquationDofs &rate, int normOrder,
+                                          OptionalRef<const EquationDofs> reference = {}) const;
         /// Frozen auxiliary publication from the last rate/operator evaluation.
         /// A subsequent cached correction preserves it; after a mean update it
         /// describes the previous linearization, not the updated state. Read-only

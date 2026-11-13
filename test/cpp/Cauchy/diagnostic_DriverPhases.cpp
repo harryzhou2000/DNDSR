@@ -48,7 +48,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     DNDS_check_throw_info(counts[0] >= 50000 && counts[1] >= 1000,
                           "broad diagnosis requires >=50000 real SA cells and >=1000 owned cells/rank");
     const auto &oldConfig = solver.getConfiguration();
-    DNDS_check_throw_info(settings.execution.hostThreads == 0 && settings.execution.communicationExecution == "caller",
+    DNDS_check_throw_info(settings.execution.device == "cpu" && settings.execution.hostThreads == 0 && settings.execution.communicationExecution == "caller",
                           "broad timing scopes require CPU-inline kernels and caller-driven MPI");
     // MPI may progress while inline core kernels run. In that mode the
     // auxiliary exchange interval includes core work: subtracting nested

@@ -13,25 +13,26 @@ namespace DNDS::ODE
     class BDFMethod
     {
         static_assert(std::is_nothrow_swappable_v<State>);
+        Operations _operations;
         int _order;
         State _initial, _previous, _source;
         real _previousDt = 0;
         bool _history = false;
 
     public:
-        BDFMethod(const State &prototype, int order)
-            : _order(order), _initial(Operations::NewVector(prototype)),
+        BDFMethod(const State &prototype, int order, Operations operations = {})
+            : _operations(std::move(operations)), _order(order), _initial(Operations::NewVector(prototype)),
               _previous(Operations::NewVector(prototype)), _source(Operations::NewVector(prototype))
         {
             DNDS_check_throw_info(order == 1 || order == 2, "unsupported BDF order");
         }
         const State &Source() const { return _source; }
-        void Begin(const State &initial) { Operations::Copy(_initial, initial); }
+        void Begin(const State &initial) { _operations.Copy(_initial, initial); }
         TimeEquationCoefficients Prepare(State &trial, real time, real dt, bool steady)
         {
-            Operations::Copy(trial, _initial);
+            _operations.Copy(trial, _initial);
             const BDFCoefficients coefficients(_order, time, dt, _history ? _previousDt : 0, steady);
-            coefficients.template AssembleResOther<Operations>(_source, _initial, &_previous);
+            coefficients.template AssembleResOther<Operations>(_source, _initial, &_previous, _operations);
             return coefficients.equation;
         }
         bool HasHistory() const { return _history; }
@@ -64,7 +65,7 @@ namespace DNDS::ODE
         void RestoreHistory(const State &previous, real dt)
         {
             DNDS_check_throw_info(std::isfinite(dt) && dt > 0, "invalid restored BDF step");
-            Operations::Copy(_previous, previous);
+            _operations.Copy(_previous, previous);
             _previousDt = dt;
             _history = true;
         }
@@ -73,9 +74,9 @@ namespace DNDS::ODE
         {
             DNDS_check_throw_info(!history || (std::isfinite(previousDt) && previousDt > 0),
                                   "invalid active BDF history");
-            Operations::Copy(_initial, initial);
-            Operations::Copy(_previous, previous);
-            Operations::Copy(_source, source);
+            _operations.Copy(_initial, initial);
+            _operations.Copy(_previous, previous);
+            _operations.Copy(_source, source);
             _history = history;
             _previousDt = history ? previousDt : 0;
         }
@@ -87,13 +88,14 @@ namespace DNDS::ODE
     template <class State, class Operations>
     class DIRKMethod
     {
+        Operations _operations;
         DIRKTableau _tableau;
         State _initial, _source;
         std::vector<State> _rates;
 
     public:
-        DIRKMethod(const State &prototype, const std::string &method)
-            : _tableau(method), _initial(Operations::NewVector(prototype)), _source(Operations::NewVector(prototype))
+        DIRKMethod(const State &prototype, const std::string &method, Operations operations = {})
+            : _operations(std::move(operations)), _tableau(method), _initial(Operations::NewVector(prototype)), _source(Operations::NewVector(prototype))
         {
             _rates.reserve(_tableau.a.size());
             for (index stage = 0; stage < index(_tableau.a.size()); ++stage)
@@ -106,22 +108,22 @@ namespace DNDS::ODE
         const State &InitialState() const { return _initial; }
         const std::vector<State> &Rates() const { return _rates; }
         State &Rate(int stage) { return _rates.at(stage); }
-        void Begin(const State &initial) { Operations::Copy(_initial, initial); }
+        void Begin(const State &initial) { _operations.Copy(_initial, initial); }
         TimeEquationCoefficients Prepare(State &trial, int stage, real time, real dt)
         {
             DNDS_check_throw_info(std::isfinite(time) && std::isfinite(dt) && dt > 0 &&
                                       std::isfinite(1 / dt) && std::isfinite(time + dt) && time + dt > time,
                                   "invalid DIRK timestep");
             const bool implicit = Implicit(stage); // Validate stage before writing.
-            Operations::Copy(trial, _initial);
+            _operations.Copy(trial, _initial);
             const real inverseDt = 1 / dt;
             if (implicit)
             {
-                Operations::Copy(_source, _initial);
-                Operations::Scale(_source, inverseDt);
+                _operations.Copy(_source, _initial);
+                _operations.Scale(_source, inverseDt);
                 for (int previous = 0; previous < stage; ++previous)
                     if (_tableau.a[stage][previous] != 0)
-                        Operations::Axpy(_source, _tableau.a[stage][previous], _rates[previous]);
+                        _operations.Axpy(_source, _tableau.a[stage][previous], _rates[previous]);
             }
             return {implicit ? inverseDt : 0, _tableau.a[stage][stage], StageTime(stage, time, dt)};
         }
@@ -129,10 +131,10 @@ namespace DNDS::ODE
                            const std::vector<std::reference_wrapper<const State>> &rates)
         {
             DNDS_check_throw_info(rates.size() == _rates.size(), "DIRK checkpoint rate count differs");
-            Operations::Copy(_initial, initial);
-            Operations::Copy(_source, source);
+            _operations.Copy(_initial, initial);
+            _operations.Copy(_source, source);
             for (index stage = 0; stage < index(_rates.size()); ++stage)
-                Operations::Copy(_rates[size_t(stage)], rates[size_t(stage)].get());
+                _operations.Copy(_rates[size_t(stage)], rates[size_t(stage)].get());
         }
     };
 }

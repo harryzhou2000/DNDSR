@@ -3,11 +3,13 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
-    Vector3 FiniteVolume::LastBoundaryForce(const Workspace &work, const std::vector<int> &zones) const
+    Vector3 FiniteVolume::LastBoundaryForce(const Workspace &work, const std::vector<int> &zones,
+                                            std::optional<R::ExecutionStream> stream) const
     {
         if (work.fixedFlowRHS)
         {
@@ -20,17 +22,17 @@ namespace DNDS::Cauchy
         }
         Vector3 force{};
         const MPIInfo mpi(Metrics().Communicator());
+        auto engine = stream ? stream->LockEngine() : R::EagerEngine{};
+        const auto lane = stream ? *stream : engine.CreateCPUStream();
         Metrics().Communication()->LocalStage([&]
                                               {
             DNDS_check_throw_info(work.owner == _data && work.boundaryMomentumCurrent,
                 "equation boundary force requires a completed RHS evaluation");
             for (const int zone : zones)
                 DNDS_check_throw_info(_data->settings.boundaries.count(std::to_string(zone)), "force zone has no boundary condition");
-            const auto read = work.boundaryMomentumFlux.Read();
-            const auto values = read.View<Runtime::FixedRows<3>>();
-            const auto stencilRead = _data->stencil.Read();
-            const auto stencil = stencilRead.View();
-            force = CPU::AccumulateBoundaryForce(stencil, values, {zones.data(), index(zones.size())}); });
+            DNDS_check_throw_info(lane.Context().device == Device(), "boundary force needs a matching execution stream");
+            if (!work.boundaryForceReduction) work.boundaryForceReduction.emplace(lane.Context());
+            force = work.boundaryForceReduction->Evaluate(engine, lane, _data->stencil, work.boundaryMomentumFlux, zones); });
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(
             MPI::ContiguousView<real>{force.data(), 3}, mpi.comm);
         return force;

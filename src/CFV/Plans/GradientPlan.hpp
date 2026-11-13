@@ -102,7 +102,7 @@ namespace DNDS::CFV
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
         Runtime::Array<real> BuildBoundaryValues(index components) const;
         GradientFaceCharacteristicTransform BuildFaceTransform(index first, index count) const;
-        /// Mutable device matrices. Caller orders producer then limiting.
+        /// Mutable backend matrices. Caller orders producer then limiting.
         /// Numerical inverse checking is a separate opt-in diagnostic.
         GradientFaceCharacteristicTransform BuildQueuedFaceTransform(index first, index count) const;
         /// Opt-in diagnostic, not called automatically by a limiter.

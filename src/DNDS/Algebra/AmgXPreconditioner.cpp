@@ -24,10 +24,11 @@ namespace DNDS::Algebra
 #ifdef DNDS_USE_AMGX
         // The provider has process-global initialization and configuration state.
         // Serialize adapter calls, not numerical work in unrelated DNDS streams.
+        struct ProviderResources;
         struct ProviderRuntime
         {
             std::mutex mutex;
-            unsigned users = 0;
+            std::weak_ptr<ProviderResources> resources;
         };
         ProviderRuntime &Provider()
         {
@@ -65,7 +66,7 @@ namespace DNDS::Algebra
             // NOSOLVER uses fixed coarsest_sweeps of the same Jacobi smoother.
             // monitor_residual=0 prevents tolerance-dependent nonlinear action.
             std::ostringstream text;
-            text << R"({"config_version":2,"determinism_flag":1,"solver":{"solver":"AMG",)"
+            text << R"({"config_version":2,"determinism_flag":1,"block_format":"ROW_MAJOR","solver":{"solver":"AMG",)"
                  << R"("algorithm":"AGGREGATION","selector":"SIZE_2","cycle":"V",)"
                  << R"("smoother":"BLOCK_JACOBI","coarse_solver":"NOSOLVER","monitor_residual":0,)"
                  << R"("print_solve_stats":0,"print_grid_stats":0,"max_iters":)" << s.cycles
@@ -73,6 +74,55 @@ namespace DNDS::Algebra
                  << R"(,"coarsest_sweeps":)" << s.coarseSweeps << R"(,"max_levels":)" << s.maxLevels
                  << R"(,"min_coarse_rows":)" << s.minCoarseRows << R"(,"relaxation_factor":)" << s.relaxation << "}}";
             return text.str();
+        }
+        /** AmgX Resources owns process-global pools and CUDA library handles.
+         * Creating/destroying an independent resource for each matrix can
+         * invalidate other live matrices, including during solver replacement
+         * and across pMG levels. Keep one shared resource for this rank/device;
+         * individual preconditioners still own their configurations and solvers.
+         * All ownership transitions happen under Provider().mutex. In particular,
+         * the last release occurs after its matrix/vector/solver destruction.
+         */
+        struct ProviderResources
+        {
+            Runtime::Device device;
+            bool initialized = false;
+            AMGX_config_handle config = nullptr;
+            AMGX_resources_handle handle = nullptr;
+            ~ProviderResources()
+            {
+                // Called only under the provider lock, on its selected device.
+                // No exception recovery or MPI is permitted during retirement.
+                auto release = [](AMGX_RC rc)
+                { if (rc != AMGX_RC_OK) std::abort(); };
+                if (handle)
+                    release(AMGX_resources_destroy(handle));
+                if (config)
+                    release(AMGX_config_destroy(config));
+                if (initialized)
+                    release(AMGX_finalize());
+            }
+        };
+        std::shared_ptr<ProviderResources> AcquireResources(Runtime::Device device)
+        {
+            // The caller holds the provider lock and has selected this device.
+            if (auto existing = Provider().resources.lock())
+            {
+                DNDS_check_throw_info(existing->device == device,
+                                      "AmgX supports one active device per process; use one MPI rank per GPU");
+                return existing;
+            }
+            auto resources = std::make_shared<ProviderResources>();
+            resources->device = device;
+            Check(AMGX_initialize());
+            resources->initialized = true;
+            // Resource parameters are independent of per-matrix cycle settings.
+            // Retain this config for the full resource lifetime, even when the
+            // preconditioner which first acquired it is destroyed earlier.
+            Check(AMGX_config_create(&resources->config, Configuration(AmgXSettings{}).c_str()));
+            Check(AMGX_resources_create(&resources->handle, resources->config, nullptr, 1, &device.ordinal));
+            Provider().resources = resources;
+            return resources;
         }
 #endif
     }
@@ -82,17 +132,17 @@ namespace DNDS::Algebra
         Runtime::Device device;
         Runtime::Array<int> offsets, columns;
         index rows = 0, entries = 0;
+        int blockSize = 1;
         bool pattern = false, uploaded = false, ready = false;
 #ifdef DNDS_USE_AMGX
-        bool initialized = false;
+        std::shared_ptr<ProviderResources> provider;
         AMGX_config_handle config = nullptr;
-        AMGX_resources_handle resources = nullptr;
         AMGX_matrix_handle matrix = nullptr;
         AMGX_vector_handle rhs = nullptr, solution = nullptr;
         AMGX_solver_handle solver = nullptr;
         ~State()
         {
-            if (!initialized)
+            if (!provider)
                 return;
             std::lock_guard<std::mutex> lock(Provider().mutex);
             // Destruction is rank-local and cannot throw or start MPI cleanup.
@@ -109,12 +159,9 @@ namespace DNDS::Algebra
                 release(AMGX_vector_destroy(rhs));
             if (matrix)
                 release(AMGX_matrix_destroy(matrix));
-            if (resources)
-                release(AMGX_resources_destroy(resources));
             if (config)
                 release(AMGX_config_destroy(config));
-            if (!--Provider().users)
-                release(AMGX_finalize());
+            provider.reset();
             if (cudaSetDevice(previous) != cudaSuccess)
                 std::abort();
         }
@@ -142,24 +189,21 @@ namespace DNDS::Algebra
 #ifdef DNDS_USE_AMGX
         std::lock_guard<std::mutex> lock(Provider().mutex);
         DeviceScope scope(device.ordinal);
-        if (!Provider().users)
-            Check(AMGX_initialize());
-        ++Provider().users;
-        _state->initialized = true;
+        _state->provider = AcquireResources(device);
         Check(AMGX_config_create(&_state->config, Configuration(settings).c_str()));
-        Check(AMGX_resources_create(&_state->resources, _state->config, nullptr, 1, &device.ordinal));
-        Check(AMGX_matrix_create(&_state->matrix, _state->resources, AMGX_mode_dDDI));
-        Check(AMGX_vector_create(&_state->rhs, _state->resources, AMGX_mode_dDDI));
-        Check(AMGX_vector_create(&_state->solution, _state->resources, AMGX_mode_dDDI));
-        Check(AMGX_solver_create(&_state->solver, _state->resources, AMGX_mode_dDDI, _state->config));
+        Check(AMGX_matrix_create(&_state->matrix, _state->provider->handle, AMGX_mode_dDDI));
+        Check(AMGX_vector_create(&_state->rhs, _state->provider->handle, AMGX_mode_dDDI));
+        Check(AMGX_vector_create(&_state->solution, _state->provider->handle, AMGX_mode_dDDI));
+        Check(AMGX_solver_create(&_state->solver, _state->provider->handle, AMGX_mode_dDDI, _state->config));
 #endif
     }
     AmgXPreconditioner::~AmgXPreconditioner() = default;
     Runtime::Device AmgXPreconditioner::GetDevice() const { return _state->device; }
-    index AmgXPreconditioner::RowNumber() const { return _state->rows; }
+    index AmgXPreconditioner::RowNumber() const { return _state->rows * _state->blockSize; }
 
-    void AmgXPreconditioner::SetPattern(Runtime::ArrayView<const int> offsets, Runtime::ArrayView<const int> columns)
+    void AmgXPreconditioner::SetPattern(Runtime::ArrayView<const int> offsets, Runtime::ArrayView<const int> columns, int blockSize)
     {
+        DNDS_check_throw_info(blockSize == 1 || blockSize == 5, "unsupported AmgX native block width");
         CheckScalarTable(offsets, Runtime::Device::Host());
         CheckScalarTable(columns, Runtime::Device::Host());
         DNDS_check_throw_info(offsets.rows >= 1 && offsets.rows - 1 <= std::numeric_limits<int>::max() &&
@@ -191,12 +235,13 @@ namespace DNDS::Algebra
             for (index iRow = 0; iRow < columns.rows; ++iRow)
                 b.View()(iRow, 0) = columns(iRow, 0);
         }
-        ownOffsets.SetName("AmgX/scalarCSR/offsets", DNDS_ALLOCATION_SITE());
-        ownColumns.SetName("AmgX/scalarCSR/columns", DNDS_ALLOCATION_SITE());
+        ownOffsets.SetName("AmgX/CSR/offsets", DNDS_ALLOCATION_SITE());
+        ownColumns.SetName("AmgX/CSR/columns", DNDS_ALLOCATION_SITE());
         _state->offsets = std::move(ownOffsets);
         _state->columns = std::move(ownColumns);
         _state->rows = rows;
         _state->entries = columns.rows;
+        _state->blockSize = blockSize;
         _state->pattern = true;
         _state->uploaded = _state->ready = false;
     }
@@ -205,7 +250,7 @@ namespace DNDS::Algebra
     {
         DNDS_check_throw_info(context.device == GetDevice() && _state->pattern, "AmgX update needs its device and pattern");
         CheckScalarTable(values, GetDevice());
-        DNDS_check_throw_info(values.rows == _state->entries, "AmgX scalar value count mismatch");
+        DNDS_check_throw_info(values.rows == _state->entries * _state->blockSize * _state->blockSize, "AmgX value count mismatch");
         _state->ready = false;
 #ifdef DNDS_USE_AMGX
         std::lock_guard<std::mutex> lock(Provider().mutex);
@@ -218,7 +263,7 @@ namespace DNDS::Algebra
             else
             {
                 auto offsets = _state->offsets.Read(), columns = _state->columns.Read();
-                Check(AMGX_matrix_upload_all(_state->matrix, int(_state->rows), int(_state->entries), 1, 1,
+                Check(AMGX_matrix_upload_all(_state->matrix, int(_state->rows), int(_state->entries), _state->blockSize, _state->blockSize,
                                              offsets.View().data, columns.View().data, values.data, nullptr));
                 Check(AMGX_vector_bind(_state->rhs, _state->matrix));
                 Check(AMGX_vector_bind(_state->solution, _state->matrix));
@@ -235,7 +280,7 @@ namespace DNDS::Algebra
         DNDS_check_throw_info(context.device == GetDevice() && _state->ready, "AmgX apply needs its device and completed setup");
         CheckScalarTable(residual, GetDevice());
         CheckScalarTable(correction, GetDevice());
-        DNDS_check_throw_info(residual.rows == _state->rows && correction.rows == _state->rows &&
+        DNDS_check_throw_info(residual.rows == RowNumber() && correction.rows == RowNumber() &&
                                   (!_state->rows || residual.data != correction.data),
                               "AmgX vector shape or alias mismatch");
 #ifdef DNDS_USE_AMGX
@@ -244,8 +289,8 @@ namespace DNDS::Algebra
         CheckCUDA(cudaStreamSynchronize(static_cast<cudaStream_t>(context.stream)));
         if (!_state->rows)
             return;
-        Check(AMGX_vector_upload(_state->rhs, int(_state->rows), 1, residual.data));
-        Check(AMGX_vector_set_zero(_state->solution, int(_state->rows), 1));
+        Check(AMGX_vector_upload(_state->rhs, int(_state->rows), _state->blockSize, residual.data));
+        Check(AMGX_vector_set_zero(_state->solution, int(_state->rows), _state->blockSize));
         Check(AMGX_solver_solve_with_0_initial_guess(_state->solver, _state->rhs, _state->solution));
         AMGX_SOLVE_STATUS status;
         Check(AMGX_solver_get_status(_state->solver, &status));

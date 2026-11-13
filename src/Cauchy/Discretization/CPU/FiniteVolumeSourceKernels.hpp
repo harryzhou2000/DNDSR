@@ -36,6 +36,20 @@ namespace DNDS::Cauchy::CPU
         bool chemical = false, fullBlock = false;
         real scale = 1;
     };
+    /// Exclusive physics worker and point scratch retained by the operator.
+    /// Construct before submission with the same property request as the serial
+    /// source path; no chemistry state is shared between worker slots.
+    struct SourceWorkerScratch
+    {
+        PointEvaluator evaluator;
+        EquationFVDetail::PointScratch point;
+        NumericalStatus status;
+        SourceWorkerScratch(PointEvaluator value, index components)
+            : evaluator(std::move(value)), point(components) {}
+    };
+    NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &, const EquationSystem &, SpanView<SourceWorkerScratch>) noexcept;
+    NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &, const EquationSystem &, SpanView<SourceWorkerScratch>) noexcept;
+    NumericalStatus AddVolumeSources(const SourceKernelRequest &, const EquationSystem &, SpanView<SourceWorkerScratch>) noexcept;
     NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &, const EquationSystem &, PointEvaluator &) noexcept;
     NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &, const EquationSystem &, PointEvaluator &) noexcept;
     NumericalStatus AddVolumeSources(const SourceKernelRequest &, const EquationSystem &, PointEvaluator &) noexcept;

@@ -2,6 +2,7 @@
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -194,9 +195,10 @@ namespace DNDS::Cauchy
             // fixed-width values and per-cell result/status arrays instead.
             if (owner->metrics.Device() == R::Device::Host())
             {
-                directLimiterScratch = R::Array<real>(R::RowLayout::Dense(6, componentNumber));
+                cpuGradientWorkers = OMP::DistributedThreads();
+                directLimiterScratch = R::Array<real>(R::RowLayout::Dense(6 * cpuGradientWorkers, componentNumber));
                 if (owner->settings.numerics.positivity)
-                    directPPSamples = R::Array<real>(R::RowLayout::Dense(owner->maximumPositivityPoints, componentNumber));
+                    directPPSamples = R::Array<real>(R::RowLayout::Dense(owner->maximumPositivityPoints * cpuGradientWorkers, componentNumber));
             }
         }
         if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || limitedVR) && owner->settings.numerics.characteristicLimiter)
@@ -205,13 +207,9 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(flow.componentNumber == 5, "characteristic limiter requires one five-component flow block");
             flowCharacteristicField = flow.physicalField;
             if (nativeDirectGradient)
-                gradientFlowCharacteristic.emplace(owner->metrics.Device() == R::Device::Host()
-                                                       ? owner->gradient.BuildFaceTransform(flow.firstComponent, 5)
-                                                       : owner->gradient.BuildQueuedFaceTransform(flow.firstComponent, 5));
+                gradientFlowCharacteristic.emplace(owner->gradient.BuildQueuedFaceTransform(flow.firstComponent, 5));
             else if (owner->reconstruction)
-                flowCharacteristic.emplace(owner->metrics.Device() == R::Device::Host()
-                                               ? owner->reconstruction->BuildFaceTransform(flow.firstComponent, 5)
-                                               : owner->reconstruction->BuildQueuedFaceTransform(flow.firstComponent, 5));
+                flowCharacteristic.emplace(owner->reconstruction->BuildQueuedFaceTransform(flow.firstComponent, 5));
         }
         if (owner->settings.numerics.reconstruction != "variational")
         {
@@ -283,6 +281,7 @@ namespace DNDS::Cauchy
         }
         BuildSourceSampling(state);
         BuildPreparationStatus();
+        BuildCharacteristicStorage();
         BuildDeviceFlux();
         if (nativeDirectGradient || ransFirst >= 0)
             directGradientPublications.resize(directGradients.size());

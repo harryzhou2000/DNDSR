@@ -39,10 +39,14 @@ namespace DNDS::Cauchy
         Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::CSRRows> columns;
         Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> blockOffsets;
         Runtime::ArrayView<const JacobianPointRecord, Runtime::AccessBoundsChecks, Runtime::CSRRows> points;
-        auto Points(index iCell, index iBlock) const
+        DNDS_DEVICE_CALLABLE auto Points(index iCell, index iBlock) const
         {
-            DNDS_assert(iBlock >= 0 && iBlock < columns.RowSize(iCell));
+            DNDS_HD_assert(iBlock >= 0 && iBlock < columns.RowSize(iCell));
             return points[blockOffsets(iCell, 0) + iBlock];
+        }
+        void ValidateDevice(Runtime::Device device) const
+        {
+            Runtime::ValidateViewDevices(device, columns, blockOffsets, points);
         }
     };
 
@@ -54,27 +58,38 @@ namespace DNDS::Cauchy
     {
         Runtime::Array<index> _columns, _blockOffsets;
         Runtime::Array<JacobianPointRecord> _points;
+        JacobianGeometryStorage() = default;
+        void Build(FiniteVolumeStencilView, CFV::FiniteVolumeHostView,
+                   const std::vector<std::vector<index>> &, bool auxiliaryAreas);
 
     public:
         bool sameComponentFrames = true;
         JacobianGeometryStorage(FiniteVolumeStencilView stencil,
                                 CFV::FiniteVolumeHostView metric,
                                 const std::vector<std::vector<index>> &columns);
+        /// Setup from centered stencil data alone. auxiliaryFaceArea supplies
+        /// the same integrated scalar areas as the metric facade. This permits
+        /// device setup to copy only incidence/area metadata to CPU, not every
+        /// cell/face quadrature or reconstruction metric payload.
+        JacobianGeometryStorage(FiniteVolumeStencilView stencil, const std::vector<std::vector<index>> &columns);
         class ReadAccess
         {
             Runtime::Array<index>::ReadLease _columns, _blockOffsets;
             Runtime::Array<JacobianPointRecord>::ReadLease _points;
 
         public:
-            explicit ReadAccess(const JacobianGeometryStorage &storage)
-                : _columns(storage._columns.Read()), _blockOffsets(storage._blockOffsets.Read()), _points(storage._points.Read()) {}
+            explicit ReadAccess(const JacobianGeometryStorage &storage, Runtime::ExecutionContext context)
+                : _columns(storage._columns.Read(context)), _blockOffsets(storage._blockOffsets.Read(context)), _points(storage._points.Read(context)) {}
             JacobianGeometryView View() const
             {
                 return {_columns.View<Runtime::CSRRows>(), _blockOffsets.View<Runtime::FixedRows<1>>(),
                         _points.View<Runtime::CSRRows>()};
             }
         };
-        ReadAccess Read() const { return ReadAccess(*this); }
+        /// Retain through asynchronous use of the borrowed geometry views.
+        ReadAccess Read(Runtime::ExecutionContext context = Runtime::ExecutionContext::Host()) const { return ReadAccess(*this, context); }
+        /// Synchronous setup placement, independent of the source allocation.
+        JacobianGeometryStorage Placed(Runtime::Device device, Runtime::ExecutionContext context) const;
         std::vector<std::vector<index>> CopyColumns() const;
     };
 }

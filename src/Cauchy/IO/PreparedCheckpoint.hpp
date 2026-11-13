@@ -1,0 +1,39 @@
+#pragma once
+
+#include "Cauchy/Core/DomainStateSnapshot.hpp"
+#include "Cauchy/IO/CheckpointMetadata.hpp"
+#include "DNDS/Runtime/Communication/CommunicationContext.hpp"
+
+namespace DNDS::Cauchy
+{
+    struct CheckpointPreparation
+    {
+        bool includeReconstruction = false;
+        /// Background writing requires a detached copy. Synchronous CPU output
+        /// may retain a read-only source snapshot until Write returns.
+        bool detached = true;
+    };
+
+    /** @brief Complete accepted-step archive input, with no live Domain borrow.
+     * @details Owns matching field/history/control values, persistent cell IDs,
+     * mesh envelope, physics/frame metadata and a shared I/O communicator.
+     * Write preserves the existing v5 domain HDF schema and performs no point
+     * physics, reconstruction, source lookup or device transfer. A detached
+     * image can outlive subsequent solver updates. Background Write requires
+     * MPI_THREAD_MULTIPLE, an independent ordering communicator, serialized
+     * HDF5 access and a terminal failure handler supplied by the output service.
+     */
+    class PreparedCheckpoint
+    {
+        friend class Domain;
+        struct Data;
+        std::shared_ptr<const Data> _data;
+        PreparedCheckpoint(DomainStateSnapshot, Json metadata, Runtime::Array<index> ids,
+                           CheckpointMetadata::MeshEnvelope,
+                           std::shared_ptr<Runtime::CommunicationContext>, bool detached);
+
+    public:
+        bool Detached() const;
+        void Write(const std::string &path, const Json &resolved, const Json &outputController = Json()) const;
+    };
+}

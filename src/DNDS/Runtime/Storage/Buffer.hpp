@@ -259,6 +259,11 @@ namespace DNDS::Runtime
     public:
         Buffer() = default;
         static Buffer Allocate(size_t bytes, Device device = Device::Host(), AllocationOptions options = {});
+        /// Zero-initialized portable CUDA page-locked host storage. Views still
+        /// carry Device::Host(); allocation accounting records the pinned kind.
+        /// CopyOperation retains this allocation and its leases until DMA is
+        /// complete. No pageable fallback: rejects when CUDA is not compiled.
+        static Buffer AllocatePinnedHost(size_t bytes);
         static Buffer Allocate(size_t bytes, Device device, std::shared_ptr<Allocator> allocator, AllocationOptions options = {});
         /// Ready allocation import for backend providers. Include
         /// AllocationResource.hpp when implementing/importing a provider.

@@ -1,9 +1,11 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeGradientKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
-    void LimitPhysicalGradients(const GradientLimiterRequest &request)
+    static void LimitPhysicalGradientRows(const GradientLimiterRequest &request, index first, index last)
     {
+        DNDS_assert(request.scratch.RowCount() >= 6 && request.scratch.Width() >= request.components);
         const index components = request.components;
         const int dim = request.dimension;
         const auto mean = request.scratch[0], neighbor = request.scratch[1],
@@ -15,7 +17,7 @@ namespace DNDS::Cauchy::CPU
             const index component = request.logicalComponent[size_t(logical)];
             return request.source[field](iCell, component * dim + d);
         };
-        for (index iCell = 0; iCell < request.means.ownedRows; ++iCell)
+        for (index iCell = first; iCell < last; ++iCell)
         {
             for (index j = 0; j < components; ++j)
             {
@@ -38,7 +40,7 @@ namespace DNDS::Cauchy::CPU
                                 const Geom::tPoint value{
                                     neighbor[first], neighbor[first + 1],
                                     neighbor[first + 2]};
-                                const auto rotated = Eigen::Map<const Geom::tGPoint>(sample.rotation.data()) * value;
+                                const Geom::tPoint rotated = Eigen::Map<const Geom::tGPoint>(sample.rotation.data()) * value;
                                 for (int d = 0; d < 3; ++d)
                                     neighbor[first + d] = rotated[d];
                             }
@@ -48,8 +50,11 @@ namespace DNDS::Cauchy::CPU
                             upper[j] = std::max(upper[j], neighbor[j]);
                         }
                     }
-                    const auto displacement = Geom::tPoint{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]} -
-                                              request.metric.GetCellCent(iCell);
+                    // Own the evaluated vector: both operands are temporary
+                    // Eigen values, so an auto expression would dangle before
+                    // the component loop (and depend on caller stack layout).
+                    const Geom::tPoint displacement = Geom::tPoint{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]} -
+                                                      request.metric.GetCellCent(iCell);
                     for (index j = 0; j < components; ++j)
                     {
                         real increment = 0;
@@ -80,7 +85,7 @@ namespace DNDS::Cauchy::CPU
             }
         }
     }
-    NumericalResult<GradientPositivityResult> LimitPositivePhysicalGradients(const GradientPositivityRequest &request) noexcept
+    static NumericalResult<GradientPositivityResult> LimitPositivePhysicalGradientRows(const GradientPositivityRequest &request, index first, index last) noexcept
     {
         const index components = request.components;
         const int dim = request.dimension;
@@ -101,7 +106,7 @@ namespace DNDS::Cauchy::CPU
             }
         } base{request.means, 0};
         GradientPositivityResult result;
-        for (index iCell = 0; iCell < request.means.ownedRows; ++iCell)
+        for (index iCell = first; iCell < last; ++iCell)
         {
             const ThermalAdmissibilityDetail::PointRow<decltype(request.means)> mean{
                 request.means, iCell};
@@ -215,17 +220,59 @@ namespace DNDS::Cauchy::CPU
         }
         return result;
     }
+    void LimitPhysicalGradients(const GradientLimiterRequest &request)
+    {
+        LimitPhysicalGradientRows(request, 0, request.means.ownedRows);
+    }
+    void LimitPhysicalGradients(const GradientLimiterRequest &request, SpanView<const GradientScratchView> workers)
+    {
+        DNDS_assert(!workers.empty());
+        OMP::ForRows(0, workers.size(), [&](index iWorker)
+                     {
+            const index count = request.means.ownedRows;
+            const index quotient = count / workers.size(), remainder = count % workers.size();
+            const index first = iWorker * quotient + std::min(iWorker, remainder);
+            auto local = request;
+            local.scratch = workers[iWorker];
+            LimitPhysicalGradientRows(local, first, first + quotient + (iWorker < remainder)); });
+    }
+    NumericalResult<GradientPositivityResult> LimitPositivePhysicalGradients(const GradientPositivityRequest &request) noexcept
+    {
+        return LimitPositivePhysicalGradientRows(request, 0, request.means.ownedRows);
+    }
+    NumericalResult<GradientPositivityResult> LimitPositivePhysicalGradients(const GradientPositivityRequest &request,
+                                                                             SpanView<GradientPositivityWorkerScratch> workers) noexcept
+    {
+        if (workers.empty())
+            return NumericalStatus{NumericalError::InvalidInput};
+        OMP::ForRows(0, workers.size(), [&](index iWorker)
+                     {
+            const index count = request.means.ownedRows;
+            const index quotient = count / workers.size(), remainder = count % workers.size();
+            const index first = iWorker * quotient + std::min(iWorker, remainder);
+            auto local = request;
+            local.samples = workers[iWorker].samples;
+            workers[iWorker].result = LimitPositivePhysicalGradientRows(local, first, first + quotient + (iWorker < remainder)); });
+        GradientPositivityResult result;
+        for (const auto &worker : workers)
+        {
+            if (!worker.result)
+                return worker.result.status;
+            result.limited += worker.result.value.limited;
+            result.minimum = std::min(result.minimum, worker.result.value.minimum);
+        }
+        return result;
+    }
     void FillPrimitiveMeans(GradientReadView from, GradientWriteView to, const PerfectGas &gas)
     {
-        for (index iCell = 0; iCell < to.RowCount(); ++iCell)
-        {
+        OMP::ForRows(0, to.RowCount(), [&](index iCell)
+                     {
             FlowState conservative;
             for (int j = 0; j < 5; ++j)
                 conservative[j] = from(iCell, j);
             const auto value = gas.Primitive(conservative);
             const std::array<real, 5> converted{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
             for (int j = 0; j < 5; ++j)
-                to(iCell, j) = converted[j];
-        }
+                to(iCell, j) = converted[j]; });
     }
 }

@@ -36,6 +36,8 @@ namespace
 TEST_CASE("CUDA Cauchy direct-gradient Barth PP and primitive means match generic CPU")
 {
     C::EquationSettings settings;
+    settings.transport = "NewtonianFourier";
+    settings.viscosity = .001;
     settings.rans.model = "KOmegaSST";
     const auto equation = C::EquationSystem::Resolve(settings);
     C::ThermalPolicy thermal(equation, 1e-6, 1e-6, 0, 1e-6);

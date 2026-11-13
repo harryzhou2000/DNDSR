@@ -3,8 +3,10 @@
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Runtime/Communication/MPIProgress.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
+#include <future>
 
 namespace C = DNDS::CFV;
 namespace G = DNDS::Geom;
@@ -234,6 +236,114 @@ TEST_CASE("CFV split operators share eager ordering across inline and worker CPU
             plan.SubmitCommitReconstruction(engine, ring, splitCoefficients, split);
             engine.Synchronize();
             Equal(limitedReferenceCoefficients, splitCoefficients);
+        }
+    }
+}
+
+TEST_CASE("Queued CPU reconstruction and WBAP retain operands through chained publications")
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, true);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+    for (bool sor : {false, true})
+    {
+        CAPTURE(sor);
+        C::ReconstructionSettings settings;
+        settings.SORInstead = sor;
+        settings.coreFirst = true;
+        auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        const I components = 2, width = components * plan.NRecDOF();
+        const auto shape = sor ? R::RowLayout::TiledColMajor(0, width, 8)
+                               : R::RowLayout::ColMajor(0, width, {32, 1});
+        auto mean = metrics.BuildField(components);
+        auto reference = plan.BuildCoefficients(components, shape), queued = plan.BuildCoefficients(components, shape);
+        auto target = plan.BuildCoefficients(components, shape);
+        R::Array<double> alpha(R::RowLayout::Dense(metrics.NumCell(), 1));
+        auto referenceWork = plan.BuildWorkspace(components, shape), queuedWork = plan.BuildWorkspace(components, shape);
+        auto boundary = plan.BuildBoundaryValues(components);
+        auto transform = plan.BuildQueuedFaceTransform(0, 1);
+        auto referenceTransform = plan.BuildFaceTransform(0, 1);
+        Fill(mean, 1);
+        Fill(reference, .03);
+        Fill(queued, .03);
+        Fill(target, .07);
+        metrics.BindHalo(mean).Begin().Wait();
+        metrics.BindHalo(reference).Begin().Wait();
+        metrics.BindHalo(queued).Begin().Wait();
+        {
+            auto values = boundary.values.Write();
+            auto penalty = alpha.Write();
+            for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                penalty.View()(iCell, 0) = .3;
+            for (I iRow = 0; iRow < boundary.values.RowCount(); ++iRow)
+                for (I component = 0; component < components; ++component)
+                    values.View()(iRow, component) = 1 + .1 * component;
+            auto left = referenceTransform.forward.Write(), right = referenceTransform.inverse.Write();
+            for (I iFace = 0; iFace < metrics.NumFaceProc(); ++iFace)
+            {
+                left.View()(iFace, 0) = 2;
+                right.View()(iFace, 0) = .5;
+            }
+        }
+        plan.FinalizeFaceTransform(referenceTransform);
+        plan.DoReconstructionIter(mean, reference, referenceWork, boundary);
+        plan.DoLimiterWBAP_3Order(reference, referenceWork, 1, std::cref(referenceTransform));
+        // Both paths deliberately retain the same frozen ghost snapshot: this
+        // test isolates local queued publications from MPI exchange scheduling.
+        plan.DoReconstructionIterLimitedTo(mean, reference, referenceWork, boundary, target, alpha);
+        plan.CommitReconstruction(reference, referenceWork);
+        for (I workers : {I(0), I(2)})
+        {
+            CAPTURE(workers);
+            Fill(queued, .03);
+            R::Array<double> observed(R::RowLayout::Dense(metrics.NumCell(), width));
+            R::EagerEngine engine(size_t(workers), std::make_shared<R::AccessTrackingContext>());
+            auto stream = engine.CreateCPUStream();
+            struct QueueGate
+            {
+                std::promise<void> promise;
+                bool released = false;
+                void Release()
+                {
+                    if (!released)
+                    {
+                        released = true;
+                        promise.set_value();
+                    }
+                }
+                ~QueueGate() { Release(); }
+            } gate; // releases before engine teardown even if submission fails
+            if (workers)
+            {
+                auto ready = gate.promise.get_future().share();
+                engine.Submit(stream, [ready](R::ExecutionContext)
+                              { ready.wait(); });
+            }
+            R::SubmitArrays(engine, stream, [](R::ExecutionContext, auto left, auto right)
+                            {
+                for (I iFace = 0; iFace < left.RowCount(); ++iFace)
+                {
+                    left(iFace, 0) = 2;
+                    right(iFace, 0) = .5;
+                } }, R::Write(transform.forward), R::Write(transform.inverse));
+            plan.SubmitReconstructionIterTo(engine, stream, mean, queued, queuedWork, boundary, C::ReconstructionRegion::Core);
+            plan.SubmitReconstructionIterTo(engine, stream, mean, queued, queuedWork, boundary, C::ReconstructionRegion::HaloDependent);
+            plan.SubmitCommitReconstruction(engine, stream, queued, queuedWork);
+            plan.SubmitLimiterWBAP_3OrderTo(engine, stream, queued, queuedWork, 1, std::cref(transform));
+            plan.SubmitCommitReconstruction(engine, stream, queued, queuedWork);
+            plan.SubmitReconstructionIterLimitedTo(engine, stream, mean, queued, queuedWork, boundary, target, alpha);
+            plan.SubmitCommitReconstruction(engine, stream, queued, queuedWork);
+            R::SubmitArrays(engine, stream, [](R::ExecutionContext, auto source, auto output)
+                            {
+                for (I iRow = 0; iRow < source.RowCount(); ++iRow)
+                    for (I component = 0; component < source.RowSize(iRow); ++component)
+                        output(iRow, component) = source(iRow, component); }, R::Read(queued.Owned()), R::Write(observed));
+            gate.Release();
+            engine.Synchronize();
+            Equal(reference, queued);
+            auto expected = reference.Owned().Read(), actual = observed.Read();
+            for (I iRow = 0; iRow < observed.RowCount(); ++iRow)
+                for (I component = 0; component < width; ++component)
+                    CHECK(actual.View()(iRow, component) == doctest::Approx(expected.View()(iRow, component)).epsilon(1e-13));
         }
     }
 }

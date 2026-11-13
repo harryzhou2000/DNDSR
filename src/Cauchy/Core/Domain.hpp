@@ -7,6 +7,7 @@
 #include "Cauchy/Physics/PhysicsResources.hpp"
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/IO/CheckpointTransaction.hpp"
+#include "Cauchy/IO/PreparedCheckpoint.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -56,7 +57,6 @@ namespace DNDS::Cauchy
         void SetTimeStage(int stage);
         void PreserveReconstructionGuess();
         void EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage);
-        void NormalizeRate(EquationDofs &rate);
         bool RecordImplicitStage(NonlinearIterationReport report);
         Json UpdatePolicyMetadata() const;
         bool Admissible(const EquationDofs &state) const;
@@ -294,6 +294,13 @@ namespace DNDS::Cauchy
         /// preserved on write and converted on read. Derived fields are omitted.
         void WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction = false,
                              const Json &outputController = Json()) const;
+        /// Controller-side archive capture. Shares the supplied context rather
+        /// than duplicating per snapshot. A background service supplies a
+        /// congruent independent I/O communicator and requests detached=true.
+        PreparedCheckpoint PrepareCheckpoint(std::shared_ptr<Runtime::CommunicationContext>,
+                                             CheckpointPreparation options = {}) const;
+        /// Detached output values from the canonical observation pipeline.
+        PreparedVisualization PrepareVisualization(int hdfDeflateLevel);
         /// Exact nonlinear-iteration snapshot. The caller invokes this only at
         /// the quiescent callback published by the nonlinear controller.
         void WriteInternalCheckpoint(const std::string &path, const Json &resolved,

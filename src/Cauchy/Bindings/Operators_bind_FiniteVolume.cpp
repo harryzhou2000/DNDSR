@@ -102,16 +102,23 @@ namespace DNDS::Cauchy::Bindings
         {
             return op.fv.FluxReconstruction(*w.reconstruction, *w.value);
         }, py::arg("workspace"))
-            .def("reset_reconstruction",
-                 [](const FiniteVolumeOperators &op, Workspace &w)
+            .def(
+                "reset_reconstruction",
+                [](const FiniteVolumeOperators &op, Workspace &w, std::optional<R::ExecutionStream> stream)
         {
-            op.fv.ResetReconstruction(*w.reconstruction, *w.value);
-        }, py::arg("workspace"), py::call_guard<py::gil_scoped_release>(), Local)
-            .def("restore_reconstruction",
-                 [](const FiniteVolumeOperators &op, Workspace &w, const EquationDofs &u)
+            op.fv.ResetReconstruction(*w.reconstruction, *w.value, stream);
+        }, py::arg("workspace"), py::arg("stream") = std::nullopt, py::call_guard<py::gil_scoped_release>(),
+                "Local synchronous reset. CUDA requires its matching stream; CPU accepts an optional inline/worker stream. Reserves all destinations before writing. No halo exchange.")
+            .def(
+                "restore_reconstruction",
+                [](const FiniteVolumeOperators &op, Workspace &w, const EquationDofs &u,
+                   std::optional<R::ExecutionStream> stream)
         {
-            op.fv.RestoreReconstructionGuess(*w.reconstruction, u);
-        }, py::arg("workspace"), py::arg("guess"), py::call_guard<py::gil_scoped_release>(), Collective)
+            op.fv.RestoreReconstructionGuess(*w.reconstruction, u, {}, stream);
+        },
+                py::arg("workspace"), py::arg("guess"), py::arg("stream") = std::nullopt,
+                py::call_guard<py::gil_scoped_release>(),
+                "Collective transactional owned-guess restore. Inputs must be distinct and already on the plan device. CUDA requires its matching stream. Validation finishes before destination writes; no payload host staging or halo exchange.")
             .def("build_auxiliary_values",
                  [](const FiniteVolumeOperators &op, AuxiliaryRequest request)
         {

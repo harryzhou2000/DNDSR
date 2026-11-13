@@ -1,6 +1,7 @@
 #include "Cauchy/IO/OutputCoordinator.hpp"
 
 #include "Cauchy/IO/ProgressOutput.hpp"
+#include "Cauchy/IO/AsyncOutput.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 #include <algorithm>
@@ -71,6 +72,7 @@ namespace DNDS::Cauchy
         index internalCheckpointInterval = 0,
               internalVisualizationInterval = 0;
         bool continueOutput = false, finalized = false, allocationReportWritten = false;
+        std::unique_ptr<AsyncOutput> asynchronous;
 
         Data(Simulation &simulationIn, const SimulationConfig &configIn,
              MPIInfo mpiIn, real startedIn)
@@ -101,14 +103,24 @@ namespace DNDS::Cauchy
             nextCheckpointTime = state.nextCheckpointTime;
             nextVisualizationTime = state.nextVisualizationTime;
             InitializeFiles();
-            InstallObservers();
+            if (output.asynchronous)
+                asynchronous = std::make_unique<AsyncOutput>(simulation);
             if (!continueOutput)
                 Record(0, 0, {}, false, false, true);
             MaybeReportAllocations();
+            // Publish callbacks only after fallible output/resource setup.
+            // A failed constructor has no Data destructor to withdraw them.
+            InstallObservers();
         }
 
         ~Data()
         {
+            if (asynchronous)
+            {
+                if (std::uncaught_exceptions())
+                    MPI::AbortIfSolverFailure("solver unwinding with asynchronous output");
+                asynchronous->Drain();
+            }
             // Domain callbacks capture this owner. Withdraw them before logger,
             // CSV and scheduling state can disappear.
             Visit([&](index, Domain &domain)
@@ -306,6 +318,11 @@ namespace DNDS::Cauchy
                                            0;
             if (!checkpoint && !visualization)
                 return;
+            // Internal checkpoints may contain active coupled stages. Keep the
+            // exact existing synchronous writer, after all older background
+            // transactions finish; never share its HDF/MPI sequence with them.
+            if (asynchronous)
+                asynchronous->Drain();
             auto &domain = simulation.GetDomain(iDomain);
             const auto token = OutputPlan::InternalToken(
                 simulation.Step() + 1, nonlinear.stage, completedIteration);
@@ -453,6 +470,13 @@ namespace DNDS::Cauchy
         void WriteSnapshot(const std::string &token, bool checkpoint,
                            bool visualization)
         {
+            const auto manifest = SnapshotManifest(token, checkpoint, visualization);
+            if (asynchronous)
+            {
+                asynchronous->Submit(simulation, config, plan, token, checkpoint, visualization,
+                                     checkpoint ? CaptureState() : Json(), manifest);
+                return;
+            }
             if (checkpoint)
                 simulation.WriteCheckpoint(plan.CheckpointPath(token),
                                            output.checkpointReconstruction,
@@ -466,44 +490,49 @@ namespace DNDS::Cauchy
                             {
                 if (mpi.rank != 0)
                     return;
-                Json artifacts = Json::array();
-                if (checkpoint)
-                    artifacts.push_back(
-                        {{"kind", "checkpoint"},
-                         {"path", plan.CheckpointPath(token)},
-                         {"schema", "dndsr.cauchy.checkpoint.v4"}});
-                if (visualization)
-                    for (index iDomain = 0; iDomain < domains; ++iDomain)
-                    {
-                        const auto prefix =
-                            plan.VisualizationPrefix(iDomain, token);
-                        artifacts.push_back(
-                            {{"kind", "volume"},
-                             {"domain", iDomain},
-                             {"path", prefix + ".vtkhdf"},
-                             {"schema", "dndsr.cauchy.visualization.v1"}});
-                        Json shards = Json::array();
-                        for (int rank = 0;
-                             rank < int(config.Domains()[iDomain]
-                                            .placement.ranks.size());
-                             ++rank)
-                            shards.push_back(prefix + "_surface_rank" +
-                                             std::to_string(rank) + ".csv");
-                        artifacts.push_back(
-                            {{"kind", "surface"},
-                             {"domain", iDomain},
-                             {"paths", std::move(shards)},
-                             {"schema", "dndsr.cauchy.surface-samples.v1"}});
-                    }
-                const Json manifest{{"schema", "dndsr.cauchy.snapshot.v1"},
-                                    {"step", simulation.Step()},
-                                    {"time", simulation.Time()},
-                                    {"token", token},
-                                    {"artifacts", std::move(artifacts)}};
                 std::ofstream file(plan.SnapshotManifestPath(token));
                 file << manifest.dump(2) << '\n';
+                file.close();
                 DNDS_check_throw_info(bool(file),
                                       "cannot write Cauchy snapshot manifest"); });
+        }
+
+        Json SnapshotManifest(const std::string &token, bool checkpoint, bool visualization) const
+        {
+            Json artifacts = Json::array();
+            if (checkpoint)
+                artifacts.push_back(
+                    {{"kind", "checkpoint"},
+                     {"path", plan.CheckpointPath(token)},
+                     {"schema", "dndsr.cauchy.checkpoint.v4"}});
+            if (visualization)
+                for (index iDomain = 0; iDomain < domains; ++iDomain)
+                {
+                    const auto prefix =
+                        plan.VisualizationPrefix(iDomain, token);
+                    artifacts.push_back(
+                        {{"kind", "volume"},
+                         {"domain", iDomain},
+                         {"path", prefix + ".vtkhdf"},
+                         {"schema", "dndsr.cauchy.visualization.v1"}});
+                    Json shards = Json::array();
+                    for (int rank = 0;
+                         rank < int(config.Domains()[iDomain]
+                                        .placement.ranks.size());
+                         ++rank)
+                        shards.push_back(prefix + "_surface_rank" +
+                                         std::to_string(rank) + ".csv");
+                    artifacts.push_back(
+                        {{"kind", "surface"},
+                         {"domain", iDomain},
+                         {"paths", std::move(shards)},
+                         {"schema", "dndsr.cauchy.surface-samples.v1"}});
+                }
+            return Json{{"schema", "dndsr.cauchy.snapshot.v1"},
+                        {"step", simulation.Step()},
+                        {"time", simulation.Time()},
+                        {"token", token},
+                        {"artifacts", std::move(artifacts)}};
         }
 
         bool CompleteAcceptedStep(
@@ -557,6 +586,8 @@ namespace DNDS::Cauchy
                                   "Cauchy output coordinator finalized twice");
             finalized = true;
             WriteSnapshot("-final", true, true);
+            if (asynchronous)
+                asynchronous->Drain();
             if (output.diagnostics.allocations)
                 ReportAllocations("-final");
             Visit([&](index iDomain, Domain &)

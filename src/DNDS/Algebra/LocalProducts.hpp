@@ -1,6 +1,8 @@
 #pragma once
 
 #include "DNDS/Core/Defines.hpp"
+#include "DNDS/Runtime/Array/Array.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include <vector>
 
 namespace DNDS::Algebra::Detail
@@ -34,5 +36,57 @@ namespace DNDS::Algebra::Detail
                     products[iProbe] += inverseScales.empty() ? source(iRow, component) * probes[iProbe](iRow, component)
                                                               : (source(iRow, component) * inverseScales[component]) *
                                                                     (probes[iProbe](iRow, component) * inverseScales[component]);
+    }
+}
+
+namespace DNDS::Algebra
+{
+    /** @brief Reserved local scalar reductions for queued field operations.
+     * @details Product slots share bounded tree scratch, so submissions must
+     * use one ordered lane (or explicit cross-lane dependencies). Inputs and
+     * scratch are retained by eager operation records. No halo or MPI is
+     * performed. Scales are setup-sized metadata; values remain resident.
+     * Products compute sum((x/s)*(y/s)) with the supplied inverse scales.
+     * Finite checks return one for all-finite, including an empty rank.
+     * CPU uses canonical row/component order; CUDA uses a fixed two-level
+     * reduction tree, with no floating-point atomic adds. A per-workspace
+     * completion counter elects the last block to perform the tail in the same
+     * kernel; the numerical order is independent of block arrival order.
+     * Cross-backend sums
+     * agree numerically, not necessarily bitwise.
+     */
+    class LocalProductWorkspace
+    {
+        index _rows, _components;
+        Runtime::Device _device;
+        Runtime::Array<real> _scales, _partial, _result;
+        Runtime::Array<unsigned int> _completed;
+        std::vector<real> _inverseScales;
+        void Submit(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                    const Runtime::Array<real> &, const Runtime::Array<real> &, index slot, bool finite);
+
+    public:
+        LocalProductWorkspace(index rows, index components, index capacity, Runtime::Device device);
+        /// Synchronous configuration boundary; serialize with all submissions.
+        /// Identical scales reuse their resident allocation without uploading.
+        void SetInverseScales(const std::vector<real> &, Runtime::ExecutionContext);
+        void SubmitProduct(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                           const Runtime::Array<real> &x, const Runtime::Array<real> &y, index slot);
+        void SubmitFinite(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                          const Runtime::Array<real> &x, index slot = 0);
+        /// Explicit host observation after the caller drains the producing
+        /// lane. Copies only the small result buffer; does not synchronize MPI.
+        std::vector<real> ReadResults(index count, Runtime::ExecutionContext) const;
+    };
+
+    namespace Detail
+    {
+        using ProductInput = Runtime::ArrayView<const real>;
+        using ProductOutput = Runtime::ArrayView<real>;
+        using ProductCompletion = Runtime::ArrayView<unsigned int, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>>;
+        /// Host launcher; all inputs and scratch are borrowed whole-array views.
+        void ReduceLocalProductCUDA(Runtime::ExecutionContext, ProductInput x, ProductInput y,
+                                    ProductInput inverseScales, ProductOutput partial, ProductOutput result, ProductCompletion completed,
+                                    index slot, bool finite);
     }
 }

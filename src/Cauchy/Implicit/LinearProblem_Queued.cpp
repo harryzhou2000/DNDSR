@@ -1,0 +1,279 @@
+#include "Cauchy/Implicit/LinearProblem.hpp"
+#include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "DNDS/Runtime/Execution/EagerArrayBatch.hpp"
+#ifdef DNDS_USE_CUDA
+#    include "Cauchy/Implicit/CUDA/LinearBlockKernels.hpp"
+#endif
+
+namespace DNDS::Cauchy
+{
+    namespace R = Runtime;
+    namespace A = Algebra;
+    namespace
+    {
+        using Field = A::DofField<real>;
+        using ReadRows = R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>;
+        using WriteRows = R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>;
+        using Input = R::ArrayOperand<real, false, R::UniformTableRows>;
+        using Output = R::ArrayOperand<real, true, R::UniformTableRows>;
+        template <class State, class Visit>
+        void Fields(State &state, Visit visit)
+        {
+            if constexpr (std::is_same_v<std::remove_const_t<State>, EquationDofs>)
+                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                    visit(state.PhysicalField(iField));
+            else
+                visit(state);
+        }
+        template <class State>
+        index Width(const State &state)
+        {
+            if constexpr (std::is_same_v<State, EquationDofs>)
+                return state.ComponentNumber();
+            else
+                return index(state.Width());
+        }
+        template <class T>
+        auto Table(R::ArrayView<T, R::AccessBoundsChecks, R::UniformTableRows> view)
+        {
+            DNDS_check_throw_info(view.kind == R::RowLayoutKind::Table, "queued linear CUDA/matrix operand requires AoS");
+            return R::ArrayView<T, R::AccessBoundsChecks, R::TableRows>{view.data, nullptr, view.rows,
+                                                                        view.width, view.stride, nullptr, view.kind, view.device};
+        }
+        struct ColumnSlot
+        {
+            index owned, ghost, component;
+        };
+        /// Only component-scale metadata. Arrays themselves are retained by
+        /// SubmitArrayBatch, and no DOF/communicator owner enters the callback.
+        struct ComponentBinding
+        {
+            R::MetadataBuffer<ColumnSlot> columns;
+            index ownedRows = 0, ghostRows = 0;
+            template <class T>
+            auto View(SpanView<const R::ArrayView<T, R::AccessBoundsChecks, R::UniformTableRows>> values) const
+            {
+                std::vector<A::DofComponentColumn<T>> result;
+                result.reserve(columns.size());
+                for (const auto &column : columns.HostView())
+                    result.push_back({values[column.owned], column.ghost >= 0 ? values[column.ghost] : R::ArrayView<T, R::AccessBoundsChecks, R::UniformTableRows>{}, column.component});
+                return A::DofComponentLayout<T>(std::move(result), ownedRows, ghostRows);
+            }
+            index FirstOwned() const { return columns.HostView()[0].owned; }
+            index FirstGhost() const { return columns.HostView()[0].ghost; }
+        };
+        template <class State>
+        ComponentBinding Describe(const State &state, index ownedSlot, index ghostSlot)
+        {
+            std::vector<ColumnSlot> columns;
+            if constexpr (std::is_same_v<State, EquationDofs>)
+                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                {
+                    const auto location = state.LocateBlock(iBlock);
+                    for (index j = 0; j < location.componentNumber; ++j)
+                        columns.push_back({ownedSlot + location.physicalField,
+                                           ghostSlot >= 0 ? ghostSlot + location.physicalField : -1, location.firstComponent + j});
+                }
+            else
+                for (index j = 0; j < index(state.Width()); ++j)
+                    columns.push_back({ownedSlot, ghostSlot, j});
+            return {R::MetadataBuffer<ColumnSlot>(std::move(columns)), index(state.Space().OwnedRows()),
+                    ghostSlot >= 0 ? index(state.Space().GhostRows()) : 0};
+        }
+        template <class State>
+        ComponentBinding AddInput(const State &state, bool withGhost, std::vector<Input> &inputs)
+        {
+            const index own = index(inputs.size());
+            Fields(state, [&](const auto &field)
+                   { inputs.push_back(R::ReadAs<R::UniformTableRows>(field.Owned())); });
+            const index ghost = withGhost ? index(inputs.size()) : -1;
+            if (withGhost)
+                Fields(state, [&](const auto &field)
+                       { inputs.push_back(R::ReadAs<R::UniformTableRows>(field.Ghost())); });
+            return Describe(state, own, ghost);
+        }
+    }
+
+    template <class State>
+    void LinearProblemContext::SubmitRows(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                          OptionalRef<const State> rhs, OptionalRef<const State> input, State &output, LinearRegion region) const
+    {
+        ValidateMatrix();
+        const auto context = stream.Context();
+        const bool jacobi = bool(rhs), zero = !input;
+        DNDS_check_throw_info(engine.Owns(stream) && context.device == Device() && (rhs || input),
+                              "queued linear stream, device or operands differ");
+        DNDS_check_throw_info(region == LinearRegion::All || region == LinearRegion::Core || region == LinearRegion::HaloDependent,
+                              "invalid queued linear region");
+        const auto validate = [&](const State &state)
+        {
+            state.Validate();
+            DNDS_check_throw_info(state.Space().Same(_space) && Width(state) == _components && state.Device() == Device(),
+                                  "queued linear state space, width or device differs");
+            if (Device() != R::Device::Host())
+            {
+                if constexpr (std::is_same_v<State, EquationDofs>)
+                    (void)state.CoupledField();
+                Fields(state, [](const auto &field)
+                       { DNDS_check_throw_info(field.Owned().Layout().Kind() == R::RowLayoutKind::Table &&
+                                                   field.Ghost().Layout().Kind() == R::RowLayoutKind::Table,
+                                               "queued CUDA linear state requires combined AoS"); });
+            }
+        };
+        validate(output);
+        const auto distinct = [&](const State &source)
+        {
+            validate(source);
+            if constexpr (std::is_same_v<State, EquationDofs>)
+                source.RequireCompatible(output);
+            Fields(output, [&](const auto &destination)
+                   { Fields(source, [&](const auto &field)
+                            { DNDS_check_throw_info(!destination.Owned().Storage().Overlaps(field.Owned().Storage()) &&
+                                                        !destination.Owned().Storage().Overlaps(field.Ghost().Storage()),
+                                                    "queued linear output aliases an input"); }); });
+        };
+        if (rhs)
+            distinct(*rhs);
+        if (input)
+            distinct(*input);
+        Fields(output, [&](const auto &field)
+               {
+            const auto values = field.Owned().Storage();
+            DNDS_check_throw_info(!values.Overlaps(_diagonal.Storage()) && !values.Overlaps(_inverse.Storage()) &&
+                                      (!_offDiagonal || !values.Overlaps(_offDiagonal->Values().Storage())),
+                                  "queued linear output aliases matrix storage"); });
+        if (jacobi)
+            DNDS_check_throw_info(_inverseCurrent && _inverseSourceEpoch == _diagonal.MutationEpoch() &&
+                                      _inverseEpoch == _inverse.MutationEpoch(),
+                                  "queued Jacobi inverse is missing or invalidated by a submitted write");
+
+        if (!zero && !_offDiagonal && Device() != R::Device::Host())
+        {
+            DNDS_check_throw_info(_offDiagonalEvaluator && _offDiagonalEvaluator->Device() == Device(),
+                                  "queued evaluated Jacobian is missing or belongs to another device");
+            const auto coupled = [](auto &state) -> decltype(auto)
+            {
+                if constexpr (std::is_same_v<State, EquationDofs>)
+                    return state.CoupledField();
+                else
+                    return (state);
+            };
+            EvaluatedLinearAction action;
+            action.rows = region == LinearRegion::All    ? _pattern->rows.OrderArray()
+                          : region == LinearRegion::Core ? _pattern->rows.CoreArray()
+                                                         : _pattern->rows.DependentArray();
+            action.diagonal = jacobi ? _inverse : _diagonal;
+            action.owned = coupled(*input).Owned();
+            if (region != LinearRegion::Core && _pattern->hasGhostColumns)
+                action.ghost = coupled(*input).Ghost();
+            if (rhs)
+                action.rhs = coupled(*rhs).Owned();
+            action.output = coupled(output).Owned();
+            action.status = ActionStatus();
+            action.fullDiagonal = _diagonalStorage == DiagonalStorage::Block;
+            _offDiagonalEvaluator->SubmitRows(engine, stream, std::move(action));
+            return;
+        }
+
+        struct Frozen
+        {
+            LinearPatternStorage::ReadAccess pattern;
+            std::optional<R::Array<index>::ReadLease> offsets;
+            std::shared_ptr<const OffDiagonalEvaluator> evaluator;
+            explicit Frozen(LinearPatternStorage::ReadAccess read) : pattern(std::move(read)) {}
+        };
+        auto retained = std::make_shared<Frozen>(_pattern->rows.Read(context));
+        std::vector<Input> reads{R::ReadAs<R::UniformTableRows>(_diagonal)};
+        const index diagonalSlot = jacobi ? index(reads.size()) : 0;
+        if (jacobi)
+            reads.push_back(R::ReadAs<R::UniformTableRows>(_inverse));
+        index blocksSlot = -1;
+        if (!zero)
+        {
+            if (_offDiagonal)
+            {
+                retained->offsets.emplace(_offDiagonal->OffsetArray().Read(context));
+                blocksSlot = index(reads.size());
+                reads.push_back(R::ReadAs<R::UniformTableRows>(_offDiagonal->Values()));
+            }
+            else
+            {
+                DNDS_check_throw_info(context.device == R::Device::Host() && _offDiagonalEvaluator,
+                                      "queued evaluated device Jacobian producer is not installed");
+                retained->evaluator = _offDiagonalEvaluator;
+            }
+        }
+        ComponentBinding right, source;
+        if (rhs)
+            right = AddInput(*rhs, false, reads);
+        if (input)
+            source = AddInput(*input, region != LinearRegion::Core && _pattern->hasGhostColumns, reads);
+        std::vector<Output> writes;
+        Fields(output, [&](auto &field)
+               { writes.push_back(R::WriteAs<R::UniformTableRows>(field.Owned())); });
+        const auto destination = Describe(output, 0, -1);
+        const auto components = _components;
+        const bool fullDiagonal = _diagonalStorage == DiagonalStorage::Block;
+        R::SubmitArrayBatch(engine, stream, [retained, right, source, destination, components, fullDiagonal, region, diagonalSlot, blocksSlot, jacobi, zero](R::ExecutionContext context, SpanView<const ReadRows> values, SpanView<const WriteRows> outputs)
+                            {
+            const auto pattern = retained->pattern.View();
+            const auto rows = region == LinearRegion::All ? pattern.order : region == LinearRegion::Core ? pattern.core : pattern.dependent;
+            A::BlockMatrixArrayView<const real> blocks;
+            if (blocksSlot >= 0)
+                blocks = {Table(values[blocksSlot]), retained->offsets->template View<R::FixedRows<1>>(), components};
+            if (context.device != R::Device::Host())
+            {
+#ifdef DNDS_USE_CUDA
+                const CUDA::LinearBlockInput request{blocks, zero ? decltype(pattern.columns){} : pattern.columns,
+                    rows, Table(values[diagonalSlot]), pattern.ownedRows, int(components), fullDiagonal};
+                const auto x = zero ? CUDA::LinearReadRows{} : Table(values[source.FirstOwned()]);
+                const auto ghost = !zero && source.FirstGhost() >= 0 ? Table(values[source.FirstGhost()]) : CUDA::LinearReadRows{};
+                if (jacobi)
+                    CUDA::JacobiLinearRows(context, request, Table(values[right.FirstOwned()]), x, ghost, Table(outputs[0]), zero);
+                else
+                    CUDA::ApplyLinearRows(context, request, x, ghost, Table(outputs[0]));
+#else
+                DNDS_check_throw_info(false, "CUDA linear operator is not compiled");
+#endif
+                return;
+            }
+            CPU::LinearBlockInput request{{{}, retained->evaluator.get(), components}, pattern, rows,
+                Table(values[diagonalSlot]), components, fullDiagonal};
+            if (blocksSlot >= 0) request.blocks.assembled.emplace(blocks);
+            const auto y = destination.template View<real>(outputs);
+            const auto x = (zero ? right : source).View<const real>(values);
+            if (jacobi)
+            {
+                const auto b = right.View<const real>(values);
+                CPU::JacobiLinearRows(request, b.View().OwnedPart(), x.View().OwnedPart(), x.View().GhostPart(), y.View(), zero);
+            }
+            else
+                CPU::ApplyLinearRows(request, x.View().OwnedPart(), x.View().GhostPart(), y.View()); }, std::move(reads), std::move(writes));
+    }
+
+    void LinearProblemContext::SubmitApply(R::EagerEngine &engine, const R::ExecutionStream &stream, const Field &input, Field &output, LinearRegion region) const
+    {
+        SubmitRows<Field>(engine, stream, {}, std::cref(input), output, region);
+    }
+    void LinearProblemContext::SubmitApply(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &input, EquationDofs &output, LinearRegion region) const
+    {
+        SubmitRows<EquationDofs>(engine, stream, {}, std::cref(input), output, region);
+    }
+    void LinearProblemContext::SubmitJacobi(R::EagerEngine &engine, const R::ExecutionStream &stream, const Field &rhs, const Field &input, Field &output, LinearRegion region) const
+    {
+        SubmitRows<Field>(engine, stream, std::cref(rhs), std::cref(input), output, region);
+    }
+    void LinearProblemContext::SubmitJacobi(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &rhs, const EquationDofs &input, EquationDofs &output, LinearRegion region) const
+    {
+        SubmitRows<EquationDofs>(engine, stream, std::cref(rhs), std::cref(input), output, region);
+    }
+    void LinearProblemContext::SubmitJacobiZero(R::EagerEngine &engine, const R::ExecutionStream &stream, const Field &rhs, Field &output, LinearRegion region) const
+    {
+        SubmitRows<Field>(engine, stream, std::cref(rhs), {}, output, region);
+    }
+    void LinearProblemContext::SubmitJacobiZero(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &rhs, EquationDofs &output, LinearRegion region) const
+    {
+        SubmitRows<EquationDofs>(engine, stream, std::cref(rhs), {}, output, region);
+    }
+}

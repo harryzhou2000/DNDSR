@@ -14,6 +14,7 @@ namespace DNDS::Cauchy
                               "source sampling stream, placement or row space differs");
         if (!sourceOffsets.RowCount())
             return;
+        const auto timing = BeginQueuedPhase(engine, stream, SamplingPhase);
         DNDS_check_throw_info(index(sourceValues.size()) == state.PhysicalFieldNumber(), "source sample grouping differs");
         const bool polynomial = owner->settings.numerics.reconstruction == "variational";
         const bool gradients = owner->equation.HasRANS();
@@ -55,11 +56,13 @@ namespace DNDS::Cauchy
                     else
                         replicate(directGradients[iField].Owned(), sourceGradients[iField][d], dim, d);
         }
+        EndQueuedPhase(engine, stream, timing);
     }
 
     void FiniteVolume::Workspace::SubmitDeviceVolumeSource(
         R::EagerEngine &engine, const R::ExecutionStream &stream,
-        const EquationDofs &state, OptionalRef<EquationDofs> result, real time)
+        const EquationDofs &state, OptionalRef<EquationDofs> result, real time,
+        OptionalRef<EquationDofs> lowOrder)
     {
 #ifdef DNDS_USE_CUDA
         state.RequireSchema(owner->equation.Schema());
@@ -74,9 +77,16 @@ namespace DNDS::Cauchy
             EquationDofOperations::RequireDistinct(state, *result);
             if (activeFluxCoefficients)
                 EquationDofOperations::RequireDistinct(FluxCoefficients(), *result);
-            if (lowOrderResidual)
-                EquationDofOperations::RequireDistinct(*result, *lowOrderResidual);
+            if (lowOrder)
+            {
+                state.RequireCompatible(*lowOrder);
+                EquationDofOperations::RequireDistinct(state, *lowOrder);
+                EquationDofOperations::RequireDistinct(*result, *lowOrder);
+                if (activeFluxCoefficients)
+                    EquationDofOperations::RequireDistinct(FluxCoefficients(), *lowOrder);
+            }
         }
+        DNDS_check_throw_info(!lowOrder || result, "low-order source output requires the primary residual");
         struct Inputs
         {
             std::shared_ptr<const Data> owner;
@@ -99,9 +109,13 @@ namespace DNDS::Cauchy
         if (result && frame.moving)
         {
             auto &output = result->CoupledField().Owned();
-            auto &low = lowOrderResidual ? lowOrderResidual->CoupledField().Owned() : output;
-            R::SubmitArrays(engine, stream, [pin, frame, produceLow = bool(lowOrderResidual)](R::ExecutionContext context, auto means, auto output, auto low, auto cells)
-                            { CUDA::AddRotationSource(context, pin->metric.View().cells, frame, means, output, low, produceLow, cells); }, R::ReadAs<R::TableRows>(state.CoupledField().Owned()), R::ReadWriteAs<R::TableRows>(output), R::ReadWriteAs<R::TableRows>(low), R::ReadAs<R::FixedRows<1>>(DeviceCellSelection(CFV::ReconstructionRegion::All)));
+            const auto &selection = DeviceCellSelection(CFV::ReconstructionRegion::All);
+            if (lowOrder)
+                R::SubmitArrays(engine, stream, [pin, frame](R::ExecutionContext context, auto means, auto output, auto low, auto cells)
+                                { CUDA::AddRotationSource(context, pin->metric.View().cells, frame, means, output, low, true, cells); }, R::ReadAs<R::TableRows>(state.CoupledField().Owned()), R::ReadWriteAs<R::TableRows>(output), R::ReadWriteAs<R::TableRows>(lowOrder->CoupledField().Owned()), R::ReadAs<R::FixedRows<1>>(selection));
+            else
+                R::SubmitArrays(engine, stream, [pin, frame](R::ExecutionContext context, auto means, auto output, auto cells)
+                                { CUDA::AddRotationSource(context, pin->metric.View().cells, frame, means, output, output, false, cells); }, R::ReadAs<R::TableRows>(state.CoupledField().Owned()), R::ReadWriteAs<R::TableRows>(output), R::ReadAs<R::FixedRows<1>>(selection));
         }
         if (!sourceOffsets.RowCount())
             return;

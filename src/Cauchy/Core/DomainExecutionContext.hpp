@@ -9,6 +9,7 @@
 
 namespace DNDS::Cauchy
 {
+    struct BoundaryInputs;
     /// One externally posted interface publication acquired by spatial FV
     /// evaluations. `publish` runs on the compute lane after `completion` and
     /// installs the newly ready boundary packet. The callback must be rank-local
@@ -23,6 +24,12 @@ namespace DNDS::Cauchy
         /// False permits reuse of caches already tied to this publication;
         /// true requires the consumer to import the event before binding it.
         bool publicationPending = true;
+        /// Optional stable receiver payload handles for this round, available
+        /// at controller submission. They retain a one-round publication slot;
+        /// import completion and run publish before using its provenance.
+        /// Unlike the legacy deferred binding callback, this permits array
+        /// access reservations before transfer/mapping actually completes.
+        std::shared_ptr<const BoundaryInputs> incoming;
     };
     struct ExecutionSettings;
 

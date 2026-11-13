@@ -77,16 +77,19 @@ namespace DNDS::Cauchy::Bindings
         },
                 py::arg("prototype"), py::arg("fields"), py::arg("bindings"),
                 "Share new physical fields with the prototype schema/row space. Ordered (name,field) and (block,field,offset) lists must cover all components without gaps/overlap. No value copy or new numerical capability.")
-            .def("copy_from", &EquationDofOperations::Copy, py::arg("source"), py::call_guard<py::gil_scoped_release>(),
-                 Local)
-            .def("fill", &EquationDofOperations::Fill, py::arg("value"), py::call_guard<py::gil_scoped_release>(),
-                 Local)
-            .def("scale", &EquationDofOperations::Scale, py::arg("value"), py::call_guard<py::gil_scoped_release>(),
-                 Local)
-            .def("axpy", &EquationDofOperations::Axpy, py::arg("alpha"), py::arg("source"),
+            .def("copy_from", py::overload_cast<EquationDofs &, const EquationDofs &>(&EquationDofOperations::Copy),
+                 py::arg("source"), py::call_guard<py::gil_scoped_release>(), Local)
+            .def("fill", py::overload_cast<EquationDofs &, real>(&EquationDofOperations::Fill), py::arg("value"),
                  py::call_guard<py::gil_scoped_release>(), Local)
-            .def("linear_combination", &EquationDofOperations::LinearCombination, py::arg("alpha"), py::arg("x"),
-                 py::arg("beta"), py::arg("y"), py::call_guard<py::gil_scoped_release>(), Local);
+            .def("scale", py::overload_cast<EquationDofs &, real>(&EquationDofOperations::Scale), py::arg("value"),
+                 py::call_guard<py::gil_scoped_release>(), Local)
+            .def("axpy", py::overload_cast<EquationDofs &, real, const EquationDofs &>(&EquationDofOperations::Axpy),
+                 py::arg("alpha"), py::arg("source"), py::call_guard<py::gil_scoped_release>(), Local)
+            .def("linear_combination",
+                 py::overload_cast<EquationDofs &, real, const EquationDofs &, real, const EquationDofs &>(
+                     &EquationDofOperations::LinearCombination),
+                 py::arg("alpha"), py::arg("x"), py::arg("beta"), py::arg("y"),
+                 py::call_guard<py::gil_scoped_release>(), Local);
         py::class_<AuxiliaryRequest>(m, "AuxiliaryRequest")
             .def(py::init<>())
             .def_readwrite("mean_thermodynamics", &AuxiliaryRequest::meanThermodynamics)

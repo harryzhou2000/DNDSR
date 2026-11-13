@@ -125,6 +125,24 @@ TEST_CASE("CUDA RANS quadrature sources and destruction diagonals match generic 
                                     : jacobian ? C::CPU::AddQuadratureSourceJacobian(request, equation, worker)
                                                : C::CPU::AddVolumeSources(request, equation, worker);
                 REQUIRE(bool(status));
+                std::vector<real> serial(size_t(2 * outputWidth));
+                for (I iCell = 0; iCell < 2; ++iCell)
+                    for (I j = 0; j < outputWidth; ++j)
+                    {
+                        serial[size_t(iCell * outputWidth + j)] = output.View()(iCell, j);
+                        output.View()(iCell, j) = .125;
+                    }
+                std::vector<C::CPU::SourceWorkerScratch> workers;
+                for (int iWorker = 0; iWorker < 3; ++iWorker)
+                    workers.emplace_back(equation.MakePointEvaluator(), width);
+                const DNDS::SpanView<C::CPU::SourceWorkerScratch> slots{workers.data(), I(workers.size())};
+                const auto threaded = mean       ? C::CPU::AddMeanSourceJacobian(request, equation, slots)
+                                      : jacobian ? C::CPU::AddQuadratureSourceJacobian(request, equation, slots)
+                                                 : C::CPU::AddVolumeSources(request, equation, slots);
+                REQUIRE(bool(threaded));
+                for (I iCell = 0; iCell < 2; ++iCell)
+                    for (I j = 0; j < outputWidth; ++j)
+                        CHECK(output.View()(iCell, j) == serial[size_t(iCell * outputWidth + j)]);
             }
             auto du = means.To(device), dq = samples.To(device), dw = weights.To(device), dl = lengths.To(device), dm = wallMean.To(device), dp = wallPoints.To(device), dg = metric.To(device);
             auto offDevice = offsets.To(device);

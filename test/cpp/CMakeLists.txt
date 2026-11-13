@@ -259,6 +259,13 @@ dnds_add_mpi_test(cauchy_limited_vr_checkpoint "Cauchy/test_LimitedVRCheckpoint.
 dnds_add_mpi_test(cauchy_foundation "Cauchy/test_Foundation.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_interface_iteration "Cauchy/test_InterfaceIteration.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_linear "Cauchy/test_LinearProblem.cpp" "cauchy;cfv;geom;dnds")
+if(DNDS_USE_OMP AND DNDS_DIST_MT_USE_OMP)
+    add_test(NAME dnds_cauchy_sgs_subpartitions_omp_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+            $<TARGET_FILE:dnds_test_cauchy_linear> "--test-case=SGS mesh subpartitions*" ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(dnds_cauchy_sgs_subpartitions_omp_np2 PROPERTIES
+        PROCESSORS 4 TIMEOUT 120 ENVIRONMENT "OMP_NUM_THREADS=2;DNDS_DIST_OMP_NUM_THREADS=2")
+endif()
 dnds_add_mpi_test(cauchy_linear_solver "Cauchy/test_LinearSolver.cpp" "cauchy;cfv;geom;dnds")
 add_test(NAME dnds_cauchy_linear_solver_abort_np2
     COMMAND ${CMAKE_COMMAND}
@@ -382,6 +389,21 @@ pybind11_add_module(runtime_array_bridge_test MODULE EXCLUDE_FROM_ALL NO_EXTRAS 
 target_include_directories(runtime_array_bridge_test PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(runtime_array_bridge_test PRIVATE dnds_shared ${DNDS_EXTERNAL_LIBS})
 if(DNDS_USE_CUDA)
+    add_executable(cfv_test_distributed_interface_sampling_cuda EXCLUDE_FROM_ALL CFV/test_DistributedInterfaceSamplingCUDA.cu)
+    target_include_directories(cfv_test_distributed_interface_sampling_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDE_DOCTEST} ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(cfv_test_distributed_interface_sampling_cuda PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+    add_test(NAME cfv_distributed_interface_sampling_cuda_np1 COMMAND $<TARGET_FILE:cfv_test_distributed_interface_sampling_cuda>)
+    add_test(NAME cfv_distributed_interface_sampling_cuda_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py $<TARGET_FILE:cfv_test_distributed_interface_sampling_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(cfv_distributed_interface_sampling_cuda_np1 cfv_distributed_interface_sampling_cuda_np2 PROPERTIES TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=1")
+    add_executable(cauchy_test_interface_cuda EXCLUDE_FROM_ALL Cauchy/test_InterfaceCUDA.cu)
+    target_include_directories(cauchy_test_interface_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDE_DOCTEST} ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(cauchy_test_interface_cuda PRIVATE cauchy physics cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+    add_test(NAME cauchy_interface_cuda_np1 COMMAND $<TARGET_FILE:cauchy_test_interface_cuda>)
+    add_test(NAME cauchy_interface_cuda_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py $<TARGET_FILE:cauchy_test_interface_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(cauchy_interface_cuda_np1 cauchy_interface_cuda_np2 PROPERTIES TIMEOUT 240 ENVIRONMENT "OMP_NUM_THREADS=1")
+    add_dependencies(cauchy_unit_tests cauchy_test_interface_cuda)
     target_sources(runtime_array_bridge_test PRIVATE DNDS/RuntimeArrayBridge_CUDA.cu ../demos/MockStencil.cu)
 endif()
 set_target_properties(runtime_array_bridge_test PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
@@ -460,24 +482,56 @@ if(DNDS_USE_CUDA)
     dnds_add_unit_test(native_dof_algebra_cuda "DNDS/test_NativeDofAlgebra_CUDA.cu" "dnds")
     add_dependencies(dnds_unit_tests dnds_test_native_dof_algebra_cuda)
     dnds_add_unit_test(runtime_cuda_engine "DNDS/test_CUDAExecution.cu" "dnds")
-    dnds_add_unit_test(cauchy_point_physics_cuda "Cauchy/test_PointPhysics_CUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_point_physics_cuda "Cauchy/test_PointPhysics_CUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_point_physics_cuda)
-    dnds_add_unit_test(cauchy_auxiliary_cuda "Cauchy/test_AuxiliaryCUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_auxiliary_cuda "Cauchy/test_AuxiliaryCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_auxiliary_cuda)
-    dnds_add_unit_test(cauchy_rhs_cuda "Cauchy/test_RHSCUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_rhs_cuda "Cauchy/test_RHSCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_rhs_cuda)
-    dnds_add_unit_test(cauchy_source_cuda "Cauchy/test_SourceCUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_source_cuda "Cauchy/test_SourceCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_source_cuda)
-    dnds_add_unit_test(cauchy_positivity_cuda "Cauchy/test_PositivityCUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_positivity_cuda "Cauchy/test_PositivityCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_positivity_cuda)
-    dnds_add_unit_test(cauchy_gradient_cuda "Cauchy/test_GradientCUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_gradient_cuda "Cauchy/test_GradientCUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    dnds_add_unit_test(cauchy_linear_block_cuda "Cauchy/test_LinearBlockCUDA.cpp" "cauchy;physics;cfv;geom;dnds")
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_linear_block_cuda)
+    dnds_add_unit_test(cauchy_linear_inverse_cuda "Cauchy/test_LinearInverseCUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_linear_inverse_cuda)
+    dnds_add_unit_test(cauchy_linear_solver_cuda "Cauchy/test_LinearSolverCUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_linear_solver_cuda)
+    dnds_add_unit_test(cauchy_time_fas_cuda "Cauchy/test_TimeFASCUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_time_fas_cuda)
+    dnds_add_unit_test(cauchy_domain_cuda "Cauchy/test_DomainCUDA.cpp" "cauchy;physics;cfv;geom;dnds")
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_domain_cuda)
+    add_test(NAME dnds_cauchy_domain_cuda_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+            ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+            $<TARGET_FILE:dnds_test_cauchy_domain_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(dnds_cauchy_domain_cuda dnds_cauchy_domain_cuda_np2 PROPERTIES
+        TIMEOUT 600 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda;mpi")
+    set_tests_properties(dnds_cauchy_time_fas_cuda PROPERTIES TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda")
+    add_test(NAME dnds_cauchy_linear_solver_cuda_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:dnds_test_cauchy_linear_solver_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(dnds_cauchy_linear_solver_cuda dnds_cauchy_linear_solver_cuda_np2 PROPERTIES
+        TIMEOUT 300 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda;mpi")
+    dnds_add_unit_test(cauchy_frozen_jacobian_cuda "Cauchy/test_FrozenJacobianCUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_frozen_jacobian_cuda)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_gradient_cuda)
-    dnds_add_unit_test(cauchy_limited_vr_cuda "Cauchy/test_LimitedVRCUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_limited_vr_cuda "Cauchy/test_LimitedVRCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_limited_vr_cuda)
-    dnds_add_unit_test(cauchy_characteristics_cuda "Cauchy/test_CharacteristicsCUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_characteristics_cuda "Cauchy/test_CharacteristicsCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_characteristics_cuda)
-    dnds_add_unit_test(cauchy_state_cuda "Cauchy/test_StateCUDA.cu" "cauchy;physics;dnds")
+    dnds_add_unit_test(cauchy_state_cuda "Cauchy/test_StateCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_state_cuda)
+    dnds_add_unit_test(cauchy_spatial_schedule_cuda "Cauchy/test_SpatialScheduleCUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_spatial_schedule_cuda)
+    add_test(NAME dnds_cauchy_spatial_schedule_cuda_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+        $<TARGET_FILE:dnds_test_cauchy_spatial_schedule_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(dnds_cauchy_spatial_schedule_cuda_np2 PROPERTIES
+        TIMEOUT 300 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda;mpi")
     set_tests_properties(dnds_runtime_cuda_engine PROPERTIES TIMEOUT 60)
     add_dependencies(dnds_unit_tests dnds_test_runtime_cuda_engine)
     add_dependencies(dnds_unit_tests dnds_test_runtime_cuda)
@@ -726,6 +780,9 @@ function(cfv_add_mpi_test TEST_NAME SRC_FILE LIBS)
 endfunction()
 
 add_custom_target(cfv_unit_tests)
+if(DNDS_USE_CUDA)
+    add_dependencies(cfv_unit_tests cfv_test_distributed_interface_sampling_cuda)
+endif()
 add_dependencies(all_unit_tests cfv_unit_tests)
 
 cfv_add_mpi_test(reconstruction "CFV/test_Reconstruction.cpp" "cfv;geom;dnds")
@@ -858,7 +915,8 @@ if(DNDS_USE_CUDA)
                 PROCESSORS ${_np} TIMEOUT 180 ENVIRONMENT "${_environment}")
         endforeach()
     endforeach()
-    list(APPEND CFV_TEST_TARGETS cfv_test_device_transferable cfv_test_reconstruction_cuda)
+    list(APPEND CFV_TEST_TARGETS cfv_test_device_transferable cfv_test_reconstruction_cuda
+        cfv_test_limited_vr_cuda cfv_test_characteristic_cuda)
 endif()
 
 foreach(T ${CFV_TEST_TARGETS})
@@ -981,12 +1039,14 @@ if(Python_EXECUTABLE)
     add_custom_command(OUTPUT "${_nonlinear_diagnostic_header}"
         COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_pipeline_diagnostic.py"
             "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_Evaluation.cpp" "${_nonlinear_diagnostic_header}"
-            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_RHS.cpp"
-            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourcePreparation.cpp"
+            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_RHSHostQueued.cpp"
+            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourceQueued.cpp"
+            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourceHostQueued.cpp"
         DEPENDS Cauchy/extract_pipeline_diagnostic.py
             "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_Evaluation.cpp"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_RHS.cpp"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourcePreparation.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_RHSHostQueued.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourceQueued.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourceHostQueued.cpp"
         VERBATIM)
     target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_nonlinear_diagnostic_header}")
     set_source_files_properties("${_nonlinear_diagnostic_header}" PROPERTIES HEADER_FILE_ONLY TRUE)

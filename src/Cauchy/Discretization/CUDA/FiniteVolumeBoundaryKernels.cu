@@ -46,7 +46,10 @@ namespace DNDS::Cauchy::CUDA
             if (request.components == 7 && !primitive)
             {
                 request.wallMean.ValidateDevice(context.device);
-                DNDS_check_throw_info(request.wallMean.RowCount() == request.means.RowCount(), "CUDA boundary wall means are missing");
+                // Mesh wall metrics cover owned+ghost cells; this boundary
+                // pass consumes only owned means. Retain the complete metric
+                // publication instead of manufacturing an owned-only copy.
+                DNDS_check_throw_info(request.wallMean.RowCount() >= request.means.RowCount(), "CUDA boundary wall means are missing");
             }
             if (request.hasIncoming)
             {
@@ -89,7 +92,7 @@ namespace DNDS::Cauchy::CUDA
                 }
                 // PP POLICY: repair this temporary unlimited VR boundary input,
                 // never its coefficients. The independent flux beta follows.
-                if (request.polynomial && parameters.allowPointFallback && !parameters.thermal.ClippedReferenceAdmissible(point))
+                if (request.polynomial && (parameters.allowPointFallback || request.forcePointFallback) && !parameters.thermal.ClippedReferenceAdmissible(point))
                     point = mean;
                 if constexpr (Components > 5)
                     if (request.repairRANS)
@@ -98,7 +101,7 @@ namespace DNDS::Cauchy::CUDA
                 const real wallDistance = Components == 7 ? request.wallMean(sample.cell, 0) : 0;
                 status = TryPerfectGasBoundaryState<Components>(condition, parameters.gas, parameters.rans, point, mean, wallDistance,
                                                                 sample.normal, sample.location, request.time, request.frame, request.exterior);
-                if (!status && request.polynomial && parameters.allowPointFallback && Physics::AllowsMeanFallback(status))
+                if (!status && request.polynomial && (parameters.allowPointFallback || request.forcePointFallback) && Physics::AllowsMeanFallback(status))
                 {
                     point = mean;
                     status = TryPerfectGasBoundaryState<Components>(condition, parameters.gas, parameters.rans, point, mean, wallDistance,

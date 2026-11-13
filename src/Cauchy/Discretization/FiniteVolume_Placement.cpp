@@ -51,6 +51,7 @@ namespace DNDS::Cauchy
         {
             CFV::ReconstructionResidencyOptions options;
             options.retainHostPayloads = false;
+            options.arbitraryPointSampling = _data->hasInterfaces;
             options.basis = true;
             options.basisDerivativeOrder = 1;
             placed->reconstruction = _data->reconstruction->Place(device, context, options);

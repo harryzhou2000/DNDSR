@@ -1,5 +1,92 @@
 # Cauchy native implicit operator contracts
 
+## Queued row actions
+
+`LinearProblemContext::SubmitApply`, `SubmitJacobi` and `SubmitJacobiZero`
+reserve numerical operands with Runtime `SubmitArrayBatch`. The retained record
+owns array/layout reservations, immutable symbolic read scopes and (on the CPU
+evaluated path) the frozen evaluator. It does not capture a live problem pointer
+or an equation-field communicator owner. CPU-inline, CPU-worker and CUDA use the
+same submission interface. CPU retains segmented and column-major layouts;
+the specialized CUDA leaves require full combined AoS widths 5, 6 or 7.
+
+The controller still submits input exchange, core work, a dependency on exchange
+completion, then dependent work. Core actions acquire no input-ghost access.
+Jacobi's optional second local sweep copies the same frozen remote values into
+its scratch halo using queued DNDS algebra, with no intervening communication.
+Zero-start Jacobi omits input and off-diagonal reservations entirely. These are
+row actions, not SGS scans; they have no ordered new-value neighbor reads.
+
+An inverse records the diagonal and inverse Array mutation epochs. Queued Jacobi
+checks them at submission, so a submitted write invalidates an inverse before
+that write completes. Subsequent ordered writes do not retroactively invalidate
+an already accepted read: Runtime access ordering protects the accepted prefix.
+This is distinct from checking completed value versions inside a worker.
+
+Independent CPU matrix-action/Jacobi rows use private per-partition dense
+scratch, allocated before OpenMP execution. Diagonal inversion keeps the same
+per-cell guarded LU/SVD policy and merges integer fallback counts after workers
+join. SGS scans retain their existing logical ordering at OMP=1.
+
+`LinearSweepPartitions` supplies immutable physical row-range boundaries from
+the mesh setup to CPU SGS. With distributed OMP enabled, each subpartition
+scans its selected core/dependent rows sequentially in the existing logical
+order. Across subpartitions, the lower scan reads the frozen old iterate
+(analytic zero for zero-start), and the upper scan reads the completed lower
+result. It never reads a different partition's concurrently changing output.
+The lower/upper phase joins and optional exposed MPI middle exchange remain
+unchanged. Empty metadata means a single serial block; OMP=1 ignores the
+partition split and reproduces the original global scan. Independent matrix
+and Jacobi actions do not require these ordered-sweep boundaries. This does
+not add CUDA SGS or change CPU ILU triangular ordering.
+
+Spatial entry validates shapes and owners without acquiring immediate probes
+of queued inputs. A previous stage's worker/device update can still be pending
+on the compute lane. `DofHalo::BeginAfter` imports that producer prefix onto the
+communication lane, and the transport applies its native or MPI readiness
+contract. Actual scheduled reservations still reject unmanaged conflicting
+access. This permits the same stage-to-spatial schedule on inline CPU, worker
+CPU and CUDA without an extra engine-wide drain.
+
+Persistent device Jacobian read scopes seal immutable storage against writes;
+they do not borrow the preparation stream's lifetime. They use the stable
+default device context, while every asynchronous action retains the publication
+or scratch owner through its real completion. No default-stream fence is used
+as a substitute for ordering the numerical action on its declared stream.
+
+The Phase C CUDA integration is still in progress: assembled action/Jacobi
+leaves, managed submission and queued inverse preparation have source
+implementations, but evaluated device producers and full solver acceptance
+remain separate requirements. No host fallback is taken for a missing CUDA
+producer. The C source batch has not yet been built or tested.
+
+### Inverse preparation and observation
+
+`PrepareDiagonalInverse(context)` allocates reusable status/workspace buffers
+and, for CUDA full blocks, a fixed-stream DNDS `BatchedSVD` provider.
+`SubmitInvertDiagonal(engine, stream)` invalidates the old inverse, queues
+preparation, and retains every allocation/provider in operation records. After
+the preparation segment drains, `ObserveDiagonalInverse()` checks a compact
+status and commits the inverse provenance. Jacobi rejects an unobserved inverse.
+The ordinary linear-solve controller uses this same sequence for CPU-inline and
+CPU-worker; device integration uses the same operator entries.
+
+The approved initial CUDA full-block policy is batched FP64 SVD for every row.
+For diagonal block D, compute B = diag(1/D_ii) D, retain only singular values
+strictly greater than epsilon times the largest value, then form
+B^+ diag(1/D_ii). CPU keeps its guarded LU/SVD policy. CUDA scalar diagonal
+entries use reciprocals directly. Invalid input blocks feed identity to the
+vendor solver while retaining failure status, and vendor nonconvergence also
+fails observation. No matrix payload is downloaded for these decisions.
+`LastInverseSVDCells()` reports actual SVD work; `LastInverseFallbacks()` remains
+the CPU LU-fallback count and is zero for the all-SVD CUDA policy.
+
+The [cuSOLVER 12.6.1 API](https://docs.nvidia.com/cuda/archive/12.6.1/cusolver/index.html)
+defines the batched Jacobi SVD interface. The DNDS wrapper fixes its stream and
+dimensions, uses caller-owned compact buffers, and leaves numerical info on
+device for Cauchy's status reduction. Provider launch failures follow the host
+operator error policy; no CPU numerical fallback is hidden in a CUDA kernel.
+
 ## Auxiliary ordering and retained linearization
 
 The equation FV workspace owns an integrated face-flux table. Each RHS call
@@ -2001,3 +2088,88 @@ scratch and exchange bindings. No reconstruction coefficients are pooled here.
 `ScratchPoolStatistics()` returns reserved payload bytes and peak live slots;
 it excludes the persistent values listed above. This is synchronous CPU pooling,
 not a CUDA allocation/capture or asynchronous scratch-retirement facility.
+
+## Resident evaluated Jacobian ownership (Plan 61 source work)
+
+`FrozenJacobianOperator` retains an immutable numerical publication, independent
+of the live FV facade and mean field. A shared `Geometry` validates canonical
+host columns against resident geometry once during symbolic setup. Numerical
+publications reuse that owner and retain read scopes for frozen means, pressure,
+pressure derivatives, radii and optional Roe magnitudes. Preparation must finish
+and validate before constructing the publication. It has no communicator or
+chemistry worker and never evaluates a device block through a host Eigen call.
+
+`OffDiagonalEvaluator::SubmitRows` accepts a named `EvaluatedLinearAction` whose
+Array handles retain the selected rows, diagonal/inverse, owned input, optional
+ghost/RHS, output and status scratch. The resident implementation captures its
+shared owner in the eager operation and passes only views/value metadata to the
+CUDA launcher. `LinearProblemContext` dispatches this capability internally;
+the solver's exchange/core/dependent sequence is unchanged.
+
+Action status is caller/context scratch, not mutable hidden evaluator state.
+It begins as success and records failures until `ResetQueuedActionStatus` is
+explicitly ordered. The shared context scratch requires ordered submissions;
+independent concurrent actions need distinct contexts/status allocations.
+`CheckQueuedActions` queues a deterministic reduction, drains at an explicit
+host numerical boundary and transfers only its compact result. Solver returns
+use this check; standalone callers must also observe it before accepting their
+outputs. Failed rows write NaNs as well as status, so old finite output cannot
+silently stand in for a failed action. This is not exception-based rollback.
+
+The device FV producer uses the lane in `JacobianContext` for mean freezing,
+mass/frame/source/face contributions, and optional sparse assembly. Every
+mutable field is an explicit scheduled Array operand. Immutable mesh and
+physics reads are retained by its workspace preparation record. A single
+explicit drain observes accumulated numerical status before publishing the
+evaluated snapshot; individual kernel launches do not wait. This is currently
+a synchronous public operator, matching the CPU preparation contract, rather
+than a capture-ready queued publication API.
+
+Evaluated numerical storage uses reusable slots. A weak publication token
+prevents overwriting a slot while a caller or pending action still retains its
+snapshot. Usually two slots suffice; externally retained older publications
+may require additional slots. Assembled storage can reuse one slot. Initial
+symbolic setup copies only centered stencil records, offsets and areas to
+construct resident geometry, not complete CFV metrics or basis caches.
+
+These additions remain source work pending grouped Phase C validation. The
+full CUDA linear solver and time/pMG integration are still incomplete; this
+producer does not by itself qualify implicit CUDA execution.
+
+### Shared queued linear solve (Phase C source implementation)
+
+`StateGMRES` now accepts a per-instance algebra adapter. Its default adapter
+preserves existing CPU use. Cauchy supplies `LinearSolverAlgebra`, which binds
+all vector operations to the domain compute lane for inline CPU, worker CPU
+and CUDA. The mathematical GMRES loop is shared; Hessenberg/Givens updates and
+dynamic stopping remain host-side. There is no global/thread-local dispatch
+context. Product callbacks explicitly observe queued algebra before returning
+their small host result and performing the domain reduction.
+
+Linear halo posting uses `BeginAfterCompute`, importing the producing lane's
+prefix before communication. Direct CUDA-aware MPI observes that prefix on
+the host; a native stream provider can order it without a host wait. The
+core/halo-dependent action sequence is unchanged. Fixed-count sweeps avoid
+residual products, but the final finiteness check still observes completion.
+SGS and ILU remain CPU-only and cannot silently substitute for CUDA Jacobi.
+
+GMRES accepts a zero-started one/two-local-sweep Jacobi preconditioner, or
+`amgx` for assembled CUDA matrices. `LocalAMGPreconditioner` expands only
+owned-owned coupled blocks into scalar CSR, sorted by scalar column; DNDS
+retains off-rank blocks for its full distributed operator. The provider has no
+communicator. Its fixed-cycle configuration has no residual-based inner stop.
+The scalar pattern is prepared once; numerical values update when the matrix
+mutation epochs change. Compact AoS vectors are borrowed directly; padded AoS
+uses lazily reserved device packing scratch, with no host payload copy.
+
+AmgX has an explicit provider boundary: drain the engine (including pending
+host-progressed MPI), then invoke its single-device API and observe its device
+completion. Do not enter that boundary with an unrelated host-progressed
+transfer on the same device that requires this controller to advance it.
+This is not a capture-ready or stream-native AMG provider.
+
+Focused distributed source tests use an independently constructed known
+solution for coupled 5/6/7-component matrices, inline/worker/CUDA execution,
+Jacobi and left GMRES, compact/padded rows, and optional AmgX. They have not
+yet been built/run. Nonlinear, time, pMG and final application integration
+remain open; no full implicit CUDA qualification is claimed.

@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeAuxiliaryInternal.hpp"
+#include "Cauchy/Physics/PointWorkerContexts.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
@@ -8,7 +9,7 @@ namespace DNDS::Cauchy
 {
     void FiniteVolume::SubmitMeanGradientBoundary(
         R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state,
-        MeanGradients &gradients, real time, std::shared_ptr<PointEvaluator> evaluator,
+        MeanGradients &gradients, real time, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
         OptionalRef<const R::Array<real>> incoming) const
     {
         DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data &&
@@ -30,7 +31,7 @@ namespace DNDS::Cauchy
 #endif
             return;
         }
-        DNDS_check_throw_info(Device() == R::Device::Host() && evaluator, "CPU mean-gradient boundary needs its evaluator");
+        DNDS_check_throw_info(Device() == R::Device::Host(), "CPU mean-gradient boundary placement differs");
         struct Inputs
         {
             std::shared_ptr<const Data> owner;
@@ -38,19 +39,19 @@ namespace DNDS::Cauchy
             R::Array<BoundaryTraceGeometry>::ReadLease geometry;
             R::Array<index>::ReadLease rows;
             std::optional<WallDistanceRead> walls;
-            std::shared_ptr<PointEvaluator> evaluator;
+            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
             std::vector<EquationBlockLocation> locations;
             std::vector<index> logicalFirst;
             index components = 0, ransFirst = -1, incoming = -1;
-            Inputs(std::shared_ptr<const Data> data, std::shared_ptr<PointEvaluator> physics)
+            Inputs(std::shared_ptr<const Data> data, std::optional<Physics::Chemistry::ChemicalWorkerPool> pool)
                 : owner(std::move(data)), metric(owner->metrics.AcquireRead()), geometry(owner->boundaryTraceGeometry.Read()),
-                  rows(owner->gradientBoundaryRows.Read()), evaluator(std::move(physics))
+                  rows(owner->gradientBoundaryRows.Read()), workers(std::move(pool))
             {
                 if (owner->equation.HasRANS() && owner->equation.RANS().ComponentNumber() == 2)
                     walls.emplace(owner->wallDistance->AcquireRead());
             }
         };
-        auto pin = std::make_shared<Inputs>(_data, std::move(evaluator));
+        auto pin = std::make_shared<Inputs>(_data, std::move(workers));
         for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
         {
             pin->logicalFirst.push_back(pin->components);
@@ -76,6 +77,10 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(!output.storage->Values().Overlaps(input.storage->Values()), "mean-gradient boundary output aliases input");
         R::SubmitArrayBatch(engine, stream, [pin, time](R::ExecutionContext, auto inputs, auto outputs)
                             {
+            // Acquire worker state at execution, never while earlier commands
+            // may need the same pool. It is released before the next launcher.
+            auto workers = MakeCPUPointWorkers<CPU::BoundaryTraceWorkerScratch>(pin->owner->equation,
+                pin->workers, {true}, pin->components);
             std::vector<EquationBlockReadView> means;
             std::vector<EquationBlockArrayView<real>> targets;
             for (const auto &location : pin->locations)
@@ -101,6 +106,7 @@ namespace DNDS::Cauchy
             request.time = time;
             RequireNumericalSuccess(CPU::FillBoundaryTraces(request,
                 {pin->owner->boundaryConditions.data(), index(pin->owner->boundaryConditions.size())},
-                pin->owner->boundaryPoint, *pin->evaluator), "queued mean-gradient boundary"); }, std::move(inputs), std::move(outputs));
+                pin->owner->boundaryPoint, SpanView<CPU::BoundaryTraceWorkerScratch>{workers.data(), index(workers.size())}),
+                "queued mean-gradient boundary"); }, std::move(inputs), std::move(outputs));
     }
 }

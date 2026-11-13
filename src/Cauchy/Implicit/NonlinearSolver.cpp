@@ -5,7 +5,7 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
-#include "Cauchy/Implicit/CPU/NonlinearKernels.hpp"
+#include "Cauchy/Implicit/NonlinearOperators.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
@@ -41,6 +41,7 @@ namespace DNDS::Cauchy
         real auxiliaryTime = 0;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         AdmissibilityPolicy admissibility;
+        NonlinearOperators operators;
         std::shared_ptr<LinearProblemContext> problem;
         std::unique_ptr<DofLinearSolver> linear;
         bool positivity;
@@ -96,8 +97,9 @@ namespace DNDS::Cauchy
             : discrete(fv), reconstruction(std::move(reconstructionState)), workspace(std::move(work)), stream(std::move(lane)), settings(std::move(implicit)),
               mpi(fv.Metrics().Communicator()), binding(state), spatial(EquationDofOperations::NewVector(state)),
               defect(EquationDofOperations::NewVector(state)), candidate(EquationDofOperations::NewVector(state)),
-              inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)), workers(std::move(pool)),
+              inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1), state.Device()), workers(std::move(pool)),
               admissibility(fv.PrepareAdmissibility(workers)),
+              operators(fv.Metrics(), admissibility, stream.Context()),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
                                             (settings.jacobianAction == "directEvaluated" || settings.jacobianAction == "semiMatrixFree") ? OffDiagonalStorage::DirectEvaluated : OffDiagonalStorage::Assembled)),
               positivity(controls.numerics.positivity), reconstructionTolerance(settings.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0)
@@ -118,7 +120,10 @@ namespace DNDS::Cauchy
             rhsFPPReduction = settings.positivity.rhsFPPReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsFPPReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
                                                                                                                                                              : AlphaReduction::MinimumAll;
             if (positivity && settings.positivity.rhsFPPMode != "none" && rhsFPPReduction != AlphaReduction::Cell)
-                cellRHSAlpha.emplace(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+                cellRHSAlpha.emplace(R::RowLayout::Dense(fv.Metrics().NumCell(), 1), state.Device());
+            inversePseudoTime.SetName("nonlinear/inversePseudoTime", DNDS_ALLOCATION_SITE());
+            if (cellRHSAlpha)
+                cellRHSAlpha->SetName("nonlinear/cellRHSAlpha", DNDS_ALLOCATION_SITE());
             index first = 0;
             for (const auto &block : state.Schema().blocks)
             {
@@ -140,7 +145,7 @@ namespace DNDS::Cauchy
         void PrepareLinear(EquationDofs &state, bool overlap)
         {
             LinearExecution execution{overlap, settings.collectiveChecks};
-            execution.streams = LinearExecution::Streams{stream, stream};
+            execution.streams = LinearExecution::Streams{stream, executionOwner ? executionOwner->CommunicationStream() : stream};
             linear = std::make_unique<DofLinearSolver>(problem, state, [&](auto &field)
                                                        { return discrete.BindHalo(field); }, NonlinearDetail::ResolveLinear(settings), execution);
         }
@@ -169,7 +174,6 @@ namespace DNDS::Cauchy
             if (!auxiliaryState || auxiliaryTime != time ||
                 !discrete.AuxiliaryBoundaryCurrent(auxiliary, *workspace))
                 return false;
-            const auto read = state.ReadWithGhost();
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 if (auxiliaryState->versions[iField] != state.PhysicalField(iField).Owned().Version() ||
                     auxiliaryGhostVersions[iField] != state.PhysicalField(iField).Ghost().Version())
@@ -178,10 +182,42 @@ namespace DNDS::Cauchy
         }
         void ValidateMeans(const EquationDofs &state) const
         {
-            const auto read = state.ReadOwned();
-            const EquationViewLayout<const real> layout(state, read);
-            const auto bounds = admissibility.View();
-            RequireNumericalSuccess(CPU::ValidateImplicitMeans(layout.Descriptor(), bounds), "ValidateImplicitMeans");
+            auto engine = stream.LockEngine();
+            operators.ValidateMeans(engine, stream, state);
+        }
+        AlphaStatistics PreparePseudoTime(const EquationDofs &state, real cfl)
+        {
+            auto engine = stream.LockEngine();
+            AlphaStatistics statistics;
+            Stage([&]
+                  { statistics = operators.PreparePseudoTime(engine, stream, state, defect,
+                                                             auxiliary.cellSpectralSum->Owned(), inversePseudoTime,
+                                                             cellRHSAlpha ? OptionalRef<R::Array<real>>(*cellRHSAlpha) : OptionalRef<R::Array<real>>{},
+                                                             {cfl, settings.positivity.rhsFPPScale, settings.positivity.rhsFPPRelax,
+                                                              settings.positivity.compressionPower, positivity && settings.positivity.rhsFPPMode != "none",
+                                                              settings.positivity.rhsFPPMode == "rhs"}); });
+            if (positivity && settings.positivity.rhsFPPMode != "none")
+            {
+                statistics = AgreeAlphaStatistics(statistics.limited, statistics.minimum, rhsFPPReduction, mpi.comm);
+                if (cellRHSAlpha && statistics.minimum < 1)
+                    Stage([&]
+                          {
+                        operators.SubmitAgreedRHSAlpha(engine, stream, *cellRHSAlpha, inversePseudoTime, defect,
+                            statistics.minimum, rhsFPPReduction, settings.positivity.rhsFPPMode == "rhs");
+                        // The following CPU Jacobian preparation is still a
+                        // synchronous operator. Publish this agreed-alpha
+                        // prefix for every backend before entering it.
+                        engine.Synchronize(); });
+            }
+            return statistics;
+        }
+        std::vector<real> LinearScales(const EquationDofs &state)
+        {
+            if (settings.linear.method != "gmres" || settings.linear.componentScaling == "none")
+                return {};
+            auto engine = stream.LockEngine();
+            return NonlinearDetail::FinalizeMeanStateScales(operators.MeasureMeanState(engine, stream, state),
+                                                            state.ComponentNumber(), flowFirst, mpi.comm);
         }
     };
 
@@ -212,7 +248,8 @@ namespace DNDS::Cauchy
                                   "equation nonlinear Roe profile is not connected yet");
             DNDS_check_throw_info(!implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
                                   "strict implicit VR acceptance requires a positive reconstructionTolerance");
-            DNDS_check_throw_info(reconstruction && workspace && stream.Context().device == R::Device::Host(), "equation implicit stage needs reconstruction state, CPU workspace and stream");
+            DNDS_check_throw_info(reconstruction && workspace && stream.Context().device == state.Device() && discrete.Device() == state.Device(),
+                                  "equation implicit stage needs matching reconstruction, workspace and stream placement");
             stream.Record().WaitHost();
             state.RequireSchema(discrete.Equation().Schema());
             discrete.ValidateWorkspace(state, *workspace);
@@ -240,6 +277,7 @@ namespace DNDS::Cauchy
                           context.ChemicalWorkers())
     {
         _data->executionOwner.emplace(std::move(context));
+        _data->PrepareLinear(state, settings.execution.overlap);
     }
 
     NonlinearIterationReport NonlinearSolver::Solve(EquationDofs &state, const EquationDofs &source,
@@ -273,23 +311,23 @@ namespace DNDS::Cauchy
         data.Stage([&]
                    {
             data.binding.Check(state);
-            EquationDofOperations::CheckCompatible(state, rate);
+            state.RequireCompatible(rate);
             for (const auto *input : {&state, &data.spatial})
-                EquationDofOperations::RequireDistinct(*input, rate);
-            auto write = rate.WriteOwned(); write.CancelUnmodified(); });
+                EquationDofOperations::RequireDistinct(*input, rate); });
         data.EvaluateSpatial(state, time, engine);
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {
-            const auto geometry = data.discrete.Metrics().AcquireRead();
-            const auto metric = geometry.HostView();
-            const auto read = data.spatial.ReadOwned();
-            auto write = rate.WriteOwned();
-            const auto from = read.ComponentLayout();
-            const auto to = write.ComponentLayout();
-            const auto input = from.View();
-            const auto output = to.View();
-            CPU::NormalizeRateByVolume(input, output, metric, input.ComponentNumber()); });
+            data.operators.SubmitScaleRate(engine, data.stream, data.spatial, rate, false);
+            engine.Synchronize(); });
+    }
+    std::vector<real> NonlinearSolver::MeasureRateNorm(const EquationDofs &rate, int normOrder,
+                                                       OptionalRef<const EquationDofs> reference) const
+    {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto session = _data->session.Acquire(_nestedSession.lock());
+        auto engine = _data->stream.LockEngine();
+        return _data->operators.MeasureRateNorm(engine, _data->stream, rate, normOrder, reference);
     }
 
     NonlinearSession NonlinearSolver::Start(
@@ -317,7 +355,7 @@ namespace DNDS::Cauchy
                        {
                 data.binding.Check(state);
                 data.ValidateMeans(state);
-                EquationDofOperations::CheckCompatible(state, source);
+                state.RequireCompatible(source);
                 EquationDofOperations::RequireDistinct(state, source);
                 selection = Algebra::ComponentSelection(
                     state.ComponentNumber(), control.updateComponents);
@@ -377,23 +415,10 @@ namespace DNDS::Cauchy
             std::vector<real> local(size_t(nv + 1));
             data.Stage([&]
                        {
-                const auto geometry = data.discrete.Metrics().AcquireRead();
-                const auto metric = geometry.HostView();
-                const auto u = active->state.ReadOwned();
-                const auto r = data.spatial.ReadOwned();
-                const auto b = active->source.ReadOwned();
-                auto write = data.defect.WriteOwned();
-                const EquationViewLayout<const real> ul(active->state, u),
-                    rl(data.spatial, r), bl(active->source, b);
-                const EquationViewLayout<real> wl(data.defect, write);
-                RequireNumericalSuccess(
-                    CPU::AssembleDefect(
-                        ul.Descriptor(), rl.Descriptor(), bl.Descriptor(),
-                        wl.Descriptor(), metric, active->mass,
-                        active->rhsScale, active->activeComponents.HostView(),
-                        data.settings.normOrder, true,
-                        {local.data(), index(local.size())}),
-                    "AssembleDefect"); });
+                auto engine = data.stream.LockEngine();
+                local = data.operators.AssembleDefect(engine, data.stream, active->state, data.spatial,
+                    active->source, data.defect, active->mass, active->rhsScale, active->activeComponents.HostView(),
+                    data.settings.normOrder, true); });
             MPI::AllreduceInPlace<MPI::Reduction::Sum>(
                 MPI::ContiguousView<real>{local.data(), size_t(nv + 1)},
                 data.mpi.comm);
@@ -424,75 +449,9 @@ namespace DNDS::Cauchy
             {
                 const NonlinearDetail::PhaseTimer timer(
                     active->profile, NonlinearProfile::PseudoTimePP);
-                data.Stage([&]
-                           {
-                    const auto geometry = data.discrete.Metrics().AcquireRead();
-                    const auto metric = geometry.HostView();
-                    const auto read =
-                        data.auxiliary.cellSpectralSum->Owned().Read();
-                    const auto meanRead = active->state.ReadOwned();
-                    const auto meanLayout = meanRead.ComponentLayout();
-                    const auto means = meanLayout.View();
-                    auto residualWrite = data.defect.WriteOwned();
-                    const auto residualLayout =
-                        residualWrite.ComponentLayout();
-                    const auto defect = residualLayout.View();
-                    auto write = data.inversePseudoTime.Write();
-                    std::optional<R::Array<real>::WriteLease> alphaWrite;
-                    if (data.cellRHSAlpha)
-                        alphaWrite.emplace(data.cellRHSAlpha->Write());
-                    const auto alphas = alphaWrite
-                                            ? alphaWrite->View<
-                                                  R::UniformTableRows>()
-                                            : R::ArrayView<
-                                                  real, R::AccessBoundsChecks,
-                                                  R::UniformTableRows>{};
-                    const auto spectral =
-                        read.View<R::UniformTableRows>();
-                    const auto inverse =
-                        write.View<R::UniformTableRows>();
-                    const auto bounds = data.admissibility.View().thermal;
-                    const auto statistics = RequireNumericalSuccess(
-                        CPU::PreparePseudoTime(
-                            {metric, means, defect, spectral, inverse,
-                             alphaWrite ? std::optional(alphas) : std::nullopt,
-                             bounds, report.pseudoCFL,
-                             data.settings.positivity.rhsFPPScale,
-                             data.settings.positivity.rhsFPPRelax,
-                             real(data.settings.positivity.compressionPower),
-                             data.positivity &&
-                                 data.settings.positivity.rhsFPPMode != "none",
-                             data.settings.positivity.rhsFPPMode == "rhs"}),
-                        "PreparePseudoTime");
-                    rhsLimited = statistics.limited;
-                    rhsAlpha = statistics.minimum; });
-                if (data.positivity &&
-                    data.settings.positivity.rhsFPPMode != "none")
-                {
-                    const auto global = AgreeAlphaStatistics(
-                        rhsLimited, rhsAlpha, data.rhsFPPReduction,
-                        data.mpi.comm);
-                    rhsLimited = global.limited;
-                    rhsAlpha = global.minimum;
-                    if (data.cellRHSAlpha && rhsAlpha < 1)
-                        data.Stage([&]
-                                   {
-                            const auto read = data.cellRHSAlpha->Read();
-                            const auto local =
-                                read.View<R::UniformTableRows>();
-                            auto inverseWrite = data.inversePseudoTime.Write();
-                            const auto inverse =
-                                inverseWrite.View<R::UniformTableRows>();
-                            auto residualWrite = data.defect.WriteOwned();
-                            const auto layout =
-                                residualWrite.ComponentLayout();
-                            const auto defect = layout.View();
-                            CPU::ApplyAgreedRHSAlpha(
-                                local, inverse, defect, rhsAlpha,
-                                data.rhsFPPReduction,
-                                data.settings.positivity.rhsFPPMode ==
-                                    "rhs"); });
-                }
+                const auto statistics = data.PreparePseudoTime(active->state, report.pseudoCFL);
+                rhsLimited = statistics.limited;
+                rhsAlpha = statistics.minimum;
             }
             {
                 const NonlinearDetail::PhaseTimer timer(
@@ -505,14 +464,12 @@ namespace DNDS::Cauchy
                                   active->selection.Indices(), data.settings.boundaryJacobian != "eulerScalar"},
                                  active->time, data.workers,
                                  FiniteVolume::JacobianContext{*data.reconstruction,
-                                                               *data.workspace}); });
+                                                               *data.workspace, data.stream}); });
             }
             {
                 const NonlinearDetail::PhaseTimer timer(
                     active->profile, NonlinearProfile::LinearSolve);
-                const auto scales = NonlinearDetail::LinearScales(
-                    data.settings, active->state,
-                    data.discrete.Metrics());
+                const auto scales = data.LinearScales(active->state);
                 report.lastLinear =
                     data.linear->Solve(data.defect, {}, scales);
                 report.linearIterations += report.lastLinear.iterations;
@@ -592,7 +549,7 @@ namespace DNDS::Cauchy
                     EquationDofOperations::RequireDistinct(data.spatial, *cachedRate);
                 }
                 data.ValidateMeans(state);
-                EquationDofOperations::CheckCompatible(state, source);
+                state.RequireCompatible(source);
                 EquationDofOperations::RequireDistinct(state, source);
                 selection = Algebra::ComponentSelection(nv, control.updateComponents);
                 DNDS_check_throw_info(std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time) &&
@@ -615,8 +572,6 @@ namespace DNDS::Cauchy
         NonlinearIterationReport initial;
         initial.residual.resize(size_t(nv));
         BindControllerState(control);
-        auto geometry = data.discrete.Metrics().AcquireRead();
-        const auto metric = geometry.HostView();
         const auto evaluate = [&]
         {
             if (!cachedRate)
@@ -651,29 +606,17 @@ namespace DNDS::Cauchy
             }
             else
                 data.discrete.RefreshCorrectionSource(state, *data.reconstruction,
-                                                      *data.workspace, time);
+                                                      *data.workspace, engine, data.stream, time);
             data.Stage([&]
-                       {
-                const auto read = cachedRate->ReadOwned(); auto write = data.spatial.WriteOwned();
-                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-                {
-                    const auto rate = read.Block(iBlock).owned;
-                    const auto output = write.Block(iBlock);
-                    CPU::ScaleRateByVolume(rate, output, metric, rate.ComponentNumber());
-                } });
+                       { data.operators.SubmitScaleRate(engine, data.stream, *cachedRate, data.spatial, true); });
         };
         const auto measure = [&](auto &norms)
         {
                 std::vector<real> local(size_t(nv + 1));
                 data.Stage([&]
                 {
-                    const auto u = state.ReadOwned(), r = data.spatial.ReadOwned(), b = source.ReadOwned();
-                    auto write = data.defect.WriteOwned();
-                    const EquationViewLayout<const real> ul(state, u), rl(data.spatial, r), bl(source, b);
-                    const EquationViewLayout<real> wl(data.defect, write);
-                    RequireNumericalSuccess(CPU::AssembleDefect(ul.Descriptor(), rl.Descriptor(), bl.Descriptor(), wl.Descriptor(),
-                        metric, mass, rhsScale, activeComponents.HostView(), data.settings.normOrder, !singleCorrection,
-                        {local.data(), index(local.size())}), "AssembleDefect");
+                    local = data.operators.AssembleDefect(engine, data.stream, state, data.spatial, source, data.defect,
+                        mass, rhsScale, activeComponents.HostView(), data.settings.normOrder, !singleCorrection);
                 });
                 if (singleCorrection) return; // Defect is ready; no stopping norm is needed.
                 MPI::AllreduceInPlace<MPI::Reduction::Sum>(
@@ -694,49 +637,18 @@ namespace DNDS::Cauchy
                     const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::PseudoTimePP);
                     // Aux is prepared before reconstruction/RHS. Never refresh
                     // it here: RHS may consume or refine the prepared signals.
-                    data.Stage([&]
-                    {
-                        const auto read = data.auxiliary.cellSpectralSum->Owned().Read();
-                        const auto meanRead = state.ReadOwned(); const auto meanLayout = meanRead.ComponentLayout(); const auto means = meanLayout.View();
-                        auto residualWrite = data.defect.WriteOwned(); const auto residualLayout = residualWrite.ComponentLayout(); const auto defect = residualLayout.View();
-                        auto write = data.inversePseudoTime.Write();
-                        std::optional<R::Array<real>::WriteLease> alphaWrite;
-                        if (data.cellRHSAlpha) alphaWrite.emplace(data.cellRHSAlpha->Write());
-                        const auto alphas = alphaWrite ? alphaWrite->View<R::UniformTableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>{};
-                        const auto spectral = read.View<R::UniformTableRows>();
-                        const auto inverse = write.View<R::UniformTableRows>();
-                        const auto bounds = data.admissibility.View().thermal;
-                        const auto statistics = RequireNumericalSuccess(CPU::PreparePseudoTime({metric, means, defect, spectral, inverse,
-                            alphaWrite ? std::optional(alphas) : std::nullopt, bounds, report.pseudoCFL,
-                            data.settings.positivity.rhsFPPScale, data.settings.positivity.rhsFPPRelax,
-                            real(data.settings.positivity.compressionPower),
-                            data.positivity && data.settings.positivity.rhsFPPMode != "none",
-                            data.settings.positivity.rhsFPPMode == "rhs"}), "PreparePseudoTime");
-                        rhsLimited = statistics.limited; rhsAlpha = statistics.minimum;
-                    });
-                    if (data.positivity && data.settings.positivity.rhsFPPMode != "none")
-                    {
-                        const auto global = AgreeAlphaStatistics(rhsLimited, rhsAlpha, data.rhsFPPReduction, data.mpi.comm);
-                        rhsLimited = global.limited; rhsAlpha = global.minimum;
-                        if (data.cellRHSAlpha && rhsAlpha < 1) data.Stage([&]
-                        {
-                            const auto read = data.cellRHSAlpha->Read(); const auto local = read.View<R::UniformTableRows>();
-                            auto inverseWrite = data.inversePseudoTime.Write(); const auto inverse = inverseWrite.View<R::UniformTableRows>();
-                            auto residualWrite = data.defect.WriteOwned(); const auto layout = residualWrite.ComponentLayout(); const auto defect = layout.View();
-                            CPU::ApplyAgreedRHSAlpha(local, inverse, defect, rhsAlpha, data.rhsFPPReduction,
-                                data.settings.positivity.rhsFPPMode == "rhs");
-                        });
-                    }
+                    const auto statistics = data.PreparePseudoTime(state, report.pseudoCFL);
+                    rhsLimited = statistics.limited; rhsAlpha = statistics.minimum;
                 }
                 {
                     const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::Jacobian);
                     data.Stage([&] { data.discrete.PrepareJacobian(state, data.auxiliary, data.inversePseudoTime, *data.problem,
                         {mass, rhsScale, data.settings.roeDissipation, selection.Indices(), data.settings.boundaryJacobian != "eulerScalar"}, time, data.workers,
-                        FiniteVolume::JacobianContext{*data.reconstruction, *data.workspace}); });
+                        FiniteVolume::JacobianContext{*data.reconstruction, *data.workspace, data.stream}); });
                 }
                 {
                     const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::LinearSolve);
-                    const auto scales = NonlinearDetail::LinearScales(data.settings, state, data.discrete.Metrics());
+                    const auto scales = data.LinearScales(state);
                     report.lastLinear = data.linear->Solve(data.defect, {}, scales);
                     report.linearIterations += report.lastLinear.iterations;
                     DNDS_check_throw_info(report.lastLinear.usable, "equation implicit linear correction is unusable");
@@ -837,13 +749,14 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto &data = *_data;
+        auto engine = data.stream.LockEngine();
         index limited = 0;
         real minimum = 1;
         bool frozen = true;
         data.Stage([&]
                    {
             data.binding.Check(state);
-            EquationDofOperations::CheckCompatible(state, increment);
+            state.RequireCompatible(increment);
             EquationDofOperations::RequireDistinct(state, increment);
             DNDS_check_throw_info(std::isfinite(scale) && scale > 0 && scale <= 1, "invalid equation correction scale");
             const Algebra::ComponentSelection selection(state.ComponentNumber(), updateComponents);
@@ -853,18 +766,10 @@ namespace DNDS::Cauchy
                 active.resize(size_t(state.ComponentNumber()));
                 for (index j = 0; j < state.ComponentNumber(); ++j) active[j] = selection.Includes(j);
             }
-            const auto u = state.ReadOwned(), d = increment.ReadOwned();
-            auto write = data.candidate.WriteOwned();
-            const auto ul = u.ComponentLayout(), dl = d.ComponentLayout(); const auto wl = write.ComponentLayout();
-            const auto bounds = data.admissibility.View().thermal;
-            const auto &rans = data.admissibility.RANS();
-            const int independent = data.discrete.Equation().HasMixture() ? data.discrete.Equation().Mixture().SpeciesNumber() - 1 : 0;
-            const R::MetadataBuffer<uint8_t> selectionMetadata(active);
-            const auto result = RequireNumericalSuccess(CPU::ApplyCorrection({bounds, rans, selectionMetadata.HostView(),
-                state.ComponentNumber(), data.flowFirst, data.speciesFirst, data.ransFirst, independent, scale,
-                data.settings.positivity.incrementRelax, real(data.settings.positivity.compressionPower), data.positivity},
-                ul.View(), dl.View(), wl.View()), "ApplyCorrection");
-            limited = result.limited; minimum = result.minimum; frozen = result.frozen; });
+            const auto result = data.operators.ApplyCorrection(engine, data.stream, state, increment, data.candidate,
+                {active.data(), index(active.size())}, {scale, data.settings.positivity.incrementRelax,
+                    data.settings.positivity.compressionPower, data.positivity});
+            limited = result.alpha.limited; minimum = result.alpha.minimum; frozen = result.frozen; });
         // Candidate checks precede all state writers. Scalar repair may not
         // silently unfreeze a masked component, even when density changed.
         const auto validateCandidate = [&]
@@ -899,7 +804,9 @@ namespace DNDS::Cauchy
         else
             MPI::LocalStage(data.mpi, validateCandidate);
         data.Stage([&]
-                   { EquationDofOperations::Copy(state, data.candidate); });
+                   {
+            EquationDofOperations::Copy(engine, data.stream, state, data.candidate);
+            engine.Synchronize(); });
         if (data.positivity)
         {
             limited = MPI::AllreduceValue<MPI::Reduction::Sum>(limited, data.mpi.comm);
@@ -916,35 +823,21 @@ namespace DNDS::Cauchy
         data.Stage([&]
                    {
             data.binding.Check(state);
-            EquationDofOperations::CheckCompatible(state, value);
+            state.RequireCompatible(value);
             EquationDofOperations::RequireDistinct(state, value);
             DNDS_check_throw_info(std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time), "invalid equation coefficients");
-            auto write = value.WriteOwned(); write.CancelUnmodified();
             if (rate)
             {
-                EquationDofOperations::CheckCompatible(state, *rate);
+                state.RequireCompatible(*rate);
                 for (const auto *input : {&state, &value, &data.spatial})
                     EquationDofOperations::RequireDistinct(*input, *rate);
-                auto rateWrite = rate->WriteOwned(); rateWrite.CancelUnmodified();
             } });
         data.EvaluateSpatial(state, time, engine);
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {
-            const auto geometry = data.discrete.Metrics().AcquireRead(); const auto metric = geometry.HostView();
-            const auto u = state.ReadOwned(), r = data.spatial.ReadOwned(); auto write = value.WriteOwned();
-            const auto ul = u.ComponentLayout(), rl = r.ComponentLayout(); const auto wl = write.ComponentLayout();
-            const auto mean = ul.View(), residual = rl.View(); const auto output = wl.View();
-            std::optional<EquationDofs::WriteScope> rateWrite;
-            std::optional<Algebra::DofComponentLayout<real>> rateLayout;
-            if (rate) rateWrite.emplace(rate->WriteOwned());
-            if (rateWrite) rateLayout.emplace(rateWrite->ComponentLayout());
-            const auto spatialRate = rateLayout ? rateLayout->View() : Algebra::DofComponentView<real>{};
-            if (rate)
-                CPU::AssembleEquationAndRateRows(mean, residual, output, spatialRate, metric,
-                                                    mean.ComponentNumber(), mass, rhsScale);
-            else
-                CPU::AssembleEquationRows(mean, residual, output, metric, mean.ComponentNumber(), mass, rhsScale); });
+            data.operators.SubmitEquation(engine, data.stream, state, data.spatial, value, rate, mass, rhsScale);
+            engine.Synchronize(); });
     }
     R::SessionAccess::Lease NonlinearSolver::ReserveForMultigrid()
     {

@@ -1,6 +1,7 @@
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Physics/PointWorkerContexts.hpp"
 #include "DNDS/Runtime/Execution/EagerArrayBatch.hpp"
 
 namespace DNDS::Cauchy
@@ -22,7 +23,7 @@ namespace DNDS::Cauchy
             SubmitDeviceBoundary(engine, stream, state, polynomial, time, incoming);
             return;
         }
-        DNDS_check_throw_info(evaluator, "CPU boundary submission needs a retained point evaluator");
+        const auto timing = BeginQueuedPhase(engine, stream, BoundaryPhase);
         // Only immutable geometry/physics metadata use immediate read scopes.
         // Every mutable payload below is a Runtime operand. In particular, a
         // queued VR reader cannot block this producer by reserving BC reads
@@ -45,6 +46,8 @@ namespace DNDS::Cauchy
             index ransFirst = -1, flowFirst = -1;
             bool mirrored = false;
             std::shared_ptr<PointEvaluator> evaluator;
+            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
+            Physics::Thermodynamics::MixturePropertyRequest properties;
 
             Inputs(std::shared_ptr<const Data> data, const ThermalPolicy &policy,
                    R::MetadataBuffer<index> offsets, std::shared_ptr<PointEvaluator> pointEvaluator)
@@ -53,6 +56,9 @@ namespace DNDS::Cauchy
                   rows(owner->gradientBoundaryRows.Read()), evaluator(std::move(pointEvaluator)) {}
         };
         auto pin = std::make_shared<Inputs>(owner, thermal, logicalFirst, std::move(evaluator));
+        pin->workers = workers;
+        const bool viscous = !meanOnly && owner->equation.Viscous();
+        pin->properties = {viscous || owner->equation.HasRANS(), viscous, viscous, chemical, false};
         pin->fieldNumber = state.PhysicalFieldNumber();
         pin->componentNumber = state.ComponentNumber();
         pin->ransFirst = ransFirst;
@@ -84,7 +90,7 @@ namespace DNDS::Cauchy
         }
         for (index iField = 0; iField < pin->fieldNumber; ++iField)
             outputs.push_back(R::WriteAs<R::UniformTableRows>(boundary.PhysicalField(iField).Owned()));
-        for (const auto &field : fields)
+        for (auto &field : fields)
         {
             pin->gradientOutputs.push_back(field.gradientBoundary ? index(outputs.size()) : -1);
             if (field.gradientBoundary)
@@ -108,6 +114,14 @@ namespace DNDS::Cauchy
                                       "boundary output aliases a mutable input");
         R::SubmitArrayBatch(engine, stream, [pin, time](R::ExecutionContext, auto inputs, auto outputs)
                             {
+            // Acquire scarce chemistry workers only when this operation runs.
+            // Earlier queued auxiliary refreshes may still own the pool slot
+            // while the controller is submitting this boundary producer.
+            auto evaluator = pin->evaluator;
+            std::vector<CPU::BoundaryTraceWorkerScratch> workers;
+            if (!evaluator)
+                workers = MakeCPUPointWorkers<CPU::BoundaryTraceWorkerScratch>(pin->owner->equation, pin->workers,
+                                                                               pin->properties, pin->componentNumber);
             const auto block = [&](EquationBlockLocation location, index first)
             {
                 return EquationBlockReadView{{inputs[first + location.physicalField], location.firstComponent, location.componentNumber},
@@ -147,8 +161,11 @@ namespace DNDS::Cauchy
             const auto fill = [&](BoundaryPointStateKind kind)
             {
                 request.stateKind = kind;
-                RequireNumericalSuccess(CPU::FillBoundaryTraces(request, conditions, pin->owner->boundaryPoint, *pin->evaluator),
-                                        "queued FillBoundaryTraces");
+                const auto status = evaluator
+                    ? CPU::FillBoundaryTraces(request, conditions, pin->owner->boundaryPoint, *evaluator)
+                    : CPU::FillBoundaryTraces(request, conditions, pin->owner->boundaryPoint,
+                                             SpanView<CPU::BoundaryTraceWorkerScratch>{workers.data(), index(workers.size())});
+                RequireNumericalSuccess(status, "queued FillBoundaryTraces");
             };
             fill(pin->mirrored && !gradient ? BoundaryPointStateKind::ExteriorState : BoundaryPointStateKind::FaceTrace);
             for (index iField = 0; iField < pin->fieldNumber; ++iField)
@@ -170,5 +187,6 @@ namespace DNDS::Cauchy
                 primitive.time = time;
                 RequireNumericalSuccess(CPU::FillPrimitiveBoundary(primitive, conditions), "queued primitive boundary evaluation");
             } }, std::move(inputs), std::move(outputs));
+        EndQueuedPhase(engine, stream, timing);
     }
 }

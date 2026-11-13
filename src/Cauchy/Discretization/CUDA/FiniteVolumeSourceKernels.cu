@@ -173,7 +173,8 @@ namespace DNDS::Cauchy::CUDA
         if (produceLow)
         {
             low.ValidateDevice(context.device);
-            DNDS_check_throw_info(means.Width() == 5, "low-order source output is flow5 only");
+            // The combined equation buffer may include RANS scalars. Rotation
+            // contributes only to flow5 and leaves those scalar entries intact.
             CheckTable(low, means.RowCount(), means.Width());
         }
         R::CheckKernelArgumentBudget<decltype(cells), RigidFrameParameters, SourceInput, SourceOutput, SourceOutput, bool, SourceIndices>();

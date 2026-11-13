@@ -269,7 +269,7 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(method, "sgs or jacobi stationary sweeps, ilu stationary defect correction, or restarted left-gmres");
             DNDS_FIELD(jacobiLocalSweeps, "One or two local Jacobi sweeps per iteration; two freezes remote iterate values between sweeps, with one input exchange");
-            DNDS_FIELD(preconditioner, "Fixed sgs or rank-local ilu for GMRES; unused by stationary methods");
+            DNDS_FIELD(preconditioner, "Fixed sgs, zero-started jacobi, rank-local ilu or single-device amgx for GMRES; amgx requires assembled CUDA storage; unused by stationary methods");
             DNDS_FIELD(stopping, "residual uses tolerance checks; fixedCount executes exactly iterations for SGS/ILU, omits true-residual reporting and checks the final update is finite; tolerances are ignored");
             DNDS_FIELD(componentScaling, "GMRES metric: none or meanState (Euler volume-averaged absolute conservative magnitudes with a common momentum scale and kinetic energy scale; requires a compressible flow5 block)");
             DNDS_FIELD(iterations, "Maximum linear iterations per nonlinear correction");
@@ -643,6 +643,7 @@ namespace DNDS::Cauchy
         std::string consoleColor = "auto";
         int hdfDeflateLevel = 0;
         bool checkpointReconstruction = false;
+        bool asynchronous = false;
         std::vector<int> forceZones;
         ImplicitOutputSettings implicit;
         DiagnosticOutputSettings diagnostics;
@@ -662,6 +663,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(consoleColor, "Console color policy: auto, always or never");
             DNDS_FIELD(hdfDeflateLevel, "VTKHDF compression level 0..9; uncompressed is the initial portable baseline");
             DNDS_FIELD(checkpointReconstruction, "Store optional compatible polynomial warm guesses for exact finite-sweep continuation; default omits them");
+            DNDS_FIELD(asynchronous, "Bounded background accepted-step output; requires MPI_THREAD_MULTIPLE. Internal output and shutdown drain the queue");
             DNDS_FIELD(forceZones, "Boundary zones on which pressure and viscous body force are integrated");
             config.field_section(&T::implicit, "implicit", "Nonlinear iteration history, console and internal artifact cadence");
             config.field_section(&T::diagnostics, "diagnostics", "Operational logging sinks independent of scientific history");

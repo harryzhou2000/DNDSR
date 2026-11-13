@@ -11,6 +11,11 @@ namespace DNDS::Cauchy
         Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::CSRRows> columns;
         Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> order, position, core, dependent;
         index ownedRows = 0;
+        /// C++ launcher check; no residency branches inside row arithmetic.
+        void ValidateDevice(Runtime::Device device) const
+        {
+            Runtime::ValidateViewDevices(device, columns, order, position, core, dependent);
+        }
     };
 
     /** @brief Canonical rank-local symbolic fields for matrix actions/scans.
@@ -32,10 +37,10 @@ namespace DNDS::Cauchy
             Runtime::Array<index>::ReadLease _columns, _order, _position, _core, _dependent;
 
         public:
-            explicit ReadAccess(const LinearPatternStorage &storage)
-                : _columns(storage._columns.Read()), _order(storage._order.Read()),
-                  _position(storage._position.Read()), _core(storage._core.Read()),
-                  _dependent(storage._dependent.Read()) {}
+            explicit ReadAccess(const LinearPatternStorage &storage, Runtime::ExecutionContext context)
+                : _columns(storage._columns.Read(context)), _order(storage._order.Read(context)),
+                  _position(storage._position.Read(context)), _core(storage._core.Read(context)),
+                  _dependent(storage._dependent.Read(context)) {}
             LinearPatternView View() const
             {
                 return {_columns.View<Runtime::CSRRows>(), _order.View<Runtime::FixedRows<1>>(),
@@ -47,7 +52,17 @@ namespace DNDS::Cauchy
         LinearPatternStorage(const std::vector<std::vector<index>> &columns,
                              const std::vector<index> &order, const std::vector<index> &position,
                              const std::vector<index> &core, const std::vector<index> &dependent);
-        ReadAccess Read() const { return ReadAccess(*this); }
+        /// Retain this scope until the submitted operation completes.
+        ReadAccess Read(Runtime::ExecutionContext context = Runtime::ExecutionContext::Host()) const { return ReadAccess(*this, context); }
+        /// Completed setup-time placement. No host numerical payload is retained
+        /// by the returned object; this does not migrate during an iteration.
+        LinearPatternStorage Placed(Runtime::Device device, Runtime::ExecutionContext context) const;
+        /// Immutable operand handles for queued operators. Copies retain the
+        /// symbolic publication; callers must not write through an alias.
+        const Runtime::Array<index> &ColumnsArray() const { return _columns; }
+        const Runtime::Array<index> &OrderArray() const { return _order; }
+        const Runtime::Array<index> &CoreArray() const { return _core; }
+        const Runtime::Array<index> &DependentArray() const { return _dependent; }
         /// Setup/diagnostic snapshot. Numerical operators use Read(), never a
         /// per-iteration host reconstruction of the symbolic pattern.
         std::vector<std::vector<index>> CopyColumns() const;

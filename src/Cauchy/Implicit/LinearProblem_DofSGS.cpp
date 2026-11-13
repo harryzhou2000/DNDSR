@@ -73,7 +73,7 @@ namespace DNDS::Cauchy
                 old.emplace(inputRead->ComponentLayout());
             const auto previous = old ? old->View() : b.View();
             const CPU::LinearBlockInput request{blocksRead.View(), patternView, rows,
-                                                inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block};
+                                                inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block, pattern->sweepPartitions.HostView()};
             started = true;
             if constexpr (Upper)
                 CPU::UpperSGSRows(request, b.View(), previous, forwardValues, ghost, destination, !input && !middleExchange);

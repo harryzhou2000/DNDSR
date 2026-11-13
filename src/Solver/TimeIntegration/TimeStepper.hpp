@@ -73,6 +73,7 @@ namespace DNDS::ODE
         };
 
     private:
+        Operations _operations;
         std::shared_ptr<const uint8_t> _session = std::make_shared<const uint8_t>(0);
         uint64_t _stageGeneration = 0;
         std::string _method;
@@ -107,7 +108,7 @@ namespace DNDS::ODE
             DNDS_check_throw_info(_bdf || _dirk, "coupled time methods own their own source");
             return _bdf ? _bdf->Source() : _dirk->Source();
         }
-        void Check(const Field &field) const { Operations::CheckCompatible(Prototype(), field); }
+        void Check(const Field &field) const { _operations.CheckCompatible(Prototype(), field); }
         void BeginInitial(const Field &initial, Field &trial)
         {
             Check(initial);
@@ -126,23 +127,23 @@ namespace DNDS::ODE
                 _preparedState->Check(trial);
                 if (_preparedSource) _preparedSource->Check(Source(), true); });
         }
-        static Field Clone(const Field &source)
+        Field Clone(const Field &source) const
         {
             auto result = Operations::NewVector(source);
-            Operations::Copy(result, source);
+            _operations.Copy(result, source);
             return result;
         }
 
     public:
-        StateTimeStepper(const Field &prototype, std::string method, LocalStage local = {}, DITRSettings ditr = {})
-            : _method(std::move(method)), _local(std::move(local)), _ditrSettings(ditr)
+        StateTimeStepper(const Field &prototype, std::string method, LocalStage local = {}, DITRSettings ditr = {}, Operations operations = {})
+            : _operations(std::move(operations)), _method(std::move(method)), _local(std::move(local)), _ditrSettings(ditr)
         {
             if (_method == "bdf1" || _method == "bdf2")
-                _bdf = std::make_unique<BDFMethod<State, Operations>>(prototype, _method == "bdf2" ? 2 : 1);
+                _bdf = std::make_unique<BDFMethod<State, Operations>>(prototype, _method == "bdf2" ? 2 : 1, _operations);
             else if (_method == "ditr")
-                _ditr = std::make_unique<DITR>(prototype, ditr.fraction, ditr.theta, ditr.variant, _local);
+                _ditr = std::make_unique<DITR>(prototype, ditr.fraction, ditr.theta, ditr.variant, _local, _operations);
             else
-                _dirk = std::make_unique<DIRKMethod<State, Operations>>(prototype, _method);
+                _dirk = std::make_unique<DIRKMethod<State, Operations>>(prototype, _method, _operations);
         }
         StateTimeStepper(const StateTimeStepper &) = delete;
         StateTimeStepper &operator=(const StateTimeStepper &) = delete;
@@ -160,7 +161,7 @@ namespace DNDS::ODE
         /// replacing the live accepted history.
         std::unique_ptr<StateTimeStepper> Fresh() const
         {
-            return std::make_unique<StateTimeStepper>(Prototype(), _method, _local, _ditrSettings);
+            return std::make_unique<StateTimeStepper>(Prototype(), _method, _local, _ditrSettings, _operations);
         }
         bool HasHistory() const { return _bdf && _bdf->HasHistory(); }
         bool HasPendingTrial() const { return _pending; }
@@ -484,7 +485,7 @@ namespace DNDS::ODE
                     DNDS_check_throw_info(found != checkpoint.names.end(), "time checkpoint payload is missing: " + name);
                     return checkpoint.fields[size_t(found - checkpoint.names.begin())];
                 };
-                Operations::Copy(trial, payload("trial"));
+                _operations.Copy(trial, payload("trial"));
                 Discard();
                 _pendingDt = checkpoint.pendingDt;
                 _startTime = checkpoint.startTime;

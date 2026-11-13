@@ -2,9 +2,32 @@
 
 namespace DNDS::Cauchy
 {
+    JacobianGeometryStorage JacobianGeometryStorage::Placed(Runtime::Device device, Runtime::ExecutionContext context) const
+    {
+        JacobianGeometryStorage result;
+        result._columns = _columns.To(device, context);
+        result._blockOffsets = _blockOffsets.To(device, context);
+        result._points = _points.To(device, context);
+        result.sameComponentFrames = sameComponentFrames;
+        return result;
+    }
     JacobianGeometryStorage::JacobianGeometryStorage(FiniteVolumeStencilView stencil,
                                                      CFV::FiniteVolumeHostView metric, const std::vector<std::vector<index>> &columns)
     {
+        Build(stencil, metric, columns, false);
+    }
+    JacobianGeometryStorage::JacobianGeometryStorage(FiniteVolumeStencilView stencil, const std::vector<std::vector<index>> &columns)
+    {
+        Build(stencil, {}, columns, true);
+    }
+    void JacobianGeometryStorage::Build(FiniteVolumeStencilView stencil,
+                                        CFV::FiniteVolumeHostView metric, const std::vector<std::vector<index>> &columns, bool auxiliaryAreas)
+    {
+        Runtime::ValidateViewDevices(Runtime::Device::Host(), stencil.jacobianSamples, stencil.jacobianOffsets);
+        if (auxiliaryAreas)
+            stencil.auxiliaryFaceArea.ValidateDevice(Runtime::Device::Host());
+        else
+            metric.faceMean.ValidateDevice(Runtime::Device::Host());
         std::vector<size_t> columnLengths;
         index blocks = 0;
         for (const auto &row : columns)
@@ -53,13 +76,18 @@ namespace DNDS::Cauchy
                 if (sample.other == UnInitIndex || sample.other == iCell)
                     continue;
                 const index iBlock = offsets(iCell, 0) + sample.jacobianColumn;
+                DNDS_check_throw_info(auxiliaryAreas ? sample.auxiliaryFace >= 0 && sample.auxiliaryFace < stencil.auxiliaryFaceArea.RowCount()
+                                                     : sample.face >= 0 && sample.face < metric.faceMean.RowCount(),
+                                      "Jacobian geometry face area row is missing");
                 points(iBlock, next[iBlock]++) = {sample.other, sample.auxiliaryFace, entry,
-                                                  sample.normal, sample.ownPoint, sample.rotation, metric.GetFaceArea(sample.face), sample.changesFrame};
+                                                  sample.normal, sample.ownPoint, sample.rotation,
+                                                  auxiliaryAreas ? stencil.auxiliaryFaceArea(sample.auxiliaryFace, 0) : metric.GetFaceArea(sample.face), sample.changesFrame};
             }
     }
     std::vector<std::vector<index>> JacobianGeometryStorage::CopyColumns() const
     {
-        const auto read = _columns.Read();
+        const auto host = _columns.GetDevice() == Runtime::Device::Host() ? _columns : _columns.To(Runtime::Device::Host());
+        const auto read = host.Read();
         const auto view = read.View<Runtime::CSRRows>();
         std::vector<std::vector<index>> result(view.RowCount());
         for (index iRow = 0; iRow < view.RowCount(); ++iRow)

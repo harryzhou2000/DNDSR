@@ -1,5 +1,6 @@
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Cauchy/Boundary/PerfectGasBoundary.hpp"
+#include "Cauchy/Boundary/BoundaryJacobian.hpp"
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Input/FlowProfile.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
@@ -362,36 +363,7 @@ namespace DNDS::Cauchy
         const auto wallKind = KindAt(point, frame);
         if (wallKind != BoundaryKind::SlipWall && wallKind != BoundaryKind::NoSlipWall)
             return {};
-        std::array<real, 25> result{};
-        for (int j = 0; j < 5; ++j)
-            result[j * 5 + j] = 1;
-        const auto wallVelocity = WallVelocity(*this, point, frame);
-        if (wallKind == BoundaryKind::SlipWall)
-        {
-            real wallNormal = 0;
-            for (int d = 0; d < 3; ++d)
-                wallNormal += wallVelocity[d] * normal[d];
-            result[4] += 2 * wallNormal * wallNormal;
-            for (int d = 0; d < 3; ++d)
-            {
-                result[1 + d] += 2 * wallNormal * normal[d];
-                result[(1 + d) * 5 + 4] -= 2 * wallNormal * normal[d];
-            }
-            for (int column = 0; column < 3; ++column)
-                for (int row = 0; row < 3; ++row)
-                    result[(1 + column) * 5 + 1 + row] -=
-                        2 * normal[row] * normal[column];
-            return result;
-        }
-        // m' = 2*rho*v_wall-m; E' = E+2*rho*|v_wall|^2-2*v_wall.m.
-        for (int d = 0; d < 3; ++d)
-        {
-            result[1 + d] = 2 * wallVelocity[d];
-            result[(1 + d) * 5 + 1 + d] = -1;
-            result[4] += 2 * wallVelocity[d] * wallVelocity[d];
-            result[(1 + d) * 5 + 4] = -2 * wallVelocity[d];
-        }
-        return result;
+        return ApproximateFlowExteriorJacobian(wallKind, normal, WallVelocity(*this, point, frame));
     }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas)
         : BoundarySystem(settings, OptionalRef<const PerfectGas>(gas)) {}

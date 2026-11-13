@@ -267,6 +267,12 @@ namespace DNDS::Cauchy
         PositivityWorkspace(std::shared_ptr<const Data> owner, const EquationDofs &prototype,
                             const EquationDofs &coefficients, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers);
         void Apply(const EquationDofs &input, const EquationDofs &unlimited, EquationDofs &flux, bool refresh);
+        /// Common queued CPU/CUDA composition with explicit controller drains
+        /// only for all-good/recovery decisions and final numerical reporting.
+        /// Every leaf declares its operands before execution. Dynamic stopping
+        /// is intentionally host-observed; no fixed 1000-sweep queue is issued.
+        void Apply(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                   const EquationDofs &input, const EquationDofs &unlimited, EquationDofs &flux, bool refresh);
         std::pair<index, real> LocalStatistics() const;
     };
 }

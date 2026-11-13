@@ -1,0 +1,33 @@
+#pragma once
+
+#include "Cauchy/IO/OutputPlan.hpp"
+#include <memory>
+
+namespace DNDS::Cauchy
+{
+    class Simulation;
+    /** @brief Optional accepted-step parallel-HDF5 writer service.
+     * @details Construction collectively validates MPI_THREAD_MULTIPLE and
+     * duplicates each participating domain/control communicator once for an
+     * independent I/O ordering namespace. Subsequent requests share them.
+     * Capture runs on the controller; the worker owns detached values and
+     * pinned geometry. Existing archive/file schemas are preserved. HDF5 is
+     * process-serialized by SerializerH5/Geom. Drain before synchronous
+     * internal output, raw external HDF5/CGNS use, mesh mutation or shutdown.
+     * The service may not outlive MPI. Worker exceptions abort immediately.
+     */
+    class AsyncOutput
+    {
+        struct Data;
+        std::unique_ptr<Data> _data;
+
+    public:
+        explicit AsyncOutput(Simulation &);
+        ~AsyncOutput();
+        AsyncOutput(const AsyncOutput &) = delete;
+        AsyncOutput &operator=(const AsyncOutput &) = delete;
+        void Submit(Simulation &, const SimulationConfig &, const OutputPlan &, const std::string &token,
+                    bool checkpoint, bool visualization, Json outputController, Json snapshotManifest);
+        void Drain();
+    };
+}

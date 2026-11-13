@@ -32,6 +32,7 @@ namespace DNDS::Cauchy
     }
     std::unique_ptr<IO::DomainCheckpointRead> Domain::PrepareCheckpointRead(const std::string &path, const Json &resolved)
     {
+        _execution.Synchronize();
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
         std::unique_ptr<IO::DomainCheckpointRead> checkpoint;
         MPI::LocalStage(mpi, [&]
@@ -130,10 +131,19 @@ namespace DNDS::Cauchy
         const auto transfer = [&](const auto &source, auto &destination)
         {
             using T = typename std::decay_t<decltype(source)>::value_type;
-            Runtime::PayloadPlan(route, source.Layout(), destination.Layout(), Runtime::ElementSchema::For<T>())
-                .Bind(source, destination, Runtime::TransferTransport::Direct, {Runtime::TransferMode::Transient, context, 0})
+            std::optional<Runtime::Array<T>> host;
+            MPI::LocalStage(mpi, [&]
+                            {
+                if (destination.GetDevice() != Runtime::Device::Host())
+                    host.emplace(destination.Layout()); });
+            auto &target = host ? *host : destination;
+            Runtime::PayloadPlan(route, source.Layout(), target.Layout(), Runtime::ElementSchema::For<T>())
+                .Bind(source, target, Runtime::TransferTransport::Direct, {Runtime::TransferMode::Transient, context, 0})
                 .Begin()
                 .Wait();
+            if (host)
+                MPI::LocalStage(mpi, [&]
+                                { destination.CopyFrom(*host, _execution.ComputeStream().Context()).Wait(); });
         };
         std::optional<MeshEnvelope> envelope;
         std::optional<Runtime::Array<index>> mappedTopology;
@@ -160,7 +170,7 @@ namespace DNDS::Cauchy
         // means, optional reconstruction and BDF history have all been checked.
         if (stateArchive)
         {
-            stateArchive->Restore(_state.trial, route, context);
+            stateArchive->Restore(_state.trial, route, context, _execution.ComputeStream().Context());
             DNDS_check_throw_info(Admissible(_state.trial), "Cauchy restart contains inadmissible equation states");
             std::optional<EquationDofs> guess;
             if (_problem.finiteVolume.PolynomialReconstruction())
@@ -174,16 +184,19 @@ namespace DNDS::Cauchy
             std::optional<Runtime::Array<real>> mappedLimitedVRHistory;
             if (compatible)
             {
-                reconstructionArchive->Restore(*guess, route, context);
+                reconstructionArchive->Restore(*guess, route, context, _execution.ComputeStream().Context());
                 if (needsLimitedVRHistory)
                 {
                     MPI::LocalStage(mpi, [&]
-                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2)); });
+                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2), _state.trial.Device()); });
                     transfer(*limitedVRHistory, *mappedLimitedVRHistory);
                 }
             }
             else if (guess)
-                EquationDofOperations::Fill(*guess, 0);
+            {
+                EquationDofOperations::Fill(_execution.Engine(), _execution.ComputeStream(), *guess, 0);
+                _execution.Synchronize();
+            }
             std::unique_ptr<EquationTimeStepper> restoredStepper;
             if (_state.timeStepper)
             {
@@ -196,7 +209,7 @@ namespace DNDS::Cauchy
                                     {
                         DNDS_check_throw_info(std::isfinite(historyDt) && historyDt > 0, "invalid equation restart history timestep");
                         previous.emplace(EquationDofOperations::NewVector(_state.trial)); });
-                    historyArchive->Restore(*previous, route, context);
+                    historyArchive->Restore(*previous, route, context, _execution.ComputeStream().Context());
                     DNDS_check_throw_info(Admissible(*previous), "inadmissible equation restart history");
                     MPI::LocalStage(mpi, [&]
                                     { restoredStepper->RestoreHistory(*previous, historyDt); });
@@ -238,17 +251,14 @@ namespace DNDS::Cauchy
                 if (needsLimitedVRHistory)
                 {
                     MPI::LocalStage(mpi, [&]
-                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2)); });
+                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2), _state.trial.Device()); });
                     transfer(*limitedVRHistory, *mappedLimitedVRHistory);
                 }
             }
             else
             {
-                auto write = guessArray.Write();
-                const auto output = write.View<Runtime::UniformTableRows>();
-                for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                    for (index j = 0; j < output.RowSize(iCell); ++j)
-                        output(iCell, j) = 0;
+                EquationDofOperations::Fill(_execution.Engine(), _execution.ComputeStream(), *guess, 0);
+                _execution.Synchronize();
             }
         }
         std::unique_ptr<EquationTimeStepper> restoredStepper;
@@ -262,7 +272,7 @@ namespace DNDS::Cauchy
                 MPI::LocalStage(mpi, [&]
                                 {
                     DNDS_check_throw_info(std::isfinite(historyDt) && historyDt > 0, "invalid Cauchy restart history timestep");
-                    restoredHistory.emplace(_problem.finiteVolume.Metrics().BuildField(_state.accepted.CoupledField().Owned().Layout())); });
+                    restoredHistory.emplace(_problem.finiteVolume.Metrics().BuildField(_state.accepted.CoupledField().Owned().Layout(), _state.trial.Device())); });
                 transfer(*history, restoredHistory->Owned());
                 const auto restoredState = _state.trial.RebindCoupled(*restoredHistory);
                 DNDS_check_throw_info(Admissible(restoredState), "inadmissible Cauchy restart history");

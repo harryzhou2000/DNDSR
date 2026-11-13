@@ -4,6 +4,7 @@
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/IO/CGNS.hpp"
 #include "DNDS/IO/OutputDir.hpp"
+#include "DNDS/Serializer/HDF5Access.hpp"
 #include <array>
 #include <thread>
 #include <filesystem>
@@ -1395,6 +1396,7 @@ namespace DNDS::Geom
         const tFGetVecData &vectorDataPoint,
         double t, MPI_Comm commDup, const HDF5OutSetting *settings)
     {
+        const Serializer::HDF5Access hdf5Access(Serializer::HDF5Mutex());
         const auto hdf5OutSetting = settings ? *settings : this->hdf5OutSetting;
         DNDS_check_throw_info(commDup != MPI_COMM_NULL, "VTKHDF output requires its output communicator");
         EntitySpace::CheckCommunicator(mpi.comm, commDup);

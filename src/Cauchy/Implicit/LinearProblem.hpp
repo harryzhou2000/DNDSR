@@ -5,6 +5,8 @@
 #include "Cauchy/Implicit/OffDiagonalView.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Algebra/ComponentSelection.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
+#include "DNDS/Runtime/Storage/Metadata.hpp"
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,6 +31,13 @@ namespace DNDS::Cauchy
         Assembled,
         DirectEvaluated,
         SemiMatrixFree = DirectEvaluated // Compatibility spelling.
+    };
+    /// Optional CPU SGS physical-row subpartitions, copied at construction.
+    /// Starts includes both endpoints 0 and ownedRows. Empty means one block.
+    /// OMP=1 always retains the original global logical sweep.
+    struct LinearSweepPartitions
+    {
+        std::vector<index> starts;
     };
     /// Integrated residual convention: A=M/dTau+physicalMass*M-residualScale*J_R.
     /// Roe dissipation requires a full diagonal block. Scalar dissipation may
@@ -65,10 +74,18 @@ namespace DNDS::Cauchy
         using Field = Algebra::DofField<real>;
         void JacobiImpl(const Field &, const Field *, Field &, LinearRegion) const;
         void JacobiImpl(const EquationDofs &, const EquationDofs *, EquationDofs &, LinearRegion) const;
+        template <class State>
+        void SubmitRows(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                        OptionalRef<const State> rhs, OptionalRef<const State> input,
+                        State &output, LinearRegion region) const;
         struct Pattern
         {
             std::shared_ptr<const Algebra::DofSpace::Partition> partition;
             LinearPatternStorage rows;
+            Runtime::MetadataBuffer<index> sweepPartitions;
+            /// Host validation metadata only; resident numerical operators
+            /// consume rows. This avoids copying device indices per publication.
+            std::optional<Runtime::Array<index>> hostColumns;
             bool hasGhostColumns = false;
             explicit Pattern(std::shared_ptr<const Algebra::DofSpace::Partition> rowsIdentity)
                 : partition(std::move(rowsIdentity)) {}
@@ -84,13 +101,22 @@ namespace DNDS::Cauchy
         std::shared_ptr<const OffDiagonalEvaluator> _offDiagonalEvaluator;
         uint64_t _offDiagonalGeneration = 0;
         uint64_t _diagonalVersion = 0, _inverseVersion = 0;
+        uint64_t _inverseSourceEpoch = 0, _inverseEpoch = 0;
         Runtime::ArrayStorage::Shared _diagonalStoragePin, _offDiagonalStoragePin;
         uint64_t _diagonalShape = 0;
         bool _inverseCurrent = false;
         index _inverseFallbacks = 0;
+        index _inverseSVDCells = 0;
+        struct InverseWorkspace;
+        std::shared_ptr<InverseWorkspace> _inverseWorkspace;
+        bool _inversePending = false;
+        struct ActionWorkspace;
+        std::shared_ptr<ActionWorkspace> _actionWorkspace;
+        void PrepareActionWorkspace();
+        Runtime::Array<NumericalStatus> &ActionStatus() const;
         struct ILUState;
         std::shared_ptr<ILUState> _ilu;
-        static std::shared_ptr<const Pattern> BuildPattern(const Algebra::DofSpace &space, std::vector<std::vector<index>> columns, std::vector<index> core);
+        static std::shared_ptr<const Pattern> BuildPattern(const Algebra::DofSpace &space, std::vector<std::vector<index>> columns, std::vector<index> core, LinearSweepPartitions partitions);
         const Pattern &Layout() const
         {
             DNDS_check_throw_info(_pattern, "linear context was moved");
@@ -111,7 +137,8 @@ namespace DNDS::Cauchy
         LinearProblemContext(Algebra::DofSpace space, index components,
                              std::vector<std::vector<index>> columns,
                              std::vector<index> core, DiagonalStorage diagonal,
-                             OffDiagonalStorage offDiagonal = OffDiagonalStorage::Assembled);
+                             OffDiagonalStorage offDiagonal = OffDiagonalStorage::Assembled,
+                             Runtime::Device device = Runtime::Device::Host(), LinearSweepPartitions partitions = {});
         LinearProblemContext(const LinearProblemContext &) = delete;
         LinearProblemContext &operator=(const LinearProblemContext &) = delete;
         LinearProblemContext(LinearProblemContext &&) noexcept = default;
@@ -122,6 +149,14 @@ namespace DNDS::Cauchy
             return _space;
         }
         index Components() const { return _components; }
+        Runtime::Device Device() const { return _diagonal.GetDevice(); }
+        /// Explicit host numerical decision boundary for queued evaluated
+        /// actions. Reduces device status, drains, then reports the first error.
+        /// CPU/assembled providers have no additional status workspace.
+        void CheckQueuedActions(Runtime::EagerEngine &, const Runtime::ExecutionStream &) const;
+        /// Explicitly begin a fresh action segment after previous observation.
+        /// Ordinary successful actions need no reset; errors remain sticky.
+        void ResetQueuedActionStatus(Runtime::EagerEngine &, const Runtime::ExecutionStream &) const;
         DiagonalStorage DiagonalMode() const { return _diagonalStorage; }
         std::vector<std::vector<index>> Columns() const { return Layout().rows.CopyColumns(); }
         /// Validate an immutable producer stencil once, then compare identity.
@@ -182,12 +217,28 @@ namespace DNDS::Cauchy
             template <class Callback>
             void WithBlocks(Callback &&callback) const { View().WithBlocks(std::forward<Callback>(callback)); }
         };
-        OffDiagonalReadAccess ReadOffDiagonal() const;
+        /// Retain numeric matrix/publication storage in the supplied placement.
+        /// View()/WithActions remain CPU-only; queued device operators consume
+        /// their own retained whole-array views instead of Eigen block access.
+        OffDiagonalReadAccess ReadOffDiagonal(Runtime::ExecutionContext context = Runtime::ExecutionContext::Host()) const;
         /// Explicit preparation of diagonal inverses. Block mode follows the
         /// active Euler guarded LU/SVD inversion policy. Later diagonal writes
         /// invalidate the inverses; active writers are rejected by read leases.
         void InvertDiagonal();
         index LastInverseFallbacks() const { return _inverseFallbacks; }
+        /// CPU: fallback rows. CUDA full blocks: all rows use batched SVD.
+        index LastInverseSVDCells() const { return _inverseSVDCells; }
+        /// Setup-only workspace/provider creation. Repeated calls on the same
+        /// context reuse allocations. Do this before entering the solve loop.
+        void PrepareDiagonalInverse(Runtime::ExecutionContext context);
+        /// Queue CPU inversion or CUDA scale/SVD/recovery/status reduction.
+        /// The current inverse is invalid until ObserveDiagonalInverse succeeds.
+        /// Every operand and provider is retained beyond this object's lifetime.
+        void SubmitInvertDiagonal(Runtime::EagerEngine &, const Runtime::ExecutionStream &);
+        /// Explicit numerical observation after the controller drains the
+        /// preparation segment. Only compact status is copied from CUDA.
+        /// Solver failures take the normal rank-local abort path.
+        void ObserveDiagonalInverse();
         /// Stateless matrix action. Core acquires no input ghost lease. Every
         /// output allocation must be distinct from inputs and numeric storage.
         void Apply(const Field &input, Field &output, LinearRegion region = LinearRegion::All) const;
@@ -204,6 +255,20 @@ namespace DNDS::Cauchy
         void JacobiZero(const Field &rhs, Field &output, LinearRegion region = LinearRegion::All) const;
         void Jacobi(const EquationDofs &rhs, const EquationDofs &input, EquationDofs &output, LinearRegion region = LinearRegion::All) const;
         void JacobiZero(const EquationDofs &rhs, EquationDofs &output, LinearRegion region = LinearRegion::All) const;
+        /** @brief Managed queued row actions using the same CPU/device schedule.
+         * @details Reserve all numerical inputs/outputs at submission; retain
+         * symbolic arrays and frozen evaluators through operation completion.
+         * Core reads owned input only. Output is distinct and its halo remains
+         * stale. CPU supports segmented layouts; CUDA requires combined AoS.
+         * No transfer, stream join or host reduction is performed here.
+         */
+        void SubmitApply(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const Field &, Field &, LinearRegion = LinearRegion::All) const;
+        void SubmitApply(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, EquationDofs &, LinearRegion = LinearRegion::All) const;
+        void SubmitJacobi(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const Field &, const Field &, Field &, LinearRegion = LinearRegion::All) const;
+        void SubmitJacobi(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, const EquationDofs &, EquationDofs &, LinearRegion = LinearRegion::All) const;
+        /// Zero-start reserves neither old input nor off-diagonal values.
+        void SubmitJacobiZero(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const Field &, Field &, LinearRegion = LinearRegion::All) const;
+        void SubmitJacobiZero(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, EquationDofs &, LinearRegion = LinearRegion::All) const;
         /// Move-only access scope for one staged symmetric-GS application.
         /// Lower runs Core then HaloDependent; Upper runs HaloDependent then
         /// Core. All is available for either complete scan. Finish publishes

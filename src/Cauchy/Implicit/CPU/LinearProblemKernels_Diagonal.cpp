@@ -1,6 +1,7 @@
 #include "Cauchy/Implicit/CPU/LinearProblemKernels.hpp"
 #include "DNDS/Algebra/EigenView.hpp"
 #include "Solver/BlockInverse.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -11,7 +12,8 @@ namespace DNDS::Cauchy::CPU
         index fallbacks = 0;
         if (!request.fullBlock)
         {
-            for (index iCell = 0; iCell < request.diagonal.RowCount(); ++iCell)
+            const auto status = OMP::ForRowsStatus(0, request.diagonal.RowCount(), [&](index iCell) -> NumericalStatus
+                                                   {
                 for (index j = 0; j < request.components; ++j)
                 {
                     const real entry = request.diagonal(iCell, j);
@@ -19,6 +21,9 @@ namespace DNDS::Cauchy::CPU
                         return NumericalStatus{NumericalError::InvalidState, 1, iCell};
                     request.inverse(iCell, j) = 1 / entry;
                 }
+                return {}; });
+            if (!status)
+                return status;
             return fallbacks;
         }
         const auto invert = [&](auto width) -> NumericalStatus
@@ -28,8 +33,13 @@ namespace DNDS::Cauchy::CPU
                 request.diagonal, request.components, request.components);
             const auto output = Algebra::MakeEigenRowMatrices<Size, Size>(
                 request.inverse, request.components, request.components);
-            for (index iCell = 0; iCell < request.diagonal.RowCount(); ++iCell)
-            {
+            const index cells = request.diagonal.RowCount();
+            const index parts = std::min<index>(OMP::DistributedThreads(), std::max<index>(1, cells));
+            std::vector<index> counts(parts, 0);
+            const auto status = OMP::ForRowsStatus(0, parts, [&](index part) -> NumericalStatus
+                                                   {
+              for (index iCell = cells * part / parts; iCell < cells * (part + 1) / parts; ++iCell)
+              {
                 if (!input[iCell].allFinite())
                     return NumericalStatus{NumericalError::InvalidState, 2, iCell};
                 auto inverseResult = Direct::TryInvertDiagonalBlock(input[iCell]);
@@ -39,9 +49,14 @@ namespace DNDS::Cauchy::CPU
                 if (!result.value.allFinite())
                     return NumericalStatus{NumericalError::InvalidState, 3, iCell};
                 output[iCell] = result.value;
-                fallbacks += result.usedSVD;
-            }
-            return {};
+                counts[part] += result.usedSVD;
+              }
+              return {}; });
+            // Integer diagnostics merge after all workers join. The numerical
+            // inverse uses the identical per-cell guarded LU/SVD policy.
+            for (auto count : counts)
+                fallbacks += count;
+            return status;
         };
         NumericalStatus status;
         if (request.components == 5)

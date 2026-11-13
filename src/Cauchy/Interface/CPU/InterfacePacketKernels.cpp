@@ -1,5 +1,6 @@
 #include "Cauchy/Interface/CPU/InterfacePacketKernels.hpp"
 #include "DNDS/Core/Errors.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -13,8 +14,8 @@ namespace DNDS::Cauchy::CPU
                                  field.values.RowCount() == request.rows.RowCount(),
                              "invalid interface packet field view");
         }
-        for (index iPoint = 0; iPoint < request.rows.RowCount(); ++iPoint)
-        {
+        OMP::ForRows(0, request.rows.RowCount(), [&](index iPoint)
+                     {
             const auto row = request.rows(iPoint, 0);
             const auto destination = row.faceCenter ? request.faceCenters
                                                     : request.quadrature;
@@ -25,34 +26,18 @@ namespace DNDS::Cauchy::CPU
                         field.values(iPoint, j);
             }
             if (!request.rotation.donorActive && !request.rotation.receiverActive)
-                continue;
+                return;
             for (const index first : request.vectorStarts)
             {
                 const std::array<real, 3> input{
                     destination(row.row, first),
                     destination(row.row, first + 1),
                     destination(row.row, first + 2)};
-                std::array<real, 3> world = input, local = input;
-                if (request.rotation.donorActive)
-                    for (int d = 0; d < 3; ++d)
-                    {
-                        world[size_t(d)] = 0;
-                        for (int e = 0; e < 3; ++e)
-                            world[size_t(d)] += request.rotation.donor[size_t(3 * d + e)] * input[size_t(e)];
-                    }
-                local = world;
-                if (request.rotation.receiverActive)
-                    for (int d = 0; d < 3; ++d)
-                    {
-                        local[size_t(d)] = 0;
-                        for (int e = 0; e < 3; ++e)
-                            local[size_t(d)] += request.rotation.receiver[size_t(3 * d + e)] * world[size_t(e)];
-                    }
+                const auto local = request.rotation.Apply(input);
                 for (int d = 0; d < 3; ++d)
                 {
                     destination(row.row, first + d) = local[size_t(d)];
                 }
-            }
-        }
+            } });
     }
 }

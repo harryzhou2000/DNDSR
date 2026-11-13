@@ -227,8 +227,12 @@ namespace DNDS::CFV
         /// required. The returned shallow owner survives this plan handle.
         Geom::EntityWorkPartition CellWorkPartition() const;
         FVField BuildField(index width) const;
-        /// Uniform physical prototype; derive owned/ghost pitches independently.
-        FVField BuildField(Runtime::RowLayout prototype, Runtime::Device device = Runtime::Device::Host()) const;
+        /// Uniform physical prototype on this plan's device; derive owned/ghost
+        /// pitches independently. Like the width overload, placement follows
+        /// the plan, including when allocating coarse-level solver fields.
+        FVField BuildField(Runtime::RowLayout prototype) const;
+        /// Explicit placement override for setup/migration staging only.
+        FVField BuildField(Runtime::RowLayout prototype, Runtime::Device device) const;
         /// Collective binding, retained by caller for persistent repeated pulls.
         Runtime::TransferBinding BindHalo(FVField &field, Runtime::TransferOptions options = {}) const;
         /// CPU direct transfer with completed-publication provenance. Callers
@@ -270,7 +274,7 @@ namespace DNDS::CFV
     /// are different operations. Declare vector triples in BuildWorkspace so
     /// the periodic component map precedes characteristic limiting.
     /// Frozen transforms are finalized on CPU and guarded by completed-write
-    /// versions. Queued transforms are produced on device. Caller orders
+    /// versions. Queued transforms are produced on CPU or device. Caller orders
     /// producer -> limiter on one stream (or supplies
     /// cross-stream events). Completed host versions are not readiness proofs
     /// for queued writers. Optional numerical diagnostics are separate from
@@ -305,6 +309,10 @@ namespace DNDS::CFV
         /// plan separately; device operators retain their own immutable arrays,
         /// row space, halo route and scalar metadata.
         bool retainHostPayloads = true;
+        /// Retain cell moments for later arbitrary-point sampling (e.g. moving
+        /// interfaces). This is independent of face-quadrature basis caching.
+        /// Disabled placements keep no otherwise-unused moment allocation.
+        bool arbitraryPointSampling = false;
         /// Highest derivative needed by placed point evaluation, 0..3.
         /// Uncached requests retain moments/cell geometry; cached-only requests
         /// do not. Ignored when basis=false. Full metric publication is an
@@ -326,7 +334,11 @@ namespace DNDS::CFV
         /// FP32 matrix/coefficient products accumulated in FP32, then added to
         /// FP64 coefficients. SIMT FMA reference for quantized MMA experiments;
         /// this selection does not claim to use tensor cores or TF32 arithmetic.
-        FP32
+        FP32,
+        /// Experimental 16x16x8 TF32 tensor products on FP32 sweep maps.
+        /// Explicitly rounds operands to TF32, accumulates in FP32, promotes
+        /// the correction to FP64. This is not the FP32 reference arithmetic.
+        TF32TensorCore
     };
     struct ResidentBufferInfo
     {
@@ -498,6 +510,7 @@ namespace DNDS::CFV
         int PlacementNRecDOF() const;
         index PlacementOwnedRows() const;
         index PlacementBoundaryPoints() const;
+        const Runtime::Array<real> &SamplingMoments() const;
         FVField BuildDeviceField(Runtime::RowLayout) const;
         void ValidatePlacement() const;
 
@@ -549,8 +562,9 @@ namespace DNDS::CFV
         index NumBoundaryQuadrature() const;
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
         FaceCharacteristicTransform BuildFaceTransform(index first, index count) const;
-        /// Device-owned mutable transform buffers, initially zero (not valid
-        /// inverses). A queued producer must supply finite inverse matrices
+        /// Backend-owned mutable transform buffers. CPU seeds unused faces
+        /// with identity; device contents are unspecified until produced.
+        /// A queued producer must supply finite inverse matrices
         /// before first use. All WBAP orders may reuse them until mutation.
         /// count=0 requires no producer or matrix allocation. Numerical inverse
         /// checking is an explicit diagnostic, never an automatic launch.

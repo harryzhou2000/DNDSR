@@ -24,7 +24,7 @@ namespace DNDS::Cauchy
              std::optional<EquationDofs> previousState, real acceptedTime,
              real acceptedDt, real historyDt, StateEpoch acceptedEpoch,
              std::string timeMethod, Json nonlinearState, Json policy,
-             bool strang)
+             bool strang, Runtime::ExecutionContext context)
             : name(std::move(domainName)), means(std::move(accepted)),
               reconstruction(std::move(acceptedReconstruction)),
               previous(std::move(previousState)),
@@ -34,19 +34,32 @@ namespace DNDS::Cauchy
               nonlinear(std::move(nonlinearState)),
               updatePolicy(std::move(policy)), sourceStrang(strang)
         {
-            meanRead.emplace(means.ReadOwned());
+            meanRead.emplace(means.ReadOwned(context));
             if (reconstruction)
-                reconstructionRead.emplace(reconstruction->ReadOwned());
+                reconstructionRead.emplace(reconstruction->ReadOwned(context));
             if (limitedVR)
-                limitedVRRead.emplace(limitedVR->Read());
+                limitedVRRead.emplace(limitedVR->Read(context));
             if (previous)
-                previousRead.emplace(previous->ReadOwned());
+                previousRead.emplace(previous->ReadOwned(context));
+            // These scopes pin the quiescent snapshot; they do not submit
+            // numerical work. Consumers acquire their own operation reads.
+            // Mark the already-observed prefix so eventual snapshot destruction
+            // never needs a stream that its creating domain may have released.
+            const auto complete = Runtime::Completion::FromExternalCompletion(context);
+            meanRead->Complete(complete);
+            if (reconstructionRead)
+                reconstructionRead->Complete(complete);
+            if (limitedVRRead)
+                limitedVRRead->Complete(complete);
+            if (previousRead)
+                previousRead->Complete(complete);
         }
     };
 
     DomainStateSnapshot::DomainStateSnapshot(const Domain &domain,
                                              bool includeReconstruction)
     {
+        domain._execution.Synchronize();
         std::optional<EquationDofs> reconstruction, previous;
         std::optional<Runtime::Array<real>> limitedVR;
         if (includeReconstruction &&
@@ -89,7 +102,42 @@ namespace DNDS::Cauchy
             domain._state.lastAcceptedDt,
             hasHistory ? domain._state.timeStepper->PreviousDt() : 0,
             domain._state.epoch, method, nonlinear,
-            domain.UpdatePolicyMetadata(), domain._sourceStrang);
+            domain.UpdatePolicyMetadata(), domain._sourceStrang,
+            domain._execution.ComputeStream().Context());
+    }
+
+    DomainStateSnapshot DomainStateSnapshot::DetachedHost(Runtime::ExecutionContext context) const
+    {
+        const auto &source = *_data;
+        const EquationSnapshotOptions allocation{source.means.Device().space == Runtime::MemorySpace::CUDA};
+        std::optional<EquationDofs> reconstruction, previous;
+        std::optional<Runtime::Array<real>> limitedVR;
+        auto means = EquationDofOperations::CopyOwnedTo(source.means, Runtime::Device::Host(), context, allocation);
+        means.Fields().SetName(source.name + "/outputSnapshot/means", DNDS_ALLOCATION_SITE());
+        if (source.reconstruction)
+        {
+            reconstruction.emplace(EquationDofOperations::CopyOwnedTo(*source.reconstruction, Runtime::Device::Host(), context, allocation));
+            reconstruction->Fields().SetName(source.name + "/outputSnapshot/reconstruction", DNDS_ALLOCATION_SITE());
+        }
+        if (source.previous)
+        {
+            previous.emplace(EquationDofOperations::CopyOwnedTo(*source.previous, Runtime::Device::Host(), context, allocation));
+            previous->Fields().SetName(source.name + "/outputSnapshot/history", DNDS_ALLOCATION_SITE());
+        }
+        if (source.limitedVR)
+        {
+            const auto layout = source.limitedVR->Layout();
+            limitedVR.emplace(allocation.pinnedHost
+                                  ? Runtime::Array<real>::FromStorage(layout, Runtime::Buffer::AllocatePinnedHost(
+                                                                                  CheckedSize::Multiply(layout.Elements(), sizeof(real))))
+                                  : Runtime::Array<real>(layout));
+            limitedVR->CopyFrom(*source.limitedVR, context).Wait();
+            limitedVR->SetName(source.name + "/outputSnapshot/limitedVR", DNDS_ALLOCATION_SITE());
+        }
+        return DomainStateSnapshot(std::make_shared<Data>(source.name, std::move(means),
+                                                          std::move(reconstruction), std::move(limitedVR), std::move(previous), source.time,
+                                                          source.lastAcceptedDt, source.previousDt, source.epoch, source.method, source.nonlinear,
+                                                          source.updatePolicy, source.sourceStrang, Runtime::ExecutionContext::Host()));
     }
 
     const std::string &DomainStateSnapshot::Name() const { return _data->name; }

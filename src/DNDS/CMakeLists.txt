@@ -53,6 +53,8 @@ Runtime/Communication/RowTransfer.cpp
 Runtime/Communication/NCCLTransfer.cpp
 Algebra/DofAlgebra.cpp
 Algebra/AmgXPreconditioner.cpp
+Algebra/BatchedSVD.cpp
+Algebra/LocalProducts.cpp
 Diagnostics/Profiling.cpp
 Math/HardEigen.cpp
 Serializer/SerializerBase.cpp
@@ -75,6 +77,7 @@ Legacy/ArrayDOF_inst/ArrayDOF_op_I.cpp
 
 if (DNDS_USE_CUDA)
     list(APPEND CPPS Algebra/DofAlgebra_CUDA.cu)
+    list(APPEND CPPS Algebra/LocalProducts_CUDA.cu)
     list(APPEND CPPS Runtime/Communication/RowTransfer_CUDA.cu)
     list(APPEND CPPS Device/DeviceStorage_CUDA.cu)
     list(APPEND CPPS
@@ -100,6 +103,8 @@ dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
 dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
     ON ON ON)  # SHARED,FAST, EXCLUDE
 if(DNDS_USE_CUDA)
+    target_link_libraries(${LIBNAME} PRIVATE CUDA::cusolver)
+    target_link_libraries(${LIBNAME}_shared PRIVATE CUDA::cusolver)
     # Installed Python libraries must keep the toolkit selected at configure
     # time, including transitive AmgX libraries. The host may have several
     # same-soname CUDA releases in ldconfig; none is an implicit substitute.

@@ -104,6 +104,7 @@ namespace DNDS::Multigrid
         using AcquireScratch = std::function<Scratch(index, ScratchKind, index)>;
 
     private:
+        Operations _operations;
         struct Level
         {
             LevelDefinition operation;
@@ -154,18 +155,18 @@ namespace DNDS::Multigrid
         void SaveFrozen(Level &level)
         {
             if (Selected())
-                Operations::Copy(*level.frozen, level.operation.state);
+                _operations.Copy(*level.frozen, level.operation.state);
         }
         void CheckFrozen(const Level &level) const
         {
             if (!Selected())
                 return;
-            Operations::CheckFrozen(level.operation.state, *level.frozen, _settings.updateComponents);
+            _operations.CheckFrozen(level.operation.state, *level.frozen, _settings.updateComponents);
         }
         void ProjectCorrection(Field &correction) const
         {
             if (Selected())
-                Operations::ProjectCorrection(correction, _settings.updateComponents);
+                _operations.ProjectCorrection(correction, _settings.updateComponents);
         }
         template <class F>
         void RunLocal(F &&run) const
@@ -228,14 +229,14 @@ namespace DNDS::Multigrid
                 ApplyOperator(fine, fineValue.field, report, transfer.cancelIdentityLinearTerm);
                 if (!transfer.cancelIdentityLinearTerm)
                     RunLocal([&]
-                             { Operations::LinearCombination(fineResidual.field, real(1), fine.source, real(-1), fineValue.field); });
+                             { _operations.LinearCombination(fineResidual.field, real(1), fine.source, real(-1), fineValue.field); });
                 transfer.restrictState(fine.operation.state, coarse.operation.state);
                 std::optional<typename Operations::Binding> sourceBinding, differenceBinding;
                 RunLocal([&]
                          { CheckBinding(coarse); });
                 RunLocal([&]
                          {
-                Operations::Copy(coarse.reference, coarse.operation.state);
+                _operations.Copy(coarse.reference, coarse.operation.state);
                 sourceBinding.emplace(coarse.source);
                 if (transfer.cancelIdentityLinearTerm) differenceBinding.emplace(coarseResidual.field); });
                 ApplyOperator(coarse, coarseValue.field, report, transfer.cancelIdentityLinearTerm);
@@ -245,7 +246,7 @@ namespace DNDS::Multigrid
                     RunLocal([&]
                              {
                     differenceBinding->Check(coarseResidual.field);
-                    Operations::Axpy(coarseResidual.field, real(-1), coarseValue.field); });
+                    _operations.Axpy(coarseResidual.field, real(-1), coarseValue.field); });
                     transfer.restrictResidual(fine.source, coarse.source);
                     RunLocal([&]
                              {
@@ -253,7 +254,7 @@ namespace DNDS::Multigrid
                     // Form the small spatial difference first, then add the
                     // history source once. Two separate additions to a large
                     // resOther can lose a representable net tau correction.
-                    Operations::Axpy(coarse.source, real(-1), coarseResidual.field); });
+                    _operations.Axpy(coarse.source, real(-1), coarseResidual.field); });
                 }
                 else
                 {
@@ -261,7 +262,7 @@ namespace DNDS::Multigrid
                     RunLocal([&]
                              {
                     sourceBinding->Check(coarse.source);
-                    Operations::Axpy(coarse.source, real(1), coarseValue.field); });
+                    _operations.Axpy(coarse.source, real(1), coarseValue.field); });
                 }
             } // Release temporary values before recursive child work.
             // F_c(U_c)=F_c(R U_f)+R(b_f-F_f(U_f)). The entrance reference
@@ -274,7 +275,7 @@ namespace DNDS::Multigrid
                 std::optional<typename Operations::Binding> correctionBinding;
                 RunLocal([&]
                          {
-                Operations::LinearCombination(coarseCorrection.field, real(1), coarse.operation.state, real(-1), coarse.reference);
+                _operations.LinearCombination(coarseCorrection.field, real(1), coarse.operation.state, real(-1), coarse.reference);
                 correctionBinding.emplace(fineCorrection.field); });
                 transfer.prolongCorrection(coarseCorrection.field, fineCorrection.field);
                 RunLocal([&]
@@ -285,7 +286,7 @@ namespace DNDS::Multigrid
                     fine.operation.update(fine.operation.state, fineCorrection.field);
                 else
                     RunLocal([&]
-                             { Operations::AddSelected(fine.operation.state, fineCorrection.field, _settings.updateComponents); });
+                             { _operations.AddSelected(fine.operation.state, fineCorrection.field, _settings.updateComponents); });
 
                 RunLocal([&]
                          { CheckBinding(fine); CheckFrozen(fine); });
@@ -294,8 +295,8 @@ namespace DNDS::Multigrid
         }
 
     public:
-        StateFASCycle(std::vector<LevelDefinition> levels, std::vector<TransferDefinition> transfers, FASCycleSettings settings = {}, LocalStage local = {}, AcquireScratch acquireScratch = {})
-            : _transfers(std::move(transfers)), _settings(settings), _local(std::move(local)), _acquireScratch(std::move(acquireScratch))
+        StateFASCycle(std::vector<LevelDefinition> levels, std::vector<TransferDefinition> transfers, FASCycleSettings settings = {}, LocalStage local = {}, AcquireScratch acquireScratch = {}, Operations operations = {})
+            : _operations(std::move(operations)), _transfers(std::move(transfers)), _settings(settings), _local(std::move(local)), _acquireScratch(std::move(acquireScratch))
         {
             RunLocal([&]
                      {
@@ -348,7 +349,7 @@ namespace DNDS::Multigrid
                     CheckBinding(*level);
                     Operations::RequireDistinct(source, level->operation.state);
                 }
-                Operations::Copy(_levels.front()->source, source); });
+                _operations.Copy(_levels.front()->source, source); });
             FASCycleReport report;
             report.corrections.assign(_levels.size(), 0);
             try

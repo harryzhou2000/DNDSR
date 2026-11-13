@@ -5,6 +5,31 @@
 
 namespace DNDS::Cauchy
 {
+    void FiniteVolume::Workspace::BeginNumericalStatus(R::EagerEngine &engine, const R::ExecutionStream &stream, bool withRHS)
+    {
+        DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == owner->metrics.Device(),
+                              "numerical status segment stream or placement differs");
+        if (owner->metrics.Device() == R::Device::Host())
+            return;
+        ResetPreparationStatus(engine, stream);
+        if (withRHS)
+            ResetDeviceFluxStatus(engine, stream);
+    }
+    void FiniteVolume::Workspace::CheckNumericalStatus(bool withRHS)
+    {
+        if (owner->metrics.Device() == R::Device::Host())
+            return;
+        CheckPreparationStatus();
+        if (withRHS)
+            CheckDeviceFluxStatus();
+        for (const auto &field : fields)
+        {
+            if (field.reconstruction)
+                owner->reconstruction->CheckStatus(*field.reconstruction);
+            if (field.gradientExecution)
+                owner->gradient.CheckStatus(*field.gradientExecution);
+        }
+    }
     void FiniteVolume::SubmitBoundaryValues(
         Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream,
         const EquationDofs &state, OptionalRef<const EquationDofs> coefficients,
@@ -87,6 +112,7 @@ namespace DNDS::Cauchy
                 request.time = options.time; request.frame = frame;
                 request.components = components; request.useSourceRows = mapped;
                 request.exterior = options.exterior; request.repairRANS = options.repairRANS;
+                request.forcePointFallback = options.forcePointFallback;
                 request.hasIncoming = hasIncoming; request.polynomial = bool(pin->basis);
                 if (pin->basis)
                 {

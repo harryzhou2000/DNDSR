@@ -46,7 +46,7 @@ namespace DNDS::Runtime
         return GetRegistry().enabled.load(std::memory_order_acquire);
     }
     void Detail::TrackAllocation(uint64_t identity, size_t bytes, Device device,
-                                 bool external, bool streamOrdered,
+                                 bool external, bool streamOrdered, bool pinnedHost,
                                  std::function<AllocationActivity()> activity)
     {
         auto &registry = GetRegistry();
@@ -61,6 +61,7 @@ namespace DNDS::Runtime
         record.device = device;
         record.externalProvider = external;
         record.streamOrderedMemory = streamOrdered;
+        record.pinnedHostMemory = pinnedHost;
         const auto live = CheckedSize::Add(registry.live, bytes);
         const auto inserted = registry.records.emplace(identity, TrackedAllocation{std::move(record), std::move(activity)}).second;
         if (inserted)
@@ -121,6 +122,8 @@ namespace DNDS::Runtime
         {
             if (entry.activity)
                 entry.record.activity = entry.activity();
+            if (entry.record.pinnedHostMemory)
+                result.pinnedHostBytes = CheckedSize::Add(result.pinnedHostBytes, entry.record.bytes);
             result.allocations.push_back(std::move(entry.record));
         }
         std::sort(result.allocations.begin(), result.allocations.end(), [](const auto &a, const auto &b)
@@ -129,13 +132,15 @@ namespace DNDS::Runtime
     }
     void AllocationSnapshot::Dump(std::ostream &output) const
     {
-        output << "Runtime allocation ownership: live_bytes=" << liveBytes << " peak_bytes=" << peakBytes << '\n';
+        output << "Runtime allocation ownership: live_bytes=" << liveBytes << " peak_bytes=" << peakBytes
+               << " pinned_host_bytes=" << pinnedHostBytes << '\n';
         for (const auto &entry : allocations)
         {
             output << entry.identity << ' ' << (entry.device.space == MemorySpace::CUDA ? "cuda:" : "host:")
                    << entry.device.ordinal << " bytes=" << entry.bytes
                    << " provider=" << (entry.externalProvider ? "external" : "native")
                    << " stream_ordered=" << entry.streamOrderedMemory
+                   << " pinned_host=" << entry.pinnedHostMemory
                    << " pending_reads=" << entry.activity.pendingReaders
                    << " pending_writes=" << entry.activity.pendingWriters;
             for (const auto &name : entry.names)

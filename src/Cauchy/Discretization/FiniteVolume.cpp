@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Discretization/FlowErrorOperator.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
@@ -17,9 +18,12 @@
 #include "Cauchy/Input/FlowProfile.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
+#include "Cauchy/State/MeanStateCheck.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <limits>
 #include <climits>
 #include <cstdlib>
@@ -349,7 +353,8 @@ namespace DNDS::Cauchy
                     index(condition - data->forceZones.begin()),
                     sample.boundaryPoint, sample.side,
                     {sample.normal[0], sample.normal[1], sample.normal[2]},
-                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}};
+                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                    metric.GetFaceWeight(sample.point)};
             }
             for (index iPoint = 0; iPoint < rows.RowCount(); ++iPoint)
                 rows(iPoint, 0) = gradientBoundaryPoints[size_t(iPoint)];
@@ -516,6 +521,11 @@ namespace DNDS::Cauchy
                                      : OptionalRef<const CFV::VariationalReconstructionPlan>();
     }
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
+    Geom::MeshReadAccess FiniteVolume::AcquireMeshRead(Geom::MeshReadRequirements requirements) const
+    {
+        Metrics().Validate();
+        return _data->mesh->AcquireRead(requirements);
+    }
     const RigidMotion &FiniteVolume::Motion() const { return _data->motion; }
 
     Json FiniteVolume::ReconstructionMetadata() const
@@ -549,34 +559,15 @@ namespace DNDS::Cauchy
             const auto frame = _data->motion.At(0);
             RequireNumericalSuccess(CPU::InitializeFlowProfile(mesh, flow, profile, primitive, _data->equation.Gas(), frame), "flow profile initialization"); });
     }
-    std::array<FlowState, 3> FiniteVolume::Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const
+    std::array<FlowState, 3> FiniteVolume::Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time,
+                                                 std::optional<R::ExecutionStream> stream) const
     {
-        state.RequireSchema(_data->equation.Schema());
-        std::array<FlowState, 3> errors{};
-        real volume = 0;
+        auto engine = stream ? stream->LockEngine() : R::EagerEngine{};
+        const auto lane = stream ? *stream : engine.CreateCPUStream();
+        std::optional<FlowErrorOperator> operation;
         Metrics().Communication()->LocalStage([&]
-                                              {
-            auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-            const auto mesh = meshRead.HostView();
-            auto geometry = Metrics().AcquireRead();
-            const auto metric = geometry.HostView();
-            const auto read = state.ReadOwned();
-            const auto flow = read.Block("flow");
-            const auto frame = _data->motion.At(time);
-            const auto result = RequireNumericalSuccess(CPU::MeasureFlowError(mesh, metric, flow.owned, profile, primitive, _data->equation.Gas(), time, frame), "flow error oracle");
-            errors = result.errors; volume = result.volume; });
-        volume = MPI::AllreduceValue<MPI::Reduction::Sum>(volume, Metrics().Communicator());
-        for (int i = 0; i < 3; ++i)
-            if (i == 2)
-                MPI::AllreduceInPlace<MPI::Reduction::Max>(errors[i], Metrics().Communicator());
-            else
-                MPI::AllreduceInPlace<MPI::Reduction::Sum>(errors[i], Metrics().Communicator());
-        for (int j = 0; j < 5; ++j)
-        {
-            errors[0][j] /= volume;
-            errors[1][j] = std::sqrt(errors[1][j] / volume);
-        }
-        return errors;
+                                              { operation.emplace(*this, lane.Context()); });
+        return operation->Evaluate(engine, lane, state, profile, primitive, time);
     }
     AdmissibilityPolicy FiniteVolume::PrepareAdmissibility(
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
@@ -626,10 +617,21 @@ namespace DNDS::Cauchy
         int valid = 1;
         Metrics().Communication()->LocalStage([&]
                                               {
-            const auto read = state.ReadOwned();
-            const auto layout = read.ComponentLayout();
-            const auto values = layout.View();
-            valid = CPU::AdmissibleMeans(values, bounds); });
+            DNDS_check_throw_info(state.Device() == Device() && state.Space().Same(Metrics().Space()),
+                                  "finite-volume admissibility state placement or row space differs");
+            // Synchronous public convenience, sharing the same resident
+            // acceptance operator as Domain. Only its scalar status crosses
+            // to the controller; no device field is downloaded for CPU physics.
+            Runtime::EagerEngine engine;
+            Runtime::ExecutionStream stream;
+            if (Device() == Runtime::Device::Host()) stream = engine.CreateCPUStream();
+#ifdef DNDS_USE_CUDA
+            else stream = engine.CreateStream(std::make_shared<Runtime::CUDALauncher>(Device().ordinal));
+#else
+            else DNDS_check_throw_info(false, "CUDA admissibility is not compiled");
+#endif
+            MeanStateCheck check(state.Space(), policy, stream.Context());
+            valid = bool(check.Evaluate(engine, stream, state)); });
         valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, Metrics().Communicator());
         return valid;
     }

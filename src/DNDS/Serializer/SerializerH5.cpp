@@ -108,6 +108,9 @@ namespace DNDS::Serializer
 
     void SerializerH5::OpenFile(const std::string &fName, bool read)
     {
+        DNDS_check_throw_info(!hdf5Access.owns_lock() && h5file == H5I_INVALID_HID,
+                              "close the previous HDF5 file before reopening its serializer");
+        hdf5Access = HDF5Access(HDF5Mutex());
         reading = read;
         cP = "";
         herr_t herr{0};
@@ -133,7 +136,13 @@ namespace DNDS::Serializer
         cP.clear();
 
         if (H5I_INVALID_HID != h5file)
-            H5Fclose(h5file), h5file = H5I_INVALID_HID;
+        {
+            const auto status = H5Fclose(h5file);
+            DNDS_assert_info(status >= 0, "HDF5 file close failed; output is not complete");
+            h5file = H5I_INVALID_HID;
+        }
+        if (hdf5Access.owns_lock())
+            hdf5Access.unlock();
     }
     void SerializerH5::CreatePath(const std::string &p)
     {

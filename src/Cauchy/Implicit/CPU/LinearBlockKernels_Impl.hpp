@@ -2,6 +2,8 @@
 
 #include "DNDS/Algebra/EigenView.hpp"
 #include "Cauchy/Implicit/LinearPattern.hpp"
+#include "DNDS/Core/OMP.hpp"
+#include <array>
 
 namespace DNDS::Cauchy::CPU
 {
@@ -13,7 +15,11 @@ namespace DNDS::Cauchy::CPU
                     index components, bool fullDiagonal)
     {
         constexpr bool segmented = std::is_same_v<Output, Algebra::DofComponentView<real>>;
-        Eigen::VectorXd value(components), result(components), neighbor(components), product(components);
+        const index parts = std::min<index>(OMP::DistributedThreads(), std::max<index>(1, rows.RowCount()));
+        std::vector<std::array<Eigen::VectorXd, 4>> scratch(parts);
+        for (auto &part : scratch)
+            for (auto &vector : part)
+                vector.resize(components);
         const auto copyRow = [&](auto view, index iRow, Eigen::VectorXd &target)
         {
             if constexpr (segmented)
@@ -21,8 +27,14 @@ namespace DNDS::Cauchy::CPU
             else
                 target = view[iRow];
         };
-        for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
-        {
+        // Each logical subrange has private dense scratch. No allocation or
+        // shared reduction occurs inside the OpenMP arithmetic region.
+        OMP::ForRows(0, parts, [&](index part)
+                     {
+          auto &value = scratch[part][0], &result = scratch[part][1];
+          auto &neighbor = scratch[part][2], &product = scratch[part][3];
+          for (index iRow = rows.RowCount() * part / parts; iRow < rows.RowCount() * (part + 1) / parts; ++iRow)
+          {
             const index iCell = rows(iRow, 0);
             copyRow(rhs, iCell, value);
             if constexpr (!Zero)
@@ -43,14 +55,15 @@ namespace DNDS::Cauchy::CPU
                 Algebra::UnpackEigenRow(output, iCell, result);
             else
                 output[iCell] = result;
-        }
+          } });
     }
     /// One ordered SGS scan. Input remote values are frozen by the enclosing
     /// phase scope. Lower local predecessors read forward; upper successors
     /// read output. No ownership/communication or per-row allocation here.
     template <bool Upper, int Size, bool ZeroInput = false, class RHS, class Old, class Forward, class Output, class Ghost, class Inverse, class Blocks>
     void ScanSGSRows(RHS rhs, Old old, Forward forward, Output output, Ghost ghost, Inverse inverse, const Blocks &blocks,
-                     LinearPatternView pattern, Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> rows, index components, bool fullDiagonal)
+                     LinearPatternView pattern, Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> rows, index components, bool fullDiagonal,
+                     SpanView<const index> partitions = {}, index firstCell = 0, index lastCell = -1)
     {
         constexpr bool scratch = std::is_same_v<Output, Algebra::DofComponentView<real>>;
         if constexpr (scratch && std::is_same_v<RHS, Algebra::DofComponentView<const real>> &&
@@ -77,7 +90,7 @@ namespace DNDS::Cauchy::CPU
                                                      Algebra::MakeEigenRowMatrices<N, 1>(*temporary, components, 1),
                                                      Algebra::MakeEigenRowMatrices<N, 1>(*destination, components, 1),
                                                      Algebra::MakeEigenRowMatrices<N, 1>(*remote, components, 1),
-                                                     inverse, blocks, pattern, rows, components, fullDiagonal);
+                                                     inverse, blocks, pattern, rows, components, fullDiagonal, partitions, firstCell, lastCell);
                 };
                 if (components == 5)
                     scan(std::integral_constant<int, 5>{});
@@ -90,6 +103,16 @@ namespace DNDS::Cauchy::CPU
                 return;
             }
         }
+        if (OMP::DistributedThreads() > 1 && partitions.size() > 2)
+        {
+            // Each block scans the selected logical rows in their original
+            // order. Only its own output may be read before the team joins.
+            OMP::ForRows(0, partitions.size() - 1, [&](index part)
+                         { ScanSGSRows<Upper, Size, ZeroInput>(rhs, old, forward, output, ghost, inverse, blocks,
+                                                               pattern, rows, components, fullDiagonal, {}, partitions[part], partitions[part + 1]); });
+            return;
+        }
+        const bool partitioned = lastCell >= 0;
         Eigen::VectorXd otherScratch(scratch ? components : 0), outputScratch(scratch ? components : 0);
         const auto readRow = [&](auto input, index iRow)
         {
@@ -104,6 +127,8 @@ namespace DNDS::Cauchy::CPU
         for (index scan = 0; scan < rows.RowCount(); ++scan)
         {
             const index iCell = rows(Upper ? rows.RowCount() - 1 - scan : scan, 0);
+            if (partitioned && (iCell < firstCell || iCell >= lastCell))
+                continue;
             value = readRow(rhs, iCell);
             const auto &columns = pattern.columns[iCell];
             for (index j = 0; j < index(columns.size()); ++j)
@@ -126,6 +151,16 @@ namespace DNDS::Cauchy::CPU
                 };
                 if (column >= ownedRows)
                     subtract(readRow(ghost, column - ownedRows));
+                else if (partitioned && (column < firstCell || column >= lastCell))
+                {
+                    // Lower input is the frozen old iterate (or analytic
+                    // zero). Upper input is the fully completed lower result,
+                    // never another block's concurrently changing output.
+                    if constexpr (Upper)
+                        subtract(readRow(forward, column));
+                    else if constexpr (!ZeroInput)
+                        subtract(readRow(old, column));
+                }
                 else if (pattern.position(column, 0) < pattern.position(iCell, 0))
                     subtract(readRow(forward, column));
                 else if constexpr (Upper)
@@ -192,7 +227,19 @@ namespace DNDS::Cauchy::CPU
                 return;
             }
         }
-        Eigen::VectorXd ownScratch(scratch ? components : 0), otherScratch(scratch ? components : 0), outputScratch(scratch ? components : 0);
+        const index parts = std::min<index>(OMP::DistributedThreads(), std::max<index>(1, rows.RowCount()));
+        struct Scratch
+        {
+            Eigen::VectorXd owned, other, output;
+            Eigen::Matrix<real, Blocks::needs_scratch ? Size : 0, 1> product;
+            explicit Scratch(index components)
+                : owned(scratch ? components : 0), other(scratch ? components : 0), output(scratch ? components : 0),
+                  product(Blocks::needs_scratch ? components : 0) {}
+        };
+        std::vector<Scratch> buffers;
+        buffers.reserve(parts);
+        for (index part = 0; part < parts; ++part)
+            buffers.emplace_back(components);
         const auto readRow = [&](auto input, index iRow, auto &storage)
         {
             if constexpr (scratch)
@@ -200,10 +247,14 @@ namespace DNDS::Cauchy::CPU
             else
                 return input[iRow];
         };
-        Eigen::Matrix<real, Blocks::needs_scratch ? Size : 0, 1> product(Blocks::needs_scratch ? components : 0);
         const index ownedRows = pattern.ownedRows;
-        for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
-        {
+        OMP::ForRows(0, parts, [&](index part)
+                     {
+          auto &ownScratch = buffers[part].owned, &otherScratch = buffers[part].other;
+          auto &outputScratch = buffers[part].output;
+          auto &product = buffers[part].product;
+          for (index iRow = rows.RowCount() * part / parts; iRow < rows.RowCount() * (part + 1) / parts; ++iRow)
+          {
             const index iCell = rows(iRow, 0);
             auto result = [&]
             {
@@ -237,7 +288,7 @@ namespace DNDS::Cauchy::CPU
             }
             if constexpr (scratch)
                 Algebra::UnpackEigenRow(output, iCell, result);
-        }
+          } });
     }
 
     /// Copy operator blocks to the prepared rank-local factor template.
@@ -248,8 +299,8 @@ namespace DNDS::Cauchy::CPU
                        Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::CSRRows> sourceBlocks,
                        bool fullDiagonal)
     {
-        for (index iCell = 0; iCell < sourceBlocks.RowCount(); ++iCell)
-        {
+        OMP::ForRows(0, sourceBlocks.RowCount(), [&](index iCell)
+                     {
             if (fullDiagonal)
                 factor(iCell, 0) = diagonal[iCell];
             else
@@ -262,7 +313,6 @@ namespace DNDS::Cauchy::CPU
                     block.setZero();
                 else
                     block = blocks(iCell, slots[j]);
-            }
-        }
+            } });
     }
 }

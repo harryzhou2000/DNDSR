@@ -44,7 +44,11 @@ namespace DNDS::Linear
     /// global inner products are supplied by the caller; no mesh, halo or
     /// physical-time policy is hidden in the mathematical iteration. Callbacks
     /// complete synchronously and coordinate distributed failures themselves.
-    /// The operations adapter resolves placement and rejects unavailable backends.
+    /// The per-instance operations adapter resolves placement and rejects unavailable backends.
+    /// It may enqueue algebra on an explicit common lane; operator/product callbacks
+    /// must order after those submissions and observe results before host decisions.
+    /// The owner drains pending algebra before exposing Solve results. Default
+    /// static-method adapters remain valid and preserve synchronous CPU semantics.
     template <class State, class Operations>
     class StateGMRES
     {
@@ -57,6 +61,7 @@ namespace DNDS::Linear
         using Products = std::function<std::vector<real>(const Field &, const std::vector<const Field *> &)>;
 
     private:
+        Operations _operations;
         int _subspace;
         Field _solution, _action, _residual, _preconditioned, _work;
         std::vector<Field> _basis;
@@ -67,15 +72,15 @@ namespace DNDS::Linear
             DNDS_check_throw_info(count > 0 && count < INT_MAX, "invalid GMRES subspace size");
             return count;
         }
-        static Field NewVector(const Field &prototype) { return Operations::NewVector(prototype); }
-        void Check(const Field &field) const { Operations::CheckCompatible(_solution, field); }
+        Field NewVector(const Field &prototype) const { return _operations.NewVector(prototype); }
+        void Check(const Field &field) const { _operations.CheckCompatible(_solution, field); }
         void CheckSource(const Field &source, bool allowSolution) const
         {
             const auto check = [&](const Field &workspace)
             {
                 if (allowSolution && &workspace == &_solution)
                     return;
-                Operations::RequireDistinct(source, workspace);
+                _operations.RequireDistinct(source, workspace);
             };
             for (const auto *field : {&_solution, &_action, &_residual, &_preconditioned, &_work})
                 check(*field);
@@ -84,8 +89,8 @@ namespace DNDS::Linear
         }
 
     public:
-        StateGMRES(const Field &prototype, int subspace)
-            : _subspace(Subspace(subspace)), _solution(NewVector(prototype)), _action(NewVector(prototype)),
+        StateGMRES(const Field &prototype, int subspace, Operations operations = {})
+            : _operations(std::move(operations)), _subspace(Subspace(subspace)), _solution(NewVector(prototype)), _action(NewVector(prototype)),
               _residual(NewVector(prototype)), _preconditioned(NewVector(prototype)), _work(NewVector(prototype)),
               _h(subspace + 1, subspace), _g(subspace + 1), _cosine(subspace), _sine(subspace)
         {
@@ -153,9 +158,9 @@ namespace DNDS::Linear
             const auto pc = [&](const Field &input, Field &output)
             { precondition(input, output); ++report.preconditionerApplications; };
             if (!initialGuess)
-                Operations::Fill(_solution, real(0));
+                _operations.Fill(_solution, real(0));
             else
-                Operations::CopyGuess(_solution, *initialGuess);
+                _operations.CopyGuess(_solution, *initialGuess);
             const real normB = norm(rhs);
             if (!std::isfinite(normB))
                 return finish(LinearStop::NonFinite);
@@ -163,10 +168,10 @@ namespace DNDS::Linear
             if (initialGuess)
             {
                 action(_solution, _action);
-                Operations::LinearCombination(_residual, real(1), rhs, real(-1), _action);
+                _operations.LinearCombination(_residual, real(1), rhs, real(-1), _action);
             }
             else
-                Operations::Copy(_residual, rhs); // A is linear and x is exactly zero.
+                _operations.Copy(_residual, rhs); // A is linear and x is exactly zero.
             report.initialTrueResidual = report.trueResidual = norm(_residual);
             if (!std::isfinite(report.trueResidual))
                 return finish(LinearStop::NonFinite);
@@ -211,8 +216,8 @@ namespace DNDS::Linear
                     return finish(LinearStop::NonFinite);
                 if (beta == 0)
                     return finish(LinearStop::PreconditionerBreakdown);
-                Operations::Copy(_basis[0], _preconditioned);
-                Operations::Scale(_basis[0], 1 / beta);
+                _operations.Copy(_basis[0], _preconditioned);
+                _operations.Scale(_basis[0], 1 / beta);
                 _h.setZero();
                 _g.setZero();
                 _g[0] = beta;
@@ -246,7 +251,7 @@ namespace DNDS::Linear
                         for (int i = 0; i <= j; ++i)
                         {
                             _h(i, j) += projection[i];
-                            Operations::Axpy(_work, -projection[i], _basis[i]);
+                            _operations.Axpy(_work, -projection[i], _basis[i]);
                         }
                     }
                     const real next = norm(_work);
@@ -256,8 +261,8 @@ namespace DNDS::Linear
                     closed = next <= 32 * std::numeric_limits<real>::epsilon() * beforeNorm;
                     if (!closed)
                     {
-                        Operations::Copy(_basis[j + 1], _work);
-                        Operations::Scale(_basis[j + 1], 1 / next);
+                        _operations.Copy(_basis[j + 1], _work);
+                        _operations.Scale(_basis[j + 1], 1 / next);
                     }
                     for (int i = 0; i < j; ++i)
                     {
@@ -291,9 +296,9 @@ namespace DNDS::Linear
                 if (!coefficients.allFinite())
                     return finish(LinearStop::NonFinite);
                 for (int i = 0; i < used; ++i)
-                    Operations::Axpy(_solution, coefficients[i], _basis[i]);
+                    _operations.Axpy(_solution, coefficients[i], _basis[i]);
                 action(_solution, _action);
-                Operations::LinearCombination(_residual, real(1), rhs, real(-1), _action);
+                _operations.LinearCombination(_residual, real(1), rhs, real(-1), _action);
                 report.trueResidual = norm(_residual);
                 if (!std::isfinite(report.trueResidual))
                     return finish(LinearStop::NonFinite);

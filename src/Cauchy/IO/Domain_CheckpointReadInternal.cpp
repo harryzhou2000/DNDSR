@@ -15,6 +15,7 @@ namespace DNDS::Cauchy
     using namespace CheckpointMetadata;
     std::unique_ptr<IO::DomainInternalCheckpointRead> Domain::PrepareInternalCheckpointRead(const std::string &path, const Json &resolved)
     {
+        _execution.Synchronize();
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
         auto result = std::make_unique<IO::DomainInternalCheckpointRead>();
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
@@ -92,7 +93,7 @@ namespace DNDS::Cauchy
                             {
                 field.emplace(EquationDofOperations::NewVector(_state.trial));
                 DNDS_check_throw_info(archive.Compatible(*field), "time-checkpoint equation payload differs"); });
-            archive.Restore(*field, route, context);
+            archive.Restore(*field, route, context, _execution.ComputeStream().Context());
             result->time.names.push_back(name);
             result->time.fields.push_back(std::move(*field));
             ++payloadOrdinal;
@@ -105,7 +106,7 @@ namespace DNDS::Cauchy
                             {
                 field.emplace(EquationDofOperations::NewVector(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction)));
                 DNDS_check_throw_info(archive.Compatible(*field), "internal reconstruction payload differs"); });
-            archive.Restore(*field, route, context);
+            archive.Restore(*field, route, context, _execution.ComputeStream().Context());
             return std::move(*field);
         };
         if (polynomial)
@@ -123,6 +124,9 @@ namespace DNDS::Cauchy
             MPI::LocalStage(mpi, [&]
                             { destination.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2)); });
             transfer(source, *destination);
+            if (_state.trial.Device() != Runtime::Device::Host())
+                MPI::LocalStage(mpi, [&]
+                                { destination = destination->To(_state.trial.Device(), _execution.ComputeStream().Context()); });
             return destination;
         };
         if (polynomial)
@@ -157,7 +161,8 @@ namespace DNDS::Cauchy
                                   "exact internal checkpoint trial is inadmissible");
             auto validationTrial = EquationDofOperations::NewVector(_state.trial);
             auto validationStepper = _state.timeStepper->Fresh();
-            validationStepper->RestoreActive(result->time, validationTrial); });
+            validationStepper->RestoreActive(result->time, validationTrial);
+            _execution.Synchronize(); });
         return result;
     }
 }

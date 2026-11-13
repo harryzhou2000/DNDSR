@@ -45,24 +45,33 @@ namespace DNDS::Cauchy::CPU
                                                                   RHSScalarView low, CFV::FiniteVolumeHostView metrics, ThermalBounds bounds,
                                                                   real dt, real historyWeight, real stageWeight) noexcept
     {
-        ExplicitBlendStatistics result;
-        auto &safe = result.safe;
-        auto &limited = result.limited;
-        auto &alpha = result.alpha;
+        real alpha = 1;
+        index limited = 0, firstInvalid = state.RowCount();
+        int highSafe = 1, lowSafeAll = 1;
+        const int threads = OMP::DistributedThreads();
+        // Only minima, exact counts and flags: no order-dependent FP sum.
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static) num_threads(threads) if (threads > 1) reduction(min : alpha, firstInvalid) reduction(+ : limited) reduction(& : highSafe, lowSafeAll)
+#endif
         for (index iCell = 0; iCell < state.RowCount(); ++iCell)
         {
             FlowState base, target;
+            bool finite = true;
             for (int j = 0; j < 5; ++j)
             {
                 const real constant = historyWeight * initial(iCell, j) + stageWeight * state(iCell, j);
                 base[j] = constant + stageWeight * dt * low(iCell, j) / metrics.GetCellVol(iCell);
                 target[j] = constant + stageWeight * dt * high(iCell, j) / metrics.GetCellVol(iCell);
-                if (!(std::isfinite(base[j]) && std::isfinite(target[j])))
-                    return NumericalStatus{NumericalError::InvalidState, 1, iCell};
+                finite &= std::isfinite(base[j]) && std::isfinite(target[j]);
             }
-            safe[0] &= ThermallyAdmissible(target, bounds);
+            if (!finite)
+            {
+                firstInvalid = std::min(firstInvalid, iCell);
+                continue;
+            }
+            highSafe &= ThermallyAdmissible(target, bounds);
             const bool lowSafe = ThermallyAdmissible(base, bounds);
-            safe[1] &= lowSafe;
+            lowSafeAll &= lowSafe;
             const auto fraction = lowSafe ? AdmissibleFraction(base, target, bounds) : real(1);
             if (fraction < 1)
             {
@@ -70,7 +79,9 @@ namespace DNDS::Cauchy::CPU
                 alpha = std::min(alpha, fraction);
             }
         }
-        return result;
+        if (firstInvalid != state.RowCount())
+            return NumericalStatus{NumericalError::InvalidState, 1, firstInvalid};
+        return ExplicitBlendStatistics{alpha, limited, {highSafe, lowSafeAll}};
     }
     void UpdateExplicitFlow(RHSScalarView initial, RHSScalarView rhs, RHSScalarView low, RHSOutputView stage,
                             CFV::FiniteVolumeHostView metrics, real dt, real historyWeight, real stageWeight, real alpha)

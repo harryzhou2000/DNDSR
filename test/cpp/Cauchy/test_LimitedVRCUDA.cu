@@ -80,6 +80,7 @@ TEST_CASE("Physical LVR CUDA sensors gather and publication preserve the CPU bra
     R::Array<real> history(R::RowLayout::Dense(2, 2)), penalty(R::RowLayout::Dense(2, 1)), scalar(R::RowLayout::Dense(2, 2));
     R::Array<real> db(branches.Layout(), device), dbase(base.Layout(), device), dh(history.Layout(), device), da(penalty.Layout(), device), dscalar(scalar.Layout(), device);
     R::Array<real> sensors(R::RowLayout::Dense(3, 3), device);
+    R::Array<real> cpuSensors(R::RowLayout::Dense(3, 3));
     R::Array<DNDS::NumericalStatus> faceStatus(R::RowLayout::Dense(3, 1), device), cellStatus(R::RowLayout::Dense(2, 1), device), scalarStatus(cellStatus.Layout(), device);
     for (const std::string variant : {"v2", "v3"})
         for (const bool expansion : {false, true})
@@ -92,6 +93,22 @@ TEST_CASE("Physical LVR CUDA sensors gather and publication preserve the CPU bra
                 auto b = branches.Write(), v = base.Write(), s = scalar.Write();
                 REQUIRE(bool(C::CPU::BuildLVRBranches(q.View<R::UniformTableRows>(), {u.View<R::UniformTableRows>(), g.View<R::UniformTableRows>()},
                                                       f.View<R::FixedRows<1>>(), gas, bounds, settings, b.View<R::UniformTableRows>(), v.View<R::FixedRows<2>>())));
+                std::array<real, 6> serial{};
+                for (I iCell = 0; iCell < 2; ++iCell)
+                    for (I j = 0; j < 3; ++j)
+                        serial[size_t(iCell * 3 + j)] = b.View()(iCell, j);
+                {
+                    auto sensor = cpuSensors.Write();
+                    REQUIRE(bool(C::CPU::BuildLVRFaceSensors(q.View<R::UniformTableRows>(), {u.View<R::UniformTableRows>(), g.View<R::UniformTableRows>()},
+                                                             f.View<R::FixedRows<1>>(), gas, bounds, settings, sensor.View<R::UniformTableRows>())));
+                }
+                const auto sensor = cpuSensors.Read();
+                const auto off = offsets.Read(), ind = indices.Read();
+                C::CPU::GatherLVRBranches(off.View<R::FixedRows<1>>(), ind.View<R::FixedRows<1>>(), sensor.View<R::UniformTableRows>(),
+                                          b.View<R::UniformTableRows>(), v.View<R::FixedRows<2>>());
+                for (I iCell = 0; iCell < 2; ++iCell)
+                    for (I j = 0; j < 3; ++j)
+                        CHECK(b.View()(iCell, j) == serial[size_t(iCell * 3 + j)]);
                 C::CPU::FillLVRScalars(u.View<R::UniformTableRows>(), s.View<R::UniformTableRows>(), gas);
             }
             {

@@ -2,24 +2,30 @@
 
 namespace DNDS::Cauchy::CPU
 {
-    NumericalStatus ValidateImplicitMeans(EquationLayoutView<const real> layout, AdmissibilityView bounds) noexcept
+    NumericalStatus MeasureRateNorm(Algebra::DofComponentView<const real> rate,
+                                    Algebra::DofComponentView<const real> reference, CFV::FiniteVolumeHostView metric,
+                                    int normOrder, SpanView<real> sum, SpanView<real> partials) noexcept
     {
-        return DispatchCPUEquationLayouts([&](auto values) -> NumericalStatus
-                                          { return OMP::ForRowsStatus(0, values.RowCount(), [&](index iCell) -> NumericalStatus
-                                                                      {
-                if (!(bounds.Admissible(
-                    ThermalAdmissibilityDetail::PointRow<decltype(values)>{values, iCell})))
-                    return NumericalStatus{NumericalError::InvalidState, 1, iCell};
-            return {}; }); }, layout);
+        return OMP::SumRows(rate.RowCount(), sum, partials, [&](index iCell, SpanView<real> local) -> NumericalStatus
+                            {
+            const real volume = metric.GetCellVol(iCell);
+            local[rate.ComponentNumber()] += volume;
+            for (index j = 0; j < rate.ComponentNumber(); ++j)
+            {
+                const real value = rate(iCell, j) - (reference.RowCount() ? reference(iCell, j) : 0);
+                if (!std::isfinite(value) || !(volume > 0)) return {NumericalError::InvalidState, 1, iCell};
+                local[j] += normOrder == 1 ? volume * std::abs(value) : volume * value * value;
+            }
+            return {}; });
     }
     NumericalStatus AssembleDefect(EquationLayoutView<const real> mean, EquationLayoutView<const real> residual,
                                    EquationLayoutView<const real> constant, EquationLayoutView<real> output,
                                    CFV::FiniteVolumeHostView metric, real mass, real rhsScale, SpanView<const uint8_t> active,
-                                   int normOrder, bool measureNorm, SpanView<real> norm) noexcept
+                                   int normOrder, bool measureNorm, SpanView<real> norm, SpanView<real> partials) noexcept
     {
         return DispatchCPUEquationLayouts([&](auto u, auto r, auto b, auto y) -> NumericalStatus
                                           { return AssembleDefectRows(u, r, b, y, metric, mean.ComponentNumber(), mass, rhsScale, [&](index j)
-                                                                      { return active.empty() || active[j]; }, normOrder, measureNorm, norm); }, mean, residual, constant, output);
+                                                                      { return active.empty() || active[j]; }, normOrder, measureNorm, norm, partials); }, mean, residual, constant, output);
     }
 
     // Keep these helpers at namespace scope: clangd 21.1.0 and 23.1.0
@@ -66,21 +72,31 @@ namespace DNDS::Cauchy::CPU
 
     NumericalResult<CorrectionResult> ApplyCorrection(const CorrectionControls &control,
                                                       Algebra::DofComponentView<const real> inputMean, Algebra::DofComponentView<const real> inputDelta,
-                                                      Algebra::DofComponentView<real> output) noexcept
+                                                      Algebra::DofComponentView<real> output, CorrectionWorkspace workspace) noexcept
     {
         CorrectionResult result;
-        auto &limited = result.limited;
-        auto &minimum = result.minimum;
-        auto &frozen = result.frozen;
         const auto &bounds = control.bounds;
         const auto &rans = control.rans;
         const auto active = control.active;
         const auto scale = control.scale;
         const index components = control.components, independent = control.independentSpecies;
+        const index partitions = workspace.partials.size();
+        DNDS_assert(partitions > 0 && workspace.species.size() >= partitions * independent);
         const auto apply = [&](auto mean, auto delta, auto candidate) -> NumericalStatus
         {
-            std::vector<real> repairedSpecies(static_cast<size_t>(independent), 0);
-            for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
+            return OMP::ForRowsStatus(0, partitions, [&](index part) -> NumericalStatus
+                                      {
+            auto &partial = workspace.partials[part];
+            partial = {};
+            auto &limited = partial.limited;
+            auto &minimum = partial.minimum;
+            auto &frozen = partial.frozen;
+            SpanView<real> repairedSpecies = independent
+                ? SpanView<real>{workspace.species.data() + part * independent, independent}
+                : SpanView<real>{};
+            const index begin = part * (mean.RowCount() / partitions) + std::min(part, mean.RowCount() % partitions);
+            const index end = begin + mean.RowCount() / partitions + (part < mean.RowCount() % partitions);
+            for (index iCell = begin; iCell < end; ++iCell)
             {
                 const ThermalAdmissibilityDetail::PointRow<decltype(mean)> old{mean, iCell};
                 using Selected = SelectedIncrement<decltype(delta)>;
@@ -187,7 +203,7 @@ namespace DNDS::Cauchy::CPU
                     }
                 }
             }
-            return {};
+            return {}; });
         };
         const auto meanTable = Algebra::TryOwnedTable(inputMean), deltaTable = Algebra::TryOwnedTable(inputDelta);
         const auto candidateTable = Algebra::TryOwnedTable(output);
@@ -196,6 +212,12 @@ namespace DNDS::Cauchy::CPU
                                 : apply(inputMean, inputDelta, output);
         if (!status)
             return status;
+        for (index part = 0; part < partitions; ++part)
+        {
+            result.limited += workspace.partials[part].limited;
+            result.minimum = std::min(result.minimum, workspace.partials[part].minimum);
+            result.frozen = result.frozen && workspace.partials[part].frozen;
+        }
         return result;
     }
     NumericalResult<AlphaStatistics> PreparePseudoTime(const PseudoTimeRequest &request) noexcept
@@ -209,12 +231,22 @@ namespace DNDS::Cauchy::CPU
         const auto defect = request.defect;
         const auto bounds = request.bounds;
         const index nv = defect.ComponentNumber();
+        index firstBadTime = inverse.RowCount(), firstBadAlpha = inverse.RowCount();
+        const int threads = OMP::DistributedThreads();
+        // Independent cell updates; only exact counts and minima are merged.
+        // Numerical failures remain explicit and report the first logical row.
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static) num_threads(threads) if (threads > 1) reduction(+ : rhsLimited) reduction(min : rhsAlpha, firstBadTime, firstBadAlpha)
+#endif
         for (index iCell = 0; iCell < inverse.RowCount(); ++iCell)
         {
             const real volume = metric.GetCellVol(iCell);
             real value = spectral(iCell, 0) / (request.pseudoCFL * volume);
             if (!(std::isfinite(value) && value > 0))
-                return NumericalStatus{NumericalError::InvalidState, 1, iCell};
+            {
+                firstBadTime = std::min(firstBadTime, iCell);
+                continue;
+            }
             if (request.positivity)
             {
                 // PP POLICY -- whole-vector forecast. The trial
@@ -235,7 +267,10 @@ namespace DNDS::Cauchy::CPU
                 } delta{defect, iCell, request.forecastScale / (value * volume)};
                 const real alpha = bounds.IncrementFraction(mean, delta, request.relax, 2, request.compressionPower);
                 if (!(std::isfinite(alpha) && alpha >= 0 && alpha <= 1))
-                    return NumericalStatus{NumericalError::InvalidState, 2, iCell};
+                {
+                    firstBadAlpha = std::min(firstBadAlpha, iCell);
+                    continue;
+                }
                 if (alpha < 1)
                 {
                     ++rhsLimited;
@@ -251,6 +286,10 @@ namespace DNDS::Cauchy::CPU
             }
             inverse(iCell, 0) = value;
         }
+        if (firstBadTime < inverse.RowCount() && firstBadTime <= firstBadAlpha)
+            return NumericalStatus{NumericalError::InvalidState, 1, firstBadTime};
+        if (firstBadAlpha < inverse.RowCount())
+            return NumericalStatus{NumericalError::InvalidState, 2, firstBadAlpha};
         return AlphaStatistics{rhsLimited, rhsAlpha};
     }
     void ApplyAgreedRHSAlpha(

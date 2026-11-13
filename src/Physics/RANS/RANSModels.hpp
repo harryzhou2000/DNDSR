@@ -24,6 +24,9 @@
  *  includes forward here; mesh ownership and solver scheduling stay outside.
  *
  *  SA and k-omega numerical templates are shared host/device implementations.
+ *  Use fixed segment/block expressions here, never Eigen::seq: the installed
+ *  Eigen sequence factory is host-only. Even an unused sequence declaration
+ *  in a host/device helper can terminate a CUDA thread without a runtime error.
  *  The optional @c Diagnose template parameter preserves historical fatal
  *  diagnostics by default. Status-returning PointKernels.hpp adapters disable
  *  that policy and inspect the result explicitly; disabling it without checking
@@ -205,7 +208,6 @@ namespace DNDS::Physics::RANS
             fn = (SA::cn1 + std::pow(chi, 3)) / (SA::cn1 - std::pow(chi, 3));
         }
 #endif
-        const auto directions = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         flux(dim + 2) = primitiveGradient.template block<dim, 1>(0, dim + 2).dot(normal) *
                         (molecularViscosity + state(dim + 2) * muRef * fn) / SA::sigma;
     }
@@ -589,8 +591,6 @@ namespace DNDS::Physics::RANS
     template <int dim, class TU, class TDiffU, bool Diagnose = true>
     DNDS_DEVICE_CALLABLE real GetMut_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, const KOmegaSSTConfig &config)
     {
-        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         const auto I4 = dim + 1;
         const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
         const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
@@ -662,8 +662,6 @@ namespace DNDS::Physics::RANS
     template <int dim, class TU, class TN, class TDiffU, class TVFlux, bool Diagnose = true>
     DNDS_DEVICE_CALLABLE void GetVisFlux_SST(TU &&UMeanXy, TDiffU &&DiffUxyPrim, TN &&uNorm, real mutIn, real d, real muf, TVFlux &vFlux, const KOmegaSSTConfig &config)
     {
-        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         const auto I4 = dim + 1;
         const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
         const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
@@ -767,8 +765,6 @@ namespace DNDS::Physics::RANS
     template <int dim, class TU, class TDiffU, class TSource>
     DNDS_DEVICE_CALLABLE void GetSource_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, real lLES, TSource &source, int mode, const KOmegaSSTConfig &config)
     {
-        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         const auto I4 = dim + 1;
         const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
         const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
@@ -887,8 +883,6 @@ namespace DNDS::Physics::RANS
     template <int dim, class TU, class TDiffU, bool Diagnose = true>
     DNDS_DEVICE_CALLABLE real GetMut_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, const KOmegaConfig &config)
     {
-        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         const auto I4 = dim + 1;
         const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
         const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
@@ -953,8 +947,6 @@ namespace DNDS::Physics::RANS
     template <int dim, class TU, class TN, class TDiffU, class TVFlux>
     DNDS_DEVICE_CALLABLE void GetVisFlux_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxyPrim, TN &&uNorm, real mutIn, real d, real muf, TVFlux &vFlux, const KOmegaConfig &config)
     {
-        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         const auto I4 = dim + 1;
         const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
         const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
@@ -1027,8 +1019,6 @@ namespace DNDS::Physics::RANS
     template <int dim, class TU, class TDiffU, class TSource>
     DNDS_DEVICE_CALLABLE void GetSource_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, TSource &source, int mode, const KOmegaConfig &config)
     {
-        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         const auto I4 = dim + 1;
         const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
         const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
@@ -1181,8 +1171,6 @@ namespace DNDS::Physics::RANS
                                                         const SAConfig &saConfig,
                                                         int SAVersion, const Eigen::Matrix<real, dim, dim> *vorticityCorrection)
     {
-        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         const auto I4 = dim + 1;
 
         const real cb1 = 0.1355;

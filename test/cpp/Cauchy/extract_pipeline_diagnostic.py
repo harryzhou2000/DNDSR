@@ -70,11 +70,11 @@ def main():
         "        correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::BoundaryEnd);\n"
         "        correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitBegin);\n")
     text = insert_before_once(
-        text, "                preparation->Apply(rest);",
+        text, "        transfers.clear();",
         "                correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitEnd);\n"
         "                correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeBegin);\n")
     text = insert_after_once(
-        text, "                preparation->Finish(auxiliary);",
+        text, "            else preparation->Finish(auxiliary);",
         "                correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeEnd);\n")
 
     evaluation = (
@@ -109,26 +109,31 @@ def main():
         "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::LaunchEnd);\n"
         "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::BoundaryEnd);\n"
         "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitBegin);\n")
-    # Both boundary-ready and deferred-boundary branches call this core leaf.
-    # Keep the instrumentation inside each queued command, not at submission.
-    core = pattern("auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core);")
+    # This private diagnostic explicitly admits CPU-inline execution only.
+    # A submitted CPU operator executes before its Submit returns. These clocks
+    # must not be interpreted as worker/CUDA numerical execution timings.
+    core = pattern("auxiliaryPreparation->Apply(engine, stream, CFV::ReconstructionRegion::Core);")
     text, count = re.subn(
         core,
         "{ ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryCompute); "
-        "auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); }",
+        "auxiliaryPreparation->Apply(engine, stream, CFV::ReconstructionRegion::Core); }",
         text)
     if count != 2:
         raise ValueError(f"expected two auxiliary core branches, got {count}")
-    text = insert_before_once(
-        text, "                auxiliaryPreparation->Apply(rest);",
-        "                auxiliaryExchange.Finish();\n"
-        "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitEnd);\n"
-        "                ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryCompute);\n"
-        "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeBegin);\n")
     text = replace_once(
-        text, "                auxiliaryPreparation->Finish(*auxiliary); });",
-        "                auxiliaryPreparation->Finish(*auxiliary);\n"
-        "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeEnd); });")
+        text, "auxiliaryPreparation->ApplyInterfaceIndependent(engine, stream);",
+        "{ ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryCompute); "
+        "auxiliaryPreparation->ApplyInterfaceIndependent(engine, stream); }")
+    text = insert_after_once(
+        text, "        meanOperations.clear();",
+        "        auxiliaryExchange.Finish();\n"
+        "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitEnd);\n")
+    text = replace_once(
+        text, "auxiliaryPreparation->Apply(engine, stream, rest);",
+        "{ ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryCompute); "
+        "evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeBegin); "
+        "auxiliaryPreparation->Apply(engine, stream, rest); "
+        "evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeEnd); }")
 
     refresh = r"if\s*\(work\.SourceSamplesCurrent\(state,\s*time\)\)\s*return;"
     text, count = re.subn(
@@ -136,26 +141,30 @@ def main():
         lambda match: match.group(0) +
         "\n                ::DiagnosticTiming::ObserveCorrectionSource(work.sourceValues.empty() ? 0 : work.sourceValues.front().RowCount());",
         text)
-    if count != 3:
-        raise ValueError(f"expected three correction source refresh guards, got {count}")
+    if count != 1:
+        raise ValueError(f"expected one correction source refresh guard, got {count}")
+    text = replace_once(
+        text, "if (refreshSource) work.SubmitVolumeSource(engine, stream, state, {}, time);",
+        "if (refreshSource) { ::DiagnosticTiming::ObserveCorrectionSource(work.sourceValues.empty() ? 0 : work.sourceValues.front().RowCount()); "
+        "work.SubmitVolumeSource(engine, stream, state, {}, time); }")
 
-    # Direct-gradient and variational PP are mutually exclusive production
-    # leaves but intentionally share one diagnostic block. Keep both anchors so
-    # neither path can disappear from the generated instrumentation silently.
-    for phase, block, expected in (("Gradient", "Gradient", 1),
-                                   ("PP", "PolynomialPP", 2),
-                                   ("RHS", "FaceRHS", 1),
-                                   ("Sampling", "SourceSampling", 1),
-                                   ("Source", "VolumeSource", 1)):
-        expression = (r"const\s+(?:Workspace::)?PhaseTime\s+timing\("
-                      r"(\*this|work),\s*(?:Workspace::)?" + phase + r"Phase\);")
-        text, count = re.subn(
-            expression,
-            lambda match: f"::DiagnosticTiming::Scope detailScope(::DiagnosticTiming::Block::{block});\n" + match.group(0),
-            text)
-        if count != expected:
-            raise ValueError(
-                f"FV detail scope {phase} expected {expected}, got {count}")
+    # Matched semantic sites in the active queued path. These remain fail-closed
+    # rather than silently timing retired synchronous wrappers from the archive.
+    for anchor, block in (
+        ("const auto timing = work.BeginQueuedPhase(engine, stream, Workspace::GradientPhase);", "Gradient"),
+        ("const auto timing = work.BeginQueuedPhase(engine, stream, Workspace::VRPhase);", "Reconstruction"),
+        ("const auto timing = BeginQueuedPhase(engine, stream, RHSPhase);", "FaceRHS"),
+        ("const auto timing = BeginQueuedPhase(engine, stream, SamplingPhase);", "SourceSampling"),
+        ("const auto timing = BeginQueuedPhase(engine, stream, SourcePhase);", "VolumeSource"),
+    ):
+        text = insert_before_once(text, anchor,
+                                  f"        ::DiagnosticTiming::Scope detailScope(::DiagnosticTiming::Block::{block});\n")
+    for anchor in (
+        "gradientPositivitySubmission = work.SubmitGradientPositivity(engine, stream, state);",
+        "work.positivity->Apply(engine, stream, state, reconstruction.WarmValues(), reconstruction.MutableFinalized(), false);",
+    ):
+        text = replace_once(text, anchor,
+                            "{ ::DiagnosticTiming::Scope detailScope(::DiagnosticTiming::Block::PolynomialPP); " + anchor + " }")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()

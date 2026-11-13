@@ -20,6 +20,7 @@ namespace DNDS::Cauchy
             explicit EvaluationPublication(QueuedEvaluationDependency request)
                 : _request(std::move(request)) {}
             Runtime::StreamEvent Completion() const { return _request.completion; }
+            std::shared_ptr<const BoundaryInputs> Incoming() const { return _request.incoming; }
             bool Published() const
             {
                 std::lock_guard<std::mutex> lock(_mutex);
@@ -181,7 +182,7 @@ namespace DNDS::Cauchy
             publication->Completion(),
             [publication]
             { publication->Publish(); }, publication,
-            !publication->Published()};
+            !publication->Published(), publication->Incoming()};
     }
     void DomainExecutionContext::DrainEvaluationDependency() const
     {

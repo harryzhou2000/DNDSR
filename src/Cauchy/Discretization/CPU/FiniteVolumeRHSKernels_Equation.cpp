@@ -10,15 +10,17 @@
 #include "Cauchy/Physics/ViscousFlux.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "Cauchy/Riemann/RiemannFluxMath.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
     using namespace EquationFVDetail;
     template <class Input, class Output>
-    NumericalResult<index> EvaluateEquationRows(const EquationRHSRequest &request, const EquationSystem &equation,
-                                                const BoundaryPointOperator &boundary, const Riemann::RiemannFlux &fluxOperator,
-                                                PointEvaluator &evaluator, Input owned, Input remote,
-                                                Output destination, Output lowDestination, CFV::ReconstructionRegion region) noexcept
+    NumericalResult<index> EvaluateEquationRowsPhase(const EquationRHSRequest &request, const EquationSystem &equation,
+                                                     const BoundaryPointOperator &boundary, const Riemann::RiemannFlux &fluxOperator,
+                                                     PointEvaluator &evaluator, Input owned, Input remote,
+                                                     Output destination, Output lowDestination, CFV::ReconstructionRegion region,
+                                                     EquationRHSPointScratch &scratch, index firstRow, index lastRow, bool facePhase) noexcept
     {
         index localFallbacks = 0;
         const auto metric = request.metric;
@@ -46,16 +48,21 @@ namespace DNDS::Cauchy::CPU
         const int species = request.species;
         const int independent = std::max(0, species - 1);
         const index width = request.width;
+        DNDS_assert(index(scratch.integrated.size()) == width && index(scratch.flux.size()) == width &&
+                    index(scratch.left.values.size()) == width && index(scratch.right.values.size()) == width &&
+                    index(scratch.face.values.size()) == width && index(scratch.cellMean.values.size()) == width &&
+                    index(scratch.speciesFlux.size()) == independent &&
+                    (!request.produceLow || (index(scratch.integratedLow.size()) == width && index(scratch.lowFlux.size()) == width)));
         const auto frame = request.frame;
-        PointScratch left(width), right(width), face(width), cellMean(width);
+        auto &left = scratch.left, &right = scratch.right, &face = scratch.face, &cellMean = scratch.cellMean;
         const auto *ransModel = equation.HasRANS() ? &equation.RANS() : nullptr;
         const auto thermalBounds = request.thermal;
         const auto ransMean = request.ransMean;
-        std::vector<real> integrated(size_t(width), 0), flux(size_t(width), 0), speciesFlux(size_t(independent), 0);
-        std::vector<real> integratedLow(request.produceLow ? size_t(width) : 0, 0), lowFlux(request.produceLow ? size_t(width) : 0, 0);
-        ViscousFluxScratch transport(species);
+        auto &integrated = scratch.integrated, &flux = scratch.flux, &speciesFlux = scratch.speciesFlux;
+        auto &integratedLow = scratch.integratedLow, &lowFlux = scratch.lowFlux;
+        auto &transport = scratch.transport;
         const auto wallValues = request.wall;
-        CFV::Math::SmallMatrix basisScratch;
+        auto &basisScratch = scratch.basis;
         const auto reconstruct = [&](index iCell, const FiniteVolumeDetail::SampleValue &sample, int side, PointScratch &point)
         {
             gatherMean(iCell, point);
@@ -523,22 +530,18 @@ namespace DNDS::Cauchy::CPU
             }
             return {};
         };
-        if (region == CFV::ReconstructionRegion::All)
-            for (index iAux = 0; iAux < request.stencil.faceEntries.RowCount(); ++iAux)
-            {
-                const auto status = computeFace(iAux);
-                if (!status)
-                    return status;
-            }
-        else
+        if (facePhase)
         {
             const auto rows = region == CFV::ReconstructionRegion::Core ? request.stencil.rhsCoreFaces : request.stencil.rhsDependentFaces;
-            for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
+            for (index iRow = firstRow; iRow < lastRow; ++iRow)
             {
-                const auto status = computeFace(rows(iRow, 0));
+                const auto status = computeFace(region == CFV::ReconstructionRegion::All ? iRow : rows(iRow, 0));
                 if (!status)
                     return status;
             }
+            if (!allowPointFallback && localFallbacks)
+                return NumericalStatus{NumericalError::InvalidState};
+            return localFallbacks;
         }
         const auto compute = [&](index iCell)
         {
@@ -590,18 +593,21 @@ namespace DNDS::Cauchy::CPU
                     lowDestination(iCell, j) = integratedLow[j];
             }
         };
-        if (region == CFV::ReconstructionRegion::All)
-            for (index iCell = 0; iCell < request.ownedCells; ++iCell)
-                compute(iCell);
-        else
+        const auto rows = region == CFV::ReconstructionRegion::Core ? request.stencil.coreCells : request.stencil.dependentCells;
+        for (index iRow = firstRow; iRow < lastRow; ++iRow)
+            compute(region == CFV::ReconstructionRegion::All ? iRow : rows(iRow, 0));
+        return index(0);
+    }
+    namespace
+    {
+        index EquationRowCount(const EquationRHSRequest &request, CFV::ReconstructionRegion region, bool face)
         {
-            const auto rows = region == CFV::ReconstructionRegion::Core ? request.stencil.coreCells : request.stencil.dependentCells;
-            for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
-                compute(rows(iRow, 0));
+            if (region == CFV::ReconstructionRegion::All)
+                return face ? request.stencil.faceEntries.RowCount() : request.ownedCells;
+            if (face)
+                return (region == CFV::ReconstructionRegion::Core ? request.stencil.rhsCoreFaces : request.stencil.rhsDependentFaces).RowCount();
+            return (region == CFV::ReconstructionRegion::Core ? request.stencil.coreCells : request.stencil.dependentCells).RowCount();
         }
-        if (!allowPointFallback && localFallbacks)
-            return NumericalStatus{NumericalError::InvalidState};
-        return localFallbacks;
     }
     NumericalResult<index> EvaluateEquationFlux(const EquationRHSRequest &request, const EquationSystem &equation,
                                                 const BoundaryPointOperator &boundary, const Riemann::RiemannFlux &flux,
@@ -609,8 +615,55 @@ namespace DNDS::Cauchy::CPU
                                                 EquationLayoutView<const real> remote, EquationLayoutView<real> destination,
                                                 EquationLayoutView<real> lowDestination, CFV::ReconstructionRegion region) noexcept
     {
-        const auto kernel = [&](auto u, auto ghost, auto rhs, auto low)
-        { return EvaluateEquationRows(request, equation, boundary, flux, worker, u, ghost, rhs, low, region); };
+        EquationRHSPointScratch scratch(request.width, request.species, request.produceLow);
+        const auto kernel = [&](auto u, auto ghost, auto rhs, auto low) -> NumericalResult<index>
+        {
+            const auto face = EvaluateEquationRowsPhase(request, equation, boundary, flux, worker, u, ghost, rhs, low, region,
+                                                        scratch, 0, EquationRowCount(request, region, true), true);
+            if (!face)
+                return face.status;
+            const auto cells = EvaluateEquationRowsPhase(request, equation, boundary, flux, worker, u, ghost, rhs, low, region,
+                                                         scratch, 0, EquationRowCount(request, region, false), false);
+            return cells ? face : cells;
+        };
         return DispatchCPUEquationLayouts(kernel, owned, remote, destination, lowDestination);
     }
+    NumericalResult<index> EvaluateEquationFlux(const EquationRHSRequest &request, const EquationSystem &equation,
+                                                const BoundaryPointOperator &boundary, const Riemann::RiemannFlux &flux,
+                                                SpanView<EquationRHSWorkerScratch> workers, EquationLayoutView<const real> owned,
+                                                EquationLayoutView<const real> remote, EquationLayoutView<real> destination,
+                                                EquationLayoutView<real> lowDestination, CFV::ReconstructionRegion region) noexcept
+    {
+        if (workers.empty())
+            return NumericalStatus{NumericalError::InvalidInput};
+        const auto kernel = [&](auto u, auto ghost, auto rhs, auto low) -> NumericalResult<index>
+        {
+            index fallbacks = 0;
+            // A face value may serve cells in several worker ranges. Complete
+            // the face pass before any gather reads it; no scatter atomics.
+            for (const bool faces : {true, false})
+            {
+                const index count = EquationRowCount(request, region, faces);
+                OMP::ForRows(0, workers.size(), [&](index iWorker)
+                             {
+                    const index quotient = count / workers.size(), remainder = count % workers.size();
+                    const index first = iWorker * quotient + std::min(iWorker, remainder);
+                    auto &worker = workers[iWorker];
+                    worker.result = EvaluateEquationRowsPhase(request, equation, boundary, flux, worker.evaluator,
+                                                             u, ghost, rhs, low, region, worker.scratch,
+                                                             first, first + quotient + (iWorker < remainder), faces); });
+                // Fixed worker order preserves deterministic error selection and
+                // diagnostic integer accumulation. FP sums remain cell-local.
+                for (const auto &worker : workers)
+                {
+                    if (!worker.result)
+                        return worker.result.status;
+                    fallbacks += worker.result.value;
+                }
+            }
+            return fallbacks;
+        };
+        return DispatchCPUEquationLayouts(kernel, owned, remote, destination, lowDestination);
+    }
+
 }

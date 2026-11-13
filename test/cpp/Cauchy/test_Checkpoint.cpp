@@ -3,6 +3,7 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/IO/StateArchive.hpp"
+#include "Cauchy/IO/AsyncOutput.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Physics/Thermodynamics/ConservativeConversion.hpp"
 #include "CartesianFixture.hpp"
@@ -71,6 +72,124 @@ TEST_CASE("Accepted domain snapshots pin one immutable mean generation")
     }
     auto write = domain.Dofs().WriteOwned();
     write.CancelUnmodified();
+}
+TEST_CASE("Prepared checkpoint owns its fields metadata and communicator beyond the domain")
+{
+    const auto path = Path("cauchy-prepared-");
+    C::DomainSettings settings;
+    std::optional<C::PreparedCheckpoint> prepared;
+    R::Array<DNDS::real> expected;
+    {
+        C::Domain source("prepared", CauchyTest::PeriodicQuads(mpi, 3), settings);
+        Initialize(source);
+        expected = source.Dofs().CoupledField().Owned().Clone();
+        auto io = R::CommunicationContext::Duplicate(source.Discretization().Metrics().Communicator());
+        prepared.emplace(source.PrepareCheckpoint(io));
+        CHECK(prepared->Detached());
+        io.reset();
+        auto write = source.Dofs().WriteOwned();
+        const auto flow = write.Block("flow");
+        for (DNDS::index iCell = 0; iCell < flow.RowCount(); ++iCell)
+            flow(iCell, 0) = 99;
+    }
+    prepared->Write(path, C::Json::object());
+    C::Domain restored("prepared", CauchyTest::PeriodicQuads(mpi, 3), settings);
+    restored.ReadCheckpoint(path, C::Json::object());
+    const auto a = expected.Read(), b = restored.Dofs().CoupledField().Owned().Read();
+    for (DNDS::index iCell = 0; iCell < expected.RowCount(); ++iCell)
+        for (DNDS::index j = 0; j < 5; ++j)
+            CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+    prepared.reset();
+    Remove({path});
+}
+TEST_CASE("Detached host snapshots retain accepted values after the domain mutates")
+{
+    C::DomainSettings settings;
+    C::Domain domain("detached", CauchyTest::PeriodicQuads(mpi, 3), settings);
+    Initialize(domain);
+    const auto detached = domain.CaptureStateSnapshot().DetachedHost(R::ExecutionContext::Host());
+    CHECK(detached.Means().PhysicalField(0).Owned().SharedStorage() != domain.Dofs().PhysicalField(0).Owned().SharedStorage());
+    C::EquationDofOperations::Fill(domain.Dofs(), 17);
+    const auto read = detached.Means().ReadOwned();
+    for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
+    {
+        const auto expected = Wave(domain, iCell);
+        for (int j = 0; j < 5; ++j)
+            CHECK(read.Block("flow")(iCell, j) == expected[j]);
+    }
+    CHECK(detached.Epoch().acceptedStep == 0);
+    CHECK(detached.Time() == 0);
+}
+
+TEST_CASE("Asynchronous HDF output snapshots survive foreground field mutation and MPI")
+{
+    const auto prefix = Path("cauchy-async-");
+    const C::Json input{{"defaults", {{"mesh", {{"dimension", 3}}}, {"boundaries", {{"7", {{"kind", "extrapolate"}}}}}}}, {"output", {{"prefix", prefix}, {"asynchronous", true}}}};
+    const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+    const auto factory = [](DNDS::index, const auto &, const auto &domainMPI)
+    { return CFVTest::CartesianHexes(domainMPI, 2); };
+    C::Simulation source(config, mpi.comm, factory);
+    int provided = MPI_THREAD_SINGLE;
+    MPI_Query_thread(&provided);
+    if (provided != MPI_THREAD_MULTIPLE)
+    {
+        CHECK_THROWS(C::AsyncOutput(source));
+        return;
+    }
+    auto &domain = source.GetDomain(0);
+    {
+        auto write = domain.Dofs().WriteOwned();
+        const auto flow = write.Block("flow");
+        const auto value = domain.Equation().Gas().Conservative({1.3, .1, -.02, 0, 1});
+        for (DNDS::index iCell = 0; iCell < flow.RowCount(); ++iCell)
+            for (DNDS::index j = 0; j < 5; ++j)
+                flow(iCell, j) = value[j];
+    }
+    const C::OutputPlan plan(config.Output(), 1);
+    const std::string token = "-S0";
+    C::AsyncOutput output(source);
+    const C::Json marker{{"schema", "test.completed-output"}, {"step", 0}};
+    output.Submit(source, config, plan, token, true, true, {}, marker);
+    {
+        auto write = domain.Dofs().WriteOwned();
+        const auto flow = write.Block("flow");
+        for (DNDS::index iCell = 0; iCell < flow.RowCount(); ++iCell)
+            flow(iCell, 0) = 99;
+    }
+    // A foreground collective uses the original communicator while the file
+    // worker uses independent I/O contexts. No source lease blocks this update.
+    CHECK(DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Sum>(1, mpi.comm) == mpi.size);
+    output.Drain();
+    C::Simulation restored(config, mpi.comm, factory);
+    restored.ReadCheckpoint(plan.CheckpointPath(token));
+    {
+        const auto read = restored.GetDomain(0).Dofs().ReadOwned();
+        const auto flow = read.Block("flow");
+        for (DNDS::index iCell = 0; iCell < flow.owned.RowCount(); ++iCell)
+            CHECK(flow(iCell, 0) == 1.3);
+    }
+    const auto surface = plan.VisualizationPrefix(0, token) + "_surface_rank" + std::to_string(mpi.rank) + ".csv";
+    std::ifstream rows(surface);
+    std::string line;
+    REQUIRE(bool(std::getline(rows, line)));
+    while (std::getline(rows, line))
+    {
+        std::stringstream fields(line);
+        std::string value;
+        for (int column = 0; column <= 9; ++column)
+            REQUIRE(bool(std::getline(fields, value, ',')));
+        CHECK(std::stod(value) == doctest::Approx(1.3));
+    }
+    rows.close();
+    CHECK(std::filesystem::remove(surface));
+    if (mpi.rank == 0)
+    {
+        std::ifstream file(plan.SnapshotManifestPath(token));
+        C::Json published;
+        file >> published;
+        CHECK(published == marker);
+    }
+    Remove({plan.CheckpointPath(token), plan.VisualizationPrefix(0, token) + ".vtkhdf", plan.SnapshotManifestPath(token)});
 }
 TEST_CASE("Equation archive remaps coupled and split fields without confusing component ranges")
 {

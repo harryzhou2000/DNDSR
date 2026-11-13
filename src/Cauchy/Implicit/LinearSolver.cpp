@@ -1,4 +1,6 @@
 #include "Cauchy/Implicit/LinearSolver.hpp"
+#include "Cauchy/Implicit/LinearSolverAlgebra.hpp"
+#include "Cauchy/Implicit/LocalAMGPreconditioner.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
@@ -89,10 +91,22 @@ namespace DNDS::Cauchy
         {
             return settings.method == "ilu" || (settings.method == "gmres" && settings.preconditioner == "ilu");
         }
+        bool UsesAMG(const LinearSolveSettings &settings)
+        {
+            return settings.method == "gmres" && settings.preconditioner == "amgx";
+        }
         struct FieldLinearOperations : Linear::FieldKrylovOperations
         {
             using State = Field;
             using Iteration = LinearProblemContext::SGSIteration;
+            static State NewVector(const State &prototype)
+            {
+                prototype.Validate();
+                return State(prototype.Space(), R::Array<real>(prototype.Owned().Layout(), prototype.Device()),
+                             R::Array<real>(prototype.Ghost().Layout(), prototype.Device()));
+            }
+            static const R::Array<real> &Owned(const State &state) { return state.Owned(); }
+            static R::Array<real> &Owned(State &state) { return state.Owned(); }
             static index Width(const State &state) { return index(state.Width()); }
             static State Alias(const State &state) { return state; }
             static bool SameStorage(const State &a, const State &b)
@@ -130,6 +144,13 @@ namespace DNDS::Cauchy
         struct DofLinearOperations : EquationDofOperations
         {
             using Iteration = LinearProblemContext::DofSGSIteration;
+            static const R::Array<real> &Owned(const State &state) { return state.CoupledField().Owned(); }
+            static R::Array<real> &Owned(State &state) { return state.CoupledField().Owned(); }
+            static void CheckCompatible(const State &prototype, const State &state)
+            {
+                prototype.RequireCompatible(state);
+                DNDS_check_throw_info(state.Device() == prototype.Device(), "linear equation placement differs");
+            }
             static index Width(const State &state) { return state.ComponentNumber(); }
             static State Alias(const State &state) { return state.NumericAlias(); }
             static bool SameStorage(const State &a, const State &b)
@@ -165,7 +186,8 @@ namespace DNDS::Cauchy
         {
             using Field = typename Operations::State;
             using Iteration = typename Operations::Iteration;
-            using GMRES = Linear::StateGMRES<Field, Operations>;
+            using AlgebraAdapter = Detail::LinearSolverAlgebra<Operations>;
+            using GMRES = Linear::StateGMRES<Field, AlgebraAdapter>;
             using Ops = Operations;
             std::shared_ptr<LinearProblemContext> problem;
             MPIInfo mpi;
@@ -173,6 +195,9 @@ namespace DNDS::Cauchy
             LinearExecution execution;
             std::unique_ptr<R::EagerEngine> standaloneEngine;
             R::ExecutionStream compute, communication;
+            AlgebraAdapter algebra;
+            std::unique_ptr<A::LocalProductWorkspace> reductions;
+            std::unique_ptr<LocalAMGPreconditioner> localAMG;
             std::unique_ptr<GMRES> gmres;
             std::optional<Field> solution;
             Field old, next, forward, action, residual;
@@ -215,7 +240,7 @@ namespace DNDS::Cauchy
                     try
                     {
                         for (auto &slot : input.slots)
-                            slot.operation.emplace(schedule.Begin(slot.binding));
+                            slot.operation.emplace(schedule.BeginAfterCompute(slot.binding));
                     }
                     catch (...)
                     {
@@ -256,20 +281,29 @@ namespace DNDS::Cauchy
                     communication = execution.streams->communication;
                     auto engine = compute.LockEngine();
                     DNDS_check_throw_info(engine.Owns(communication) &&
-                                              compute.Context().device == R::Device::Host() &&
-                                              communication.Context().device == R::Device::Host(),
+                                              compute.Context().device == prototype.Device() &&
+                                              communication.Context().device == prototype.Device(),
                                           "linear execution has foreign lanes or an unavailable backend");
                 }
                 else
                 {
+                    DNDS_check_throw_info(prototype.Device() == R::Device::Host(), "standalone CUDA linear solve requires explicit execution lanes");
                     standaloneEngine = std::make_unique<R::EagerEngine>();
                     compute = standaloneEngine->CreateCPUStream();
                     communication = standaloneEngine->CreateCPUStream();
                 }
+                algebra = AlgebraAdapter(compute);
+                if (prototype.Device() != R::Device::Host())
+                    reductions = std::make_unique<A::LocalProductWorkspace>(index(prototype.Space().OwnedRows()), Ops::Width(prototype),
+                                                                            settings.subspace + 1, prototype.Device());
                 if (settings.method == "gmres")
-                    gmres = std::make_unique<GMRES>(prototype, settings.subspace);
+                    gmres = std::make_unique<GMRES>(prototype, settings.subspace, algebra);
                 else
                     solution.emplace(Ops::NewVector(prototype));
+                if (UsesAMG(settings))
+                    localAMG = std::make_unique<LocalAMGPreconditioner>(*problem);
+                else if (!UsesILU(settings))
+                    problem->PrepareDiagonalInverse(compute.Context());
             }
             template <class F>
             void Stage(F &&run) const
@@ -291,11 +325,9 @@ namespace DNDS::Cauchy
                 OperatorSchedule schedule(engine, compute, communication, execution.overlap);
                 auto exchange = Exchange(Halo(input), schedule);
                 if (execution.overlap)
-                    schedule.Submit([&]
-                                    { problem->Apply(input, output, LinearRegion::Core); });
+                    problem->SubmitApply(engine, compute, input, output, LinearRegion::Core);
                 exchange.Await(schedule);
-                schedule.Submit([&]
-                                { problem->Apply(input, output, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                problem->SubmitApply(engine, compute, input, output, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All);
                 Stage([&]
                       { schedule.Join(); });
             }
@@ -343,49 +375,37 @@ namespace DNDS::Cauchy
                 auto engine = compute.LockEngine();
                 OperatorSchedule schedule(engine, compute, communication, execution.overlap);
                 if (knownZero)
-                    schedule.Submit([&]
-                                    { problem->JacobiZero(rhs, first); });
+                    problem->SubmitJacobiZero(engine, compute, rhs, first);
                 else
                 {
                     auto exchange = Exchange(Halo(input), schedule);
                     if (execution.overlap)
-                        schedule.Submit([&]
-                                        { problem->Jacobi(rhs, input, first, LinearRegion::Core); });
+                        problem->SubmitJacobi(engine, compute, rhs, input, first, LinearRegion::Core);
                     exchange.Await(schedule);
-                    schedule.Submit([&]
-                                    { problem->Jacobi(rhs, input, first, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                    problem->SubmitJacobi(engine, compute, rhs, input, first, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All);
                 }
                 if (settings.jacobiLocalSweeps == 2)
-                    schedule.Submit([&]
-                                    {
-                        // Stream ordering completes the first sweep. The second reads
-                        // its owned result but the same frozen remote values;
-                        // a one-hop core is not proof for a two-hop overlap.
-                        std::vector<R::Array<real>> ghosts;
-                        Ops::VisitFields(input, [&](const auto &part) { ghosts.push_back(part.Ghost()); });
-                        index iField = 0;
-                        Ops::VisitFields(forward, [&](auto &part)
-                        {
+                {
+                    // Stream ordering completes the first sweep. The second reads
+                    // its owned result but the same frozen remote values;
+                    // a one-hop core is not proof for a two-hop overlap.
+                    std::vector<R::Array<real>> ghosts;
+                    Ops::VisitFields(input, [&](const auto &part)
+                                     { ghosts.push_back(part.Ghost()); });
+                    index iField = 0;
+                    Ops::VisitFields(forward, [&](auto &part)
+                                     {
                             if (knownZero)
-                            {
-                                auto write = part.Ghost().Write();
-                                const auto values = write.template View<R::UniformTableRows>();
-                                CPU::FillRows(values, values.Width(), 0);
-                            }
+                                R::SubmitArrays(engine, compute, [](R::ExecutionContext context, auto destination)
+                                { Algebra::ApplyRowViews(context, Algebra::PointwiseOperation::Fill, destination.DynamicView()); },
+                                    R::WriteAs<R::UniformTableRows>(part.Ghost()));
                             else
-                            {
-                                // This is already a CPU execution callback: copy the
-                                // frozen halo through its leases, without constructing
-                                // another execution engine or waiting inside a worker.
-                                const auto read = ghosts[iField].Read();
-                                auto write = part.Ghost().Write();
-                                CPU::CopyRows(read.template View<R::UniformTableRows>(),
-                                              write.template View<R::UniformTableRows>(),
-                                              part.Width());
-                            }
-                            ++iField;
-                        });
-                        problem->Jacobi(rhs, forward, output); });
+                                R::SubmitArrays(engine, compute, [](R::ExecutionContext context, auto source, auto destination)
+                                { Algebra::ApplyRowViews(context, Algebra::PointwiseOperation::Copy, destination.DynamicView(), source.DynamicView()); },
+                                    R::ReadAs<R::UniformTableRows>(ghosts[iField]), R::WriteAs<R::UniformTableRows>(part.Ghost()));
+                            ++iField; });
+                    problem->SubmitJacobi(engine, compute, rhs, forward, output);
+                }
                 Stage([&]
                       { schedule.Join(); });
             }
@@ -402,7 +422,18 @@ namespace DNDS::Cauchy
             }
             void Precondition(const Field &rhs, Field &output)
             {
-                if (settings.preconditioner == "ilu")
+                if (localAMG)
+                {
+                    auto engine = compute.LockEngine();
+                    localAMG->Apply(engine, compute, Ops::Owned(rhs), Ops::Owned(output));
+                }
+                else if (settings.preconditioner == "jacobi")
+                {
+                    // Fixed one/two local sweeps from zero. No remote values
+                    // or changing tolerance enter this linear preconditioner.
+                    JacobiSweep(rhs, old, output, true);
+                }
+                else if (settings.preconditioner == "ilu")
                 {
                     if (settings.iluPreconditionerCorrections == 1)
                     {
@@ -420,13 +451,13 @@ namespace DNDS::Cauchy
                         Apply(old, action);
                         Stage([&]
                               {
-                            Ops::LinearCombination(residual, real(1), rhs, real(-1), action);
+                            algebra.LinearCombination(residual, real(1), rhs, real(-1), action);
                             ApplyILU(residual, action);
-                            Ops::LinearCombination(next, real(1), old, real(1), action);
-                            Ops::Copy(old, next); });
+                            algebra.LinearCombination(next, real(1), old, real(1), action);
+                            algebra.Copy(old, next); });
                     }
                     Stage([&]
-                          { Ops::Copy(output, old); });
+                          { algebra.Copy(output, old); });
                 }
                 else
                 {
@@ -437,22 +468,21 @@ namespace DNDS::Cauchy
                         Sweep(rhs, old, next, sweep == 0);
                         if (sweep + 1 < settings.sgsSweeps)
                             Stage([&]
-                                  { Ops::Copy(old, next); });
+                                  { algebra.Copy(old, next); });
                     }
                     Stage([&]
-                          { Ops::Copy(output, next); });
+                          { algebra.Copy(output, next); });
                 }
             }
-            static void Clear(Field &field)
+            void Clear(Field &field)
             {
-                Ops::VisitFields(field, [](auto &part)
+                auto engine = compute.LockEngine();
+                Ops::VisitFields(field, [&](auto &part)
                                  {
                 for (auto *array : {&part.Owned(), &part.Ghost()})
-                {
-                    auto write = array->Write();
-                    const auto values = write.template View<R::UniformTableRows>();
-                    CPU::FillRows(values, values.Width(), 0);
-                } });
+                    R::SubmitArrays(engine, compute, [](R::ExecutionContext context, auto output)
+                    { A::ApplyRowViews(context, A::PointwiseOperation::Fill, output.DynamicView()); },
+                        R::WriteAs<R::UniformTableRows>(*array)); });
             }
             std::vector<real> Products(const Field &x, const std::vector<const Field *> &probes) const
             {
@@ -463,7 +493,23 @@ namespace DNDS::Cauchy
                 const LinearProfile::Scope timing(profile, LinearProfile::Products);
                 std::vector<real> local, global(probes.size());
                 Stage([&]
-                      { local = Ops::LocalProducts(x, probes, inverseComponentScales); });
+                      {
+                    auto engine = compute.LockEngine();
+                    if (reductions)
+                    {
+                        for (index i = 0; i < index(probes.size()); ++i)
+                        {
+                            DNDS_check_throw_info(probes[i], "null linear product probe");
+                            reductions->SubmitProduct(engine, compute, Ops::Owned(x), Ops::Owned(*probes[i]), i);
+                        }
+                        engine.Synchronize();
+                        local = reductions->ReadResults(index(probes.size()), compute.Context());
+                    }
+                    else
+                    {
+                        engine.Synchronize();
+                        local = Ops::LocalProducts(x, probes, inverseComponentScales);
+                    } });
                 MPI::AllreduceInto<MPI::Reduction::Sum>(
                     MPI::ContiguousView<const real>{local.data(), local.size()},
                     MPI::ContiguousView<real>{global.data(), global.size()}, mpi.comm);
@@ -474,7 +520,19 @@ namespace DNDS::Cauchy
                 const LinearProfile::Scope timing(profile, LinearProfile::Products);
                 int valid = 1;
                 Stage([&]
-                      { valid = Ops::LocalFinite(x); });
+                      {
+                    auto engine = compute.LockEngine();
+                    if (reductions)
+                    {
+                        reductions->SubmitFinite(engine, compute, Ops::Owned(x));
+                        engine.Synchronize();
+                        valid = reductions->ReadResults(1, compute.Context())[0] == 1;
+                    }
+                    else
+                    {
+                        engine.Synchronize();
+                        valid = Ops::LocalFinite(x);
+                    } });
                 if (execution.collectiveChecks)
                     valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);
                 else if (!valid)
@@ -519,6 +577,7 @@ namespace DNDS::Cauchy
                 inverse.push_back(1 / scale);
             }
             inverseComponentScales = std::move(inverse);
+            if (reductions) reductions->SetInverseScales(inverseComponentScales, compute.Context());
             data.problem->Validate(); rhs.Validate();
             Ops::CheckCompatible(data.old, rhs);
             CheckIdle(rhs, false);
@@ -539,27 +598,52 @@ namespace DNDS::Cauchy
                 CheckIdle(input.field, true);
                 Ops::RequireDistinct(rhs, input.field);
             }
-            diagonal.emplace(data.problem->Diagonal().Read());
-            offDiagonal.emplace(data.problem->ReadOffDiagonal());
-            if (UsesILU(data.settings))
+            diagonal.emplace(data.problem->Diagonal().Read(data.compute.Context()));
+            offDiagonal.emplace(data.problem->ReadOffDiagonal(data.compute.Context()));
+            if (data.localAMG)
+            {
+                auto engine = data.compute.LockEngine();
+                data.localAMG->Update(engine, data.compute, *data.problem);
+            }
+            else if (UsesILU(data.settings))
             {
                 const LinearProfile::Scope timing(data.profile, LinearProfile::Factor);
                 if (!data.problem->ILUFactorsCurrent()) data.problem->FactorizeILU();
             }
-            else data.problem->InvertDiagonal(); });
+            else
+            {
+                auto engine = data.compute.LockEngine();
+                data.problem->SubmitInvertDiagonal(engine, data.compute);
+                // Numerical preparation observation, shared by inline/worker
+                // and device execution. The Krylov loop never consumes an
+                // unobserved inverse; only compact status crosses from CUDA.
+                engine.Synchronize();
+                data.problem->ObserveDiagonalInverse();
+                data.problem->ResetQueuedActionStatus(engine, data.compute);
+            } });
                 try
                 {
+                    const auto finish = [&](auto report)
+                    {
+                        // One explicit host decision boundary, not a drain in
+                        // each evaluated action. Failed device rows cannot be
+                        // hidden by a later successful kernel or finite scratch.
+                        auto engine = data.compute.LockEngine();
+                        data.problem->CheckQueuedActions(engine, data.compute);
+                        engine.Synchronize();
+                        return report;
+                    };
                     if (data.gmres)
-                        return data.gmres->Solve(rhs, [&](Field &x, Field &y)
-                                                 { data.Apply(x, y); }, [&](const Field &x, Field &y)
-                                                 { data.Precondition(x, y); }, [&](const Field &x, const auto &probes)
-                                                 { return data.Products(x, probes); }, {data.settings.maxIterations, data.settings.relativeTolerance, data.settings.absoluteTolerance, data.settings.residualCheckInterval}, initialGuess.Get());
+                        return finish(data.gmres->Solve(rhs, [&](Field &x, Field &y)
+                                                        { data.Apply(x, y); }, [&](const Field &x, Field &y)
+                                                        { data.Precondition(x, y); }, [&](const Field &x, const auto &probes)
+                                                        { return data.Products(x, probes); }, {data.settings.maxIterations, data.settings.relativeTolerance, data.settings.absoluteTolerance, data.settings.residualCheckInterval}, initialGuess.Get()));
                     auto &x = *data.solution;
                     const bool directFirstILU = !initialGuess && data.settings.method == "ilu" && data.settings.stopping == "fixedCount";
                     data.Stage([&]
                                {
                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
-                if (initialGuess) Ops::CopyGuess(x, *initialGuess);
+                if (initialGuess) algebra.CopyGuess(x, *initialGuess);
                 else if (data.settings.method != "sgs" && data.settings.method != "jacobi" && !directFirstILU) Clear(x); });
                     Linear::LinearIterationReport report;
                     // Defect formation is independent of stopping/reporting:
@@ -570,7 +654,7 @@ namespace DNDS::Cauchy
                         ++report.operatorApplications;
                         data.Stage([&]
                                    { const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
-                                     Ops::LinearCombination(data.residual, real(1), rhs, real(-1), data.action); });
+                                     algebra.LinearCombination(data.residual, real(1), rhs, real(-1), data.action); });
                     };
                     const auto correct = [&]
                     {
@@ -600,7 +684,7 @@ namespace DNDS::Cauchy
                                     data.ApplyILU(defect, data.action);
                                 }
                                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
-                                Ops::LinearCombination(data.next, real(1), x, real(1), data.action); });
+                                algebra.LinearCombination(data.next, real(1), x, real(1), data.action); });
                             ++report.preconditionerApplications;
                         }
                         else if (data.settings.method == "jacobi")
@@ -612,7 +696,7 @@ namespace DNDS::Cauchy
                         else
                             data.Sweep(rhs, x, data.next, !initialGuess && report.iterations == 0);
                         data.Stage([&]
-                                   { const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra); Ops::Copy(x, data.next); });
+                                   { const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra); algebra.Copy(x, data.next); });
                         ++report.iterations;
                     };
                     if (data.settings.stopping == "fixedCount")
@@ -625,10 +709,10 @@ namespace DNDS::Cauchy
                         }
                         if (!initialGuess && report.iterations == 0)
                             data.Stage([&]
-                                       { Ops::Fill(x, 0); }); // Return a real zero answer if no sweep ran.
+                                       { algebra.Fill(x, 0); }); // Return a real zero answer if no sweep ran.
                         report.usable = data.Finite(x);
                         report.stop = report.usable ? Linear::LinearStop::FixedCount : Linear::LinearStop::NonFinite;
-                        return report; // Residual diagnostics stay unevaluated (NaN).
+                        return finish(report); // Residual diagnostics stay unevaluated (NaN).
                     }
                     const auto norm = [&](const Field &field)
                     { ++report.innerProductBatches; return std::sqrt(data.Products(field, {&field})[0]); };
@@ -652,7 +736,7 @@ namespace DNDS::Cauchy
                     report.converged = std::isfinite(report.trueResidual) && report.trueResidual <= target;
                     if (!initialGuess && report.iterations == 0 && (data.settings.method == "sgs" || data.settings.method == "jacobi"))
                         data.Stage([&]
-                                   { Ops::Fill(x, 0); });
+                                   { algebra.Fill(x, 0); });
                     report.stop = !std::isfinite(report.trueResidual) ? Linear::LinearStop::NonFinite : report.converged ? Linear::LinearStop::Converged
                                                                                                                          : Linear::LinearStop::IterationLimit;
                     report.usable = report.stop != Linear::LinearStop::NonFinite && std::isfinite(norm(x));
@@ -661,7 +745,7 @@ namespace DNDS::Cauchy
                         report.converged = false;
                         report.stop = Linear::LinearStop::NonFinite;
                     }
-                    return report;
+                    return finish(report);
                 }
                 catch (...)
                 {
@@ -682,11 +766,22 @@ namespace DNDS::Cauchy
             MPI::LocalStage(mpi, [&]
                             {
             problem->Validate(); prototype.Validate();
-            DNDS_check_throw_info(prototype.Space().Same(problem->Space()) && Ops::Width(prototype) == problem->Components() && prototype.Device() == R::Device::Host(),
-                                  "linear solver prototype differs from its CPU problem");
+            DNDS_check_throw_info(prototype.Space().Same(problem->Space()) && Ops::Width(prototype) == problem->Components() && prototype.Device() == problem->Device(),
+                                  "linear solver prototype differs from its problem");
+            if (prototype.Device() != R::Device::Host())
+            {
+                DNDS_check_throw_info(prototype.Device().space == R::MemorySpace::CUDA &&
+                    (settings.method == "jacobi" || (settings.method == "gmres" && (settings.preconditioner == "jacobi" || settings.preconditioner == "amgx"))),
+                    "CUDA linear profile requires Jacobi or GMRES with Jacobi/AmgX; SGS/ILU have no device fallback");
+                DNDS_check_throw_info(Ops::Width(prototype) >= 5 && Ops::Width(prototype) <= 7 &&
+                    Ops::Owned(prototype).Layout().Kind() == R::RowLayoutKind::Table, "CUDA linear profile requires combined AoS 5/6/7");
+            }
+            DNDS_check_throw_info(!UsesAMG(settings) || (problem->Device().space == R::MemorySpace::CUDA &&
+                problem->HasAssembledOffDiagonal() && Algebra::AmgXPreconditioner::Available()),
+                "AmgX requires the compiled single-device provider and an assembled CUDA matrix");
             DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "jacobi" || settings.method == "ilu" || settings.method == "gmres") &&
                                       (settings.stopping == "residual" || (settings.stopping == "fixedCount" && settings.method != "gmres")) &&
-                                      (settings.preconditioner == "sgs" || settings.preconditioner == "ilu") && settings.maxIterations >= 0 && settings.residualCheckInterval > 0 &&
+                                      (settings.preconditioner == "sgs" || settings.preconditioner == "ilu" || settings.preconditioner == "jacobi" || settings.preconditioner == "amgx") && settings.maxIterations >= 0 && settings.residualCheckInterval > 0 &&
                                       settings.subspace > 0 && settings.subspace < INT_MAX && settings.sgsSweeps > 0 && settings.iluFill >= -1 && settings.iluFill <= 5 &&
                                       settings.iluPreconditionerCorrections > 0 &&
                                       settings.jacobiLocalSweeps >= 1 && settings.jacobiLocalSweeps <= 2 &&
@@ -694,14 +789,17 @@ namespace DNDS::Cauchy
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
                                   "invalid linear solver controls");
-            DNDS_check_throw_info(!((UsesILU(settings) || settings.method == "jacobi") && settings.exchangeBetweenSweeps),
+            DNDS_check_throw_info(!((UsesILU(settings) || UsesAMG(settings) || settings.method == "jacobi" || (settings.method == "gmres" && settings.preconditioner == "jacobi")) && settings.exchangeBetweenSweeps),
                                   "local ILU/Jacobi has no inter-scan exchange"); });
-            const std::array<int64_t, 17> integers{settings.method == "gmres" ? 1 : settings.method == "ilu"  ? 2
+            const std::array<int64_t, 18> integers{settings.method == "gmres" ? 1 : settings.method == "ilu"  ? 2
                                                                                 : settings.method == "jacobi" ? 3
                                                                                                               : 0,
-                                                   settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
+                                                   settings.preconditioner == "ilu" ? 1 : settings.preconditioner == "jacobi" ? 2
+                                                                                      : settings.preconditioner == "amgx"     ? 3
+                                                                                                                              : 0,
+                                                   settings.maxIterations, settings.subspace,
                                                    settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
-                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps, settings.residualCheckInterval};
+                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps, settings.residualCheckInterval, int(prototype.Device().space)};
             auto lowest = integers, highest = integers;
             const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
             auto lowTolerance = tolerances, highTolerance = tolerances;

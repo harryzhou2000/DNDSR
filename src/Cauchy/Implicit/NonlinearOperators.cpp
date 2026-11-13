@@ -1,0 +1,217 @@
+#include "Cauchy/Implicit/NonlinearOperators_Internal.hpp"
+
+namespace DNDS::Cauchy
+{
+    namespace R = Runtime;
+    using namespace NonlinearOperatorDetail;
+    NonlinearOperators::Data::Data(CFV::FiniteVolumePlan metrics, AdmissibilityPolicy bounds, R::ExecutionContext where)
+        : context(where), geometry(std::move(metrics)), policy(std::move(bounds)), meanCheck(geometry.Space(), policy, context)
+    {
+        DNDS_check_throw_info(context.device == geometry.Device(), "nonlinear operator geometry placement differs");
+        const auto view = policy.View();
+        flowFirst = view.thermal.flowFirst;
+        speciesFirst = view.thermal.speciesFirst;
+        independent = view.thermal.independent;
+        ransFirst = view.ransFirst;
+        if (context.device == R::Device::Host())
+            return;
+#ifdef DNDS_USE_CUDA
+        DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA && flowFirst == 0 && independent == 0 &&
+                                  view.thermal.components >= 5 && view.thermal.components <= 7,
+                              "nonlinear CUDA operators require perfect-gas flow5/SA/2EQ");
+        const index rows = geometry.NumCell();
+        partial = R::Array<CUDA::NonlinearSummary>(R::RowLayout::Dense(CUDA::NonlinearScratchRows(rows), 1), context.device);
+        summary = R::Array<CUDA::NonlinearSummary>(R::RowLayout::Dense(1, 1), context.device);
+        partial.SetName("nonlinear/reduction/partials", DNDS_ALLOCATION_SITE());
+        summary.SetName("nonlinear/reduction/summary", DNDS_ALLOCATION_SITE());
+#else
+        Unavailable{}();
+#endif
+    }
+    NonlinearOperators::NonlinearOperators(CFV::FiniteVolumePlan geometry, AdmissibilityPolicy policy, R::ExecutionContext context)
+        : _data(std::make_shared<Data>(std::move(geometry), std::move(policy), context)) {}
+    void NonlinearOperators::Data::Check(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state) const
+    {
+        state.Validate();
+        DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == context.device && stream.Context().stream == context.stream &&
+                                  state.Device() == context.device && state.Space().Same(geometry.Space()) && state.ComponentNumber() == policy.View().thermal.components,
+                              "nonlinear operator stream, shape, space or placement differs");
+        if (context.device != R::Device::Host())
+            DNDS_check_throw_info(state.CoupledField().Owned().Layout().Kind() == R::RowLayoutKind::Table,
+                                  "nonlinear CUDA operators require combined AoS");
+    }
+    void NonlinearOperators::Data::CheckPair(const EquationDofs &input, const EquationDofs &output) const
+    {
+        input.RequireCompatible(output);
+        EquationDofOperations::RequireDistinct(input, output);
+        if (context.device != R::Device::Host())
+            DNDS_check_throw_info(output.CoupledField().Owned().Layout().Kind() == R::RowLayoutKind::Table,
+                                  "nonlinear CUDA output requires combined AoS");
+    }
+    void NonlinearOperators::Data::CheckScalar(const R::Array<real> &array) const
+    {
+        DNDS_check_throw_info(array.GetDevice() == context.device && array.RowCount() == geometry.NumCell() &&
+                                  !array.Layout().IsVariable() && array.Layout().Width() == 1,
+                              "nonlinear scalar field shape or placement differs");
+    }
+    void NonlinearOperators::ValidateMeans(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state) const
+    {
+        _data->Check(engine, stream, state);
+        RequireNumericalSuccess(_data->meanCheck.Evaluate(engine, stream, state), "ValidateMeanState");
+    }
+
+    std::vector<real> NonlinearOperators::AssembleDefect(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                                         const EquationDofs &mean, const EquationDofs &residual, const EquationDofs &constant, EquationDofs &output,
+                                                         real mass, real rhsScale, SpanView<const uint8_t> active, int normOrder, bool measureNorm) const
+    {
+        _data->Check(engine, stream, mean);
+        _data->Check(engine, stream, residual);
+        _data->Check(engine, stream, constant);
+        for (const auto *input : {&mean, &residual, &constant})
+            _data->CheckPair(*input, output);
+        DNDS_check_throw_info(std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale >= 0 && (normOrder == 1 || normOrder == 2),
+                              "invalid nonlinear defect coefficients");
+        const auto selection = Selection(active, mean.ComponentNumber());
+        Inputs inputs;
+        Outputs outputs;
+        const auto u = AddInput(mean, inputs), r = AddInput(residual, inputs), b = AddInput(constant, inputs), y = AddOutput(output, outputs);
+        const auto geometry = std::make_shared<CFV::FiniteVolumeRead>(_data->geometry.AcquireRead(stream.Context()));
+        const auto host = [geometry, u, r, b, y, selection, mass, rhsScale, normOrder, measureNorm](auto input, auto output, Result &result)
+        {
+            const auto mean = u.Layout(input), residual = r.Layout(input), constant = b.Layout(input);
+            const auto target = y.Layout(output);
+            result.status = CPU::AssembleDefect(mean.Descriptor(), residual.Descriptor(), constant.Descriptor(), target.Descriptor(),
+                                                geometry->HostView(), mass, rhsScale, selection.HostView(), normOrder, measureNorm,
+                                                {result.norms.data(), index(result.norms.size())}, {result.workerSums.data(), index(result.workerSums.size())});
+        };
+#ifdef DNDS_USE_CUDA
+        const auto device = [geometry, u, r, b, y, selection, mass, rhsScale, normOrder, measureNorm](auto context, auto input, auto output, auto scratch, auto summary)
+        { CUDA::AssembleDefect(context, geometry->View().cells, Table(input[u.firstSlot]), Table(input[r.firstSlot]), Table(input[b.firstSlot]),
+                               Table(output[y.firstSlot]), DeviceSelection(selection), mass, rhsScale, normOrder, measureNorm, scratch, summary); };
+#else
+        const Unavailable device;
+#endif
+        return _data->Reduce(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device).norms;
+    }
+    std::vector<real> NonlinearOperators::MeasureMeanState(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &mean) const
+    {
+        _data->Check(engine, stream, mean);
+        Inputs inputs;
+        const auto u = AddInput(mean, inputs);
+        const auto geometry = std::make_shared<CFV::FiniteVolumeRead>(_data->geometry.AcquireRead(stream.Context()));
+        const auto host = [geometry, u](auto input, auto, Result &result)
+        {
+            const auto layout = u.Components<const real>(input);
+            CPU::AccumulateMeanScale(layout.View(), geometry->HostView(), index(u.columns.size()),
+                                     {result.norms.data(), index(result.norms.size())}, {result.workerSums.data(), index(result.workerSums.size())});
+        };
+#ifdef DNDS_USE_CUDA
+        const auto device = [geometry, u](auto context, auto input, auto, auto scratch, auto summary)
+        { CUDA::MeasureMeanState(context, geometry->View().cells, Table(input[u.firstSlot]), scratch, summary); };
+#else
+        const Unavailable device;
+#endif
+        return _data->Reduce(engine, stream, mean.ComponentNumber(), std::move(inputs), {}, host, device).norms;
+    }
+    std::vector<real> NonlinearOperators::MeasureRateNorm(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                                          const EquationDofs &rate, int normOrder, OptionalRef<const EquationDofs> reference) const
+    {
+        _data->Check(engine, stream, rate);
+        if (reference)
+        {
+            _data->Check(engine, stream, *reference);
+            rate.RequireCompatible(*reference);
+        }
+        DNDS_check_throw_info(normOrder == 1 || normOrder == 2, "invalid nonlinear rate norm order");
+        Inputs inputs;
+        const auto u = AddInput(rate, inputs);
+        const auto ref = reference ? std::optional(AddInput(*reference, inputs)) : std::nullopt;
+        const auto geometry = std::make_shared<CFV::FiniteVolumeRead>(_data->geometry.AcquireRead(stream.Context()));
+        const auto host = [geometry, u, ref, normOrder](auto input, auto, Result &result)
+        {
+            const auto values = u.Components<const real>(input);
+            const auto reference = ref ? std::optional(ref->Components<const real>(input)) : std::nullopt;
+            result.status = CPU::MeasureRateNorm(values.View(), reference ? reference->View() : Algebra::DofComponentView<const real>{},
+                                                 geometry->HostView(), normOrder, {result.norms.data(), index(result.norms.size())},
+                                                 {result.workerSums.data(), index(result.workerSums.size())});
+        };
+#ifdef DNDS_USE_CUDA
+        const auto device = [geometry, u, ref, normOrder](auto context, auto input, auto, auto scratch, auto summary)
+        { CUDA::MeasureRateNorm(context, geometry->View().cells, Table(input[u.firstSlot]),
+                                ref ? Table(input[ref->firstSlot]) : CUDA::LinearReadRows{}, normOrder, scratch, summary); };
+#else
+        const Unavailable device;
+#endif
+        return _data->Reduce(engine, stream, rate.ComponentNumber(), std::move(inputs), {}, host, device).norms;
+    }
+    void NonlinearOperators::SubmitScaleRate(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                             const EquationDofs &input, EquationDofs &output, bool multiply) const
+    {
+        _data->Check(engine, stream, input);
+        _data->CheckPair(input, output);
+        Inputs inputs;
+        Outputs outputs;
+        const auto x = AddInput(input, inputs), y = AddOutput(output, outputs);
+        const auto geometry = std::make_shared<CFV::FiniteVolumeRead>(_data->geometry.AcquireRead(stream.Context()));
+        R::SubmitArrayBatch(engine, stream, [geometry, x, y, multiply](R::ExecutionContext context, auto input, auto output)
+                            {
+            if (context.device == R::Device::Host())
+            {
+                const auto from = x.Components<const real>(input);
+                const auto to = y.Components<real>(output);
+                if (multiply) CPU::ScaleRateByVolume(from.View(), to.View(), geometry->HostView(), index(x.columns.size()));
+                else CPU::NormalizeRateByVolume(from.View(), to.View(), geometry->HostView(), index(x.columns.size()));
+            }
+            else
+            {
+#ifdef DNDS_USE_CUDA
+                CUDA::ScaleRateByVolume(context, geometry->View().cells, Table(input[x.firstSlot]), Table(output[y.firstSlot]), multiply);
+#else
+                Unavailable{}();
+#endif
+            } }, std::move(inputs), std::move(outputs));
+    }
+    void NonlinearOperators::SubmitEquation(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                            const EquationDofs &mean, const EquationDofs &residual, EquationDofs &output, OptionalRef<EquationDofs> rate, real mass, real rhsScale) const
+    {
+        _data->Check(engine, stream, mean);
+        _data->Check(engine, stream, residual);
+        _data->CheckPair(mean, output);
+        _data->CheckPair(residual, output);
+        if (rate)
+        {
+            _data->CheckPair(mean, *rate);
+            _data->CheckPair(residual, *rate);
+            _data->CheckPair(output, *rate);
+        }
+        DNDS_check_throw_info(std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale >= 0, "invalid nonlinear equation coefficients");
+        Inputs inputs;
+        Outputs outputs;
+        const auto u = AddInput(mean, inputs), r = AddInput(residual, inputs), y = AddOutput(output, outputs);
+        const auto rateBinding = rate ? std::optional(AddOutput(*rate, outputs)) : std::nullopt;
+        const auto geometry = std::make_shared<CFV::FiniteVolumeRead>(_data->geometry.AcquireRead(stream.Context()));
+        R::SubmitArrayBatch(engine, stream, [geometry, u, r, y, rateBinding, mass, rhsScale](R::ExecutionContext context, auto input, auto output)
+                            {
+            if (context.device == R::Device::Host())
+            {
+                const auto mean = u.Components<const real>(input), residual = r.Components<const real>(input);
+                const auto target = y.Components<real>(output);
+                if (rateBinding)
+                {
+                    const auto rate = rateBinding->Components<real>(output);
+                    CPU::AssembleEquationAndRateRows(mean.View(), residual.View(), target.View(), rate.View(), geometry->HostView(),
+                        index(u.columns.size()), mass, rhsScale);
+                }
+                else CPU::AssembleEquationRows(mean.View(), residual.View(), target.View(), geometry->HostView(), index(u.columns.size()), mass, rhsScale);
+            }
+            else
+            {
+#ifdef DNDS_USE_CUDA
+                CUDA::AssembleEquation(context, geometry->View().cells, Table(input[u.firstSlot]), Table(input[r.firstSlot]),
+                    Table(output[y.firstSlot]), rateBinding ? Table(output[rateBinding->firstSlot]) : CUDA::LinearWriteRows{}, mass, rhsScale);
+#else
+                Unavailable{}();
+#endif
+            } }, std::move(inputs), std::move(outputs));
+    }
+}

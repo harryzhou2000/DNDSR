@@ -15,16 +15,12 @@ namespace DNDS::Cauchy
     using namespace CheckpointMetadata;
     void Domain::ReserveCheckpointRead(IO::DomainCheckpointRead &checkpoint, bool collectiveChecks)
     {
+        _execution.Synchronize();
         const auto reserve = [&]
         {
             DNDS_check_throw_info(!checkpoint.committed && !checkpoint.destination, "checkpoint publication was already reserved or committed");
-            checkpoint.source.emplace(_state.trial.ReadOwned());
-            checkpoint.destination.emplace(_state.accepted.WriteOwned());
-            for (index iBlock = 0; iBlock < _state.accepted.BlockNumber(); ++iBlock)
-            {
-                checkpoint.input.push_back(checkpoint.source->Block(iBlock).owned);
-                checkpoint.output.push_back(checkpoint.destination->Block(iBlock));
-            } };
+            checkpoint.source.emplace(_state.trial.ReadOwned(_execution.ComputeStream().Context()));
+            checkpoint.destination.emplace(_state.accepted.WriteOwned(_execution.ComputeStream().Context())); };
         if (collectiveChecks)
             MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), reserve);
         else
@@ -38,27 +34,19 @@ namespace DNDS::Cauchy
                 checkpoint.limitedVRHistory
                     ? OptionalRef<const Runtime::Array<real>>(*checkpoint.limitedVRHistory)
                     : OptionalRef<const Runtime::Array<real>>{},
-                collectiveChecks));
+                collectiveChecks, _execution.ComputeStream()));
         }
     }
     void Domain::CommitCheckpointRead(IO::DomainCheckpointRead &checkpoint)
     {
         // Every participating domain/rank has reserved before this point.
-        // The retained views and finite scalar copies need no allocation, MPI
-        // or further user-input validation during publication.
+        // The retained scopes cover the copy on the ordinary engine lane. No
+        // rank communication or host dereference of resident values occurs.
         if (checkpoint.reconstruction)
             checkpoint.reconstruction->Commit();
+        EquationDofOperations::CopyReserved(_execution.Engine(), _execution.ComputeStream(),
+                                            _state.accepted, _state.trial, *checkpoint.destination, *checkpoint.source);
         checkpoint.committed = true;
-        for (index iBlock = 0; iBlock < index(checkpoint.input.size()); ++iBlock)
-        {
-            const auto input = checkpoint.input[iBlock];
-            const auto output = checkpoint.output[iBlock];
-            for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                for (index j = 0; j < output.ComponentNumber(); ++j)
-                    output(iCell, j) = input(iCell, j);
-        }
-        checkpoint.input.clear();
-        checkpoint.output.clear();
         checkpoint.source.reset();
         checkpoint.destination.reset();
         checkpoint.reconstruction.reset();
@@ -83,12 +71,13 @@ namespace DNDS::Cauchy
             const auto &acceptedGuess = _problem.finiteVolume.ReconstructionGuess(*_state.reconstruction);
             if (!_state.reconstructionBackup)
                 _state.reconstructionBackup.emplace(EquationDofOperations::NewVector(acceptedGuess));
-            EquationDofOperations::Copy(*_state.reconstructionBackup, acceptedGuess);
+            EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), *_state.reconstructionBackup, acceptedGuess);
+            _execution.Synchronize();
             if (const auto history = _problem.finiteVolume.LimitedVRHistory(*_state.reconstruction))
             {
                 if (!_state.limitedVRBackup)
-                    _state.limitedVRBackup.emplace(history->Layout());
-                _state.limitedVRBackup->CopyFrom(*history).Wait();
+                    _state.limitedVRBackup.emplace(history->Layout(), history->GetDevice());
+                _state.limitedVRBackup->CopyFrom(*history, _execution.ComputeStream().Context()).Wait();
             }
             else
                 _state.limitedVRBackup.reset();
@@ -104,7 +93,8 @@ namespace DNDS::Cauchy
                                                              *checkpoint.endpointFinal,
                                                              checkpoint.endpointHistory
                                                                  ? OptionalRef<const Runtime::Array<real>>(*checkpoint.endpointHistory)
-                                                                 : OptionalRef<const Runtime::Array<real>>{});
+                                                                 : OptionalRef<const Runtime::Array<real>>{},
+                                                             _execution.ComputeStream());
         if (checkpoint.ditr)
         {
             DNDS_check_throw_info(!polynomial || (checkpoint.middleWarm && checkpoint.middleFinal),
@@ -118,7 +108,8 @@ namespace DNDS::Cauchy
                                                                  *checkpoint.middleFinal,
                                                                  checkpoint.middleHistory
                                                                      ? OptionalRef<const Runtime::Array<real>>(*checkpoint.middleHistory)
-                                                                     : OptionalRef<const Runtime::Array<real>>{});
+                                                                     : OptionalRef<const Runtime::Array<real>>{},
+                                                                 _execution.ComputeStream());
             *_state.coupledNonlinear = checkpoint.nonlinear;
         }
         else

@@ -13,6 +13,12 @@ namespace DNDS::Cauchy::CPU
     void JacobiLinearRows(const LinearBlockInput &request, LinearDofRead rhs, LinearDofRead owned, LinearDofRead ghost, LinearDofWrite output, bool zeroStart)
     {
         const auto inverse = Algebra::MakeEigenRowMatrices(request.diagonal, request.components, request.fullDiagonal ? request.components : 1);
+        if (zeroStart)
+        {
+            JacobiRows<true>(rhs, rhs, rhs, output, inverse, 0,
+                             request.pattern, request.rows, request.components, request.fullDiagonal);
+            return;
+        }
         request.blocks.WithActions([&](const auto &blocks)
                                    {
             const auto invoke = [&](auto zero)
@@ -32,10 +38,10 @@ namespace DNDS::Cauchy::CPU
                 constexpr bool Zero = decltype(zero)::value;
                 if (request.components == 5)
                     ScanSGSRows<false, 5, Zero>(rhs, old, output, output, ghost, inverse,
-                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal);
+                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal, request.sweepPartitions);
                 else
                     ScanSGSRows<false, Eigen::Dynamic, Zero>(rhs, old, output, output, ghost, inverse,
-                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal);
+                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal, request.sweepPartitions);
             };
             if (zeroStart) invoke(std::true_type{}); else invoke(std::false_type{}); });
     }
@@ -49,10 +55,10 @@ namespace DNDS::Cauchy::CPU
                 constexpr bool Zero = decltype(zero)::value;
                 if (request.components == 5)
                     ScanSGSRows<true, 5, Zero>(rhs, old, forward, output, ghost, inverse,
-                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal);
+                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal, request.sweepPartitions);
                 else
                     ScanSGSRows<true, Eigen::Dynamic, Zero>(rhs, old, forward, output, ghost, inverse,
-                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal);
+                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal, request.sweepPartitions);
             };
             if (zeroStart) invoke(std::true_type{}); else invoke(std::false_type{}); });
     }

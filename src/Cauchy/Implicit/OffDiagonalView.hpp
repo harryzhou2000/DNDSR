@@ -1,12 +1,34 @@
 #pragma once
 #include "DNDS/Algebra/BlockMatrixStorage.hpp"
 #include "DNDS/Algebra/DofField.hpp"
+#include "DNDS/Core/NumericalStatus.hpp"
 #include <memory>
 #include <optional>
 #include <vector>
 
+namespace DNDS::Runtime
+{
+    class EagerEngine;
+    class ExecutionStream;
+}
+
 namespace DNDS::Cauchy
 {
+    /** @brief Managed operands of one queued evaluated row action.
+     * @details Array copies share allocation/layout ownership; no payload is
+     * copied. rhs selects Jacobi and diagonal then holds the inverse. A missing
+     * ghost input denotes a proved owned-only selection. status is caller
+     * scratch, retained through completion and observed at its normal numerical
+     * decision boundary. It is not hidden mutable state in the evaluator.
+     */
+    struct EvaluatedLinearAction
+    {
+        Runtime::Array<index> rows;
+        Runtime::Array<real> diagonal, owned, output;
+        std::optional<Runtime::Array<real>> rhs, ghost;
+        Runtime::Array<NumericalStatus> status;
+        bool fullDiagonal = true;
+    };
     /// Immutable physical block producer. Columns and block ordinals belong to
     /// LinearProblemContext. Implementations own frozen numerical inputs; they
     /// must not borrow live means, perform communication or mutate hidden caches.
@@ -16,6 +38,14 @@ namespace DNDS::Cauchy
     public:
         using InputVector = Eigen::Ref<const Eigen::VectorXd, 0, Eigen::InnerStride<Eigen::Dynamic>>;
         virtual ~OffDiagonalEvaluator() = default;
+        /// Device selection is explicit. CPU producers retain their block-level
+        /// arithmetic; a resident provider must implement the whole-row queued
+        /// entry. There is no implicit host copy or Eigen/device fallback.
+        virtual Runtime::Device Device() const { return Runtime::Device::Host(); }
+        virtual void SubmitRows(Runtime::EagerEngine &, const Runtime::ExecutionStream &, EvaluatedLinearAction) const
+        {
+            DNDS_check_throw_info(false, "evaluated Jacobian has no queued device row provider");
+        }
         virtual index Components() const = 0;
         virtual std::shared_ptr<const Algebra::DofSpace::Partition> RowSpaceIdentity() const = 0;
         /// Setup/diagnostic copy; never called by block arithmetic.

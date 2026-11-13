@@ -38,17 +38,23 @@ int main(int argc, char **argv)
     int result = 0;
     try
     {
-        DNDS_check_throw_info(argc >= 5 && argc <= 7, "arguments: grid-width degree components repetitions [direct|packed|nccl] [fp64|tensor|shared|async]");
+        DNDS_check_throw_info(argc >= 5 && argc <= 8, "arguments: grid-width degree components repetitions [direct|packed|nccl] [fp64|tensor|shared|async|fp32|tf32] [all|aos]");
         const I width = std::stoll(argv[1]), components = std::stoll(argv[3]);
         const int degree = std::stoi(argv[2]), repeats = std::stoi(argv[4]);
         DNDS_check_throw_info(components > 0 && components <= 64 && repeats > 0, "invalid benchmark shape");
         const std::string transportName = argc >= 6 ? argv[5] : "direct", kernelName = argc >= 7 ? argv[6] : "fp64";
+        const std::string layouts = argc >= 8 ? argv[7] : "all";
+        DNDS_check_throw_info(layouts == "all" || layouts == "aos", "unknown benchmark layout selection");
         DNDS_check_throw_info(transportName == "direct" || transportName == "packed" || transportName == "nccl", "unknown transfer backend");
-        DNDS_check_throw_info(kernelName == "fp64" || kernelName == "tensor" || kernelName == "shared" || kernelName == "async", "unknown reconstruction kernel");
+        DNDS_check_throw_info(kernelName == "fp64" || kernelName == "tensor" || kernelName == "shared" || kernelName == "async" ||
+                                  kernelName == "fp32" || kernelName == "tf32",
+                              "unknown reconstruction kernel");
         const auto transport = transportName == "direct" ? R::TransferTransport::Direct : R::TransferTransport::DevicePacked;
-        const auto kernel = kernelName == "shared" ? C::ReconstructionDeviceKernel::FP64TensorCoreShared : kernelName == "async" ? C::ReconstructionDeviceKernel::FP64TensorCoreAsync
-                                                                                                       : kernelName == "tensor"  ? C::ReconstructionDeviceKernel::FP64TensorCore
-                                                                                                                                 : C::ReconstructionDeviceKernel::FP64;
+        const auto kernel = kernelName == "fp32" ? C::ReconstructionDeviceKernel::FP32 : kernelName == "tf32" ? C::ReconstructionDeviceKernel::TF32TensorCore
+                                                                                     : kernelName == "shared" ? C::ReconstructionDeviceKernel::FP64TensorCoreShared
+                                                                                     : kernelName == "async"  ? C::ReconstructionDeviceKernel::FP64TensorCoreAsync
+                                                                                     : kernelName == "tensor" ? C::ReconstructionDeviceKernel::FP64TensorCore
+                                                                                                              : C::ReconstructionDeviceKernel::FP64;
         const auto device = R::Device::CUDA(0);
         const auto context = R::ExecutionContext::CUDA(0);
         R::TransferOptions transferOptions;
@@ -76,8 +82,11 @@ int main(int argc, char **argv)
         const double prepareTime = measure([&]
                                            { plan = C::VariationalReconstructionPlan::ConstructRecCoeff(*metrics, settings); });
         std::optional<C::VariationalReconstructionPlan> resident;
+        C::ReconstructionResidencyOptions residency;
+        if (kernelName == "fp32" || kernelName == "tf32")
+            residency.matrixPrecision = C::ReconstructionMatrixPrecision::FP32;
         const double uploadTime = measure([&]
-                                          { resident = plan->Place(device, context); });
+                                          { resident = plan->Place(device, context, residency); });
         const I recWidth = components * plan->NRecDOF();
         auto mean = metrics->BuildField(components);
         Fill(mean, 1);
@@ -94,6 +103,8 @@ int main(int argc, char **argv)
         metrics->BindHalo(mean).Begin().Wait();
         for (auto kind : {R::RowLayoutKind::Table, R::RowLayoutKind::ColMajorTable, R::RowLayoutKind::TiledColMajorTable})
         {
+            if (layouts == "aos" && kind != R::RowLayoutKind::Table)
+                continue;
             const auto shape = [&](I count)
             { return kind == R::RowLayoutKind::Table ? R::RowLayout::Dense(0, count) : kind == R::RowLayoutKind::ColMajorTable ? R::RowLayout::ColMajor(0, count, {32, 1})
                                                                                                                                : R::RowLayout::TiledColMajor(0, count, 32); };
@@ -118,7 +129,9 @@ int main(int argc, char **argv)
                 resident->DoLimiterWBAP_3Order(gpuCoefficients, gpu, order);
             }
             const double limiterError = Error(cpuCoefficients, gpuCoefficients, mpi);
-            DNDS_check_throw_info(jacobiError < 1e-8 && limiterError < 1e-8, "GPU benchmark numerical oracle failed");
+            const double tolerance = kernelName == "tf32" ? 3e-3 : kernelName == "fp32" ? 2e-5
+                                                                                        : 1e-8;
+            DNDS_check_throw_info(jacobiError < tolerance && limiterError < tolerance, "GPU benchmark numerical oracle failed");
             gpuHalo.Begin(context).Wait();
             R::EagerEngine engine;
             auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));

@@ -64,8 +64,9 @@ namespace DNDS::CFV
 #endif
         auto geometryGuard = std::make_shared<Geom::MeshReadAccess>(_mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux()));
         Validate();
-        engine.RetainUntilSynchronize(geometryGuard);
-        engine.RetainUntilSynchronize(_mesh);
+        // SubmitArrays' retirement record retains the captured geometry guard,
+        // while declared operands retain all sampling payloads. Repeated value
+        // refreshes therefore need no engine-wide retained-owner accumulation.
         const auto polynomial = Math::TaylorBasis(_dimension, _degree).KernelParameters();
         R::SubmitArrays(engine, stream, [geometryGuard, polynomial, derivative, cachedDerivatives = _cachedDerivatives](R::ExecutionContext context, auto cells, auto points, auto basis, auto moments, auto geometry, auto meanOwned, auto meanGhost, auto coefficientOwned, auto coefficientGhost, auto result)
                         {

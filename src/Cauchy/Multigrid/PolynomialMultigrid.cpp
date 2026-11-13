@@ -1,6 +1,6 @@
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
-#include "Cauchy/Multigrid/CPU/PolynomialMultigridKernels.hpp"
+#include "Cauchy/Multigrid/PolynomialMultigridOperations.hpp"
 
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "DNDS/MPI/Failure.hpp"
@@ -20,52 +20,10 @@ namespace DNDS::Cauchy
     namespace R = Runtime;
     namespace
     {
-        /// Logical rows retain their parent pitch; only descriptor metadata is
-        /// assembled here. No conservative values are flattened for multigrid.
-        struct EquationFASOperations : EquationDofOperations
-        {
-            static index ComponentNumber(const EquationDofs &state) { return state.ComponentNumber(); }
-            static void CheckFrozen(const EquationDofs &state, const EquationDofs &reference, const std::vector<index> &components)
-            {
-                const Algebra::ComponentSelection selection(state.ComponentNumber(), components);
-                const auto read = state.ReadOwned(), savedRead = reference.ReadOwned();
-                const auto layout = read.ComponentLayout(), savedLayout = savedRead.ComponentLayout();
-                const auto values = layout.View(), saved = savedLayout.View();
-                const auto active = R::MetadataBuffer<uint8_t>::Generate(values.ComponentNumber(), [&](index j)
-                                                                         { return uint8_t(selection.Includes(j)); });
-                RequireNumericalSuccess(CPU::CheckFrozenComponents(values, saved, active.HostView()), "CheckFrozenComponents");
-            }
-            static void ProjectCorrection(EquationDofs &correction, const std::vector<index> &components)
-            {
-                const Algebra::ComponentSelection selection(correction.ComponentNumber(), components);
-                auto write = correction.WriteOwned();
-                const auto layout = write.ComponentLayout();
-                const auto values = layout.View();
-                const auto active = R::MetadataBuffer<uint8_t>::Generate(values.ComponentNumber(), [&](index j)
-                                                                         { return uint8_t(selection.Includes(j)); });
-                CPU::ProjectSelectedCorrection(values, active.HostView());
-            }
-            static void AddSelected(EquationDofs &state, const EquationDofs &correction, const std::vector<index> &components)
-            {
-                if (components.empty())
-                {
-                    Axpy(state, 1, correction);
-                    return;
-                }
-                const auto read = correction.ReadOwned();
-                auto write = state.WriteOwned();
-                const auto deltaLayout = read.ComponentLayout();
-                const auto stateLayout = write.ComponentLayout();
-                const auto delta = deltaLayout.View();
-                const auto values = stateLayout.View();
-                CPU::AddSelectedCorrection(values, delta, {components.data(), index(components.size())});
-            }
-        };
-
         struct EquationProfile
         {
             using State = EquationDofs;
-            using Operations = EquationFASOperations;
+            using Operations = PolynomialMultigridOperations;
             using Solver = NonlinearSolver;
             using Workspace = FiniteVolume::Workspace;
             using ReconstructionState = FiniteVolume::ReconstructionState;
@@ -108,22 +66,6 @@ namespace DNDS::Cauchy
                 a.RequireSchema(b.Schema());
                 DNDS_check_throw_info(a.Space().OwnedRows() == b.Space().OwnedRows(), "polynomial FAS equation identity transfer shape mismatch");
             }
-            template <class F>
-            static void ReadPair(const State &a, const State &b, F &&run)
-            {
-                const auto aRead = a.ReadOwned(), bRead = b.ReadOwned();
-                const auto aLayout = aRead.ComponentLayout(), bLayout = bRead.ComponentLayout();
-                run(aLayout.View(), bLayout.View());
-            }
-            template <class F>
-            static void TransferRows(const State &input, State &output, F &&run)
-            {
-                const auto read = input.ReadOwned();
-                auto write = output.WriteOwned();
-                const auto source = read.ComponentLayout();
-                const auto destination = write.ComponentLayout();
-                run(source.View(), destination.View());
-            }
             static void SetBoundaryInputs(const FiniteVolume &fv, Workspace &workspace, const BoundaryInputs &input)
             {
                 fv.SetBoundaryInputs(workspace, input);
@@ -146,6 +88,7 @@ namespace DNDS::Cauchy
             // Declared before hierarchy resources so it is destroyed after all
             // streams, solvers and scratch which may refer to its runtime.
             std::optional<DomainExecutionContext> executionOwner;
+            Operations operations;
             struct SpatialRate
             {
                 State rate;
@@ -153,7 +96,8 @@ namespace DNDS::Cauchy
                 real time = 0, scale = 0;
                 explicit SpatialRate(const State &input) : rate(Operations::NewVector(input)) {}
             };
-            static void IdentityTransfer(const State &input, State &output, const MPIInfo &mpi, bool collectiveChecks = true)
+            static void IdentityTransfer(const State &input, State &output, const MPIInfo &mpi,
+                                         const Operations &operations, bool collectiveChecks = true)
             {
                 // Only construction-validated equal cell orders may use this
                 // explicit cross-space copy. Ordinary algebra stays strict.
@@ -161,9 +105,10 @@ namespace DNDS::Cauchy
                 {
                     Profile::CheckTransfer(input, output);
                     Operations::RequireDistinct(input, output);
-                    const index width = Operations::ComponentNumber(input);
-                    Profile::TransferRows(input, output, [width](auto source, auto destination)
-                                          { CPU::CopyPolynomialLevel(source, destination); });
+                    operations.CopyIdentityRows(input, output);
+                    // Explicit level-edge publication: synchronous FAS
+                    // callbacks return ready values and release pool borrows.
+                    operations.Synchronize();
                 };
                 RunLocalStage(mpi, collectiveChecks, run,
                               "polynomial multigrid identity transfer failed");
@@ -175,20 +120,31 @@ namespace DNDS::Cauchy
                 std::shared_ptr<typename Profile::ReconstructionState> reconstruction;
                 std::shared_ptr<typename Profile::Workspace> workspace;
                 std::unique_ptr<Solver> solver;
+                static FiniteVolume PrepareLevel(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings,
+                                                 const FiniteVolume &fine, R::ExecutionContext context)
+                {
+                    FiniteVolume level(std::move(mesh), settings, fine.Equation());
+                    return context.device == R::Device::Host() ? level : level.Placed(context.device, context);
+                }
                 Coarse(ssp<Geom::UnstructuredMesh> mesh, DomainSettings settings, const FiniteVolume &fine,
                        const State &prototype, R::EagerEngine &engine, const R::ExecutionStream &stream,
-                       const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers)
-                    : discrete(std::move(mesh), settings, fine.Equation()), state(Profile::NewState(discrete, prototype))
+                       const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers,
+                       const std::optional<DomainExecutionContext> &context)
+                    : discrete(PrepareLevel(std::move(mesh), settings, fine, stream.Context())), state(Profile::NewState(discrete, prototype))
                 {
                     DNDS_check_throw_info(discrete.Metrics().Cells().SameOrder(fine.Metrics().Cells()),
                                           "polynomial FAS levels changed cell identity/order");
                     // A level solver validates its physical background at
                     // construction. Restriction has not run yet: seed the
                     // owned state explicitly instead of exposing zero means.
-                    IdentityTransfer(prototype, state, MPIInfo(discrete.Metrics().Communicator()));
+                    IdentityTransfer(prototype, state, MPIInfo(discrete.Metrics().Communicator()), Operations(stream));
                     reconstruction = discrete.BuildReconstructionState(state);
                     workspace = Profile::BuildWorkspace(discrete, state, workers);
-                    solver = Profile::BuildSolver(discrete, state, reconstruction, workspace, engine, stream, settings, workers);
+                    if (context)
+                        solver = std::make_unique<Solver>(discrete, state, reconstruction, workspace, *context, settings,
+                                                          Algebra::ComponentSelection(state.ComponentNumber(), state.Schema().ResolveComponents(settings.implicit.residualComponents)));
+                    else
+                        solver = Profile::BuildSolver(discrete, state, reconstruction, workspace, engine, stream, settings, workers);
                 }
             };
             FiniteVolume fine;
@@ -361,12 +317,19 @@ namespace DNDS::Cauchy
                                               (level.postSmooth < 0 ? 0 : level.postSmooth);
                 }
                 cycle = std::make_unique<Cycle>(levelDefinitions, transferDefinitions, std::move(sweeps), [this](const auto &run)
-                                                { RunLocalStage(mpi, settings.collectiveChecks, run,
-                                                                "polynomial multigrid local phase failed"); }, std::move(acquireScratch));
+                                                { RunLocalStage(mpi, settings.collectiveChecks, [&]
+                                                                {
+                        run();
+                        // FAS callbacks promise completion, particularly
+                        // before reserved scratch is returned/reborrowed.
+                        // Multiple algebra launches inside this segment stay
+                        // queued; observation is at the recursion boundary.
+                        operations.Synchronize(); }, "polynomial multigrid local phase failed"); }, std::move(acquireScratch), operations);
             }
             void Build(const ssp<Geom::UnstructuredMesh> &mesh, R::EagerEngine &engine, const R::ExecutionStream &stream,
                        const DomainSettings &controls, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = std::nullopt)
             {
+                operations = Operations(stream);
                 smootherCFL.assign(size_t(settings.multigrid.levels + 1), settings.pseudoCFL);
                 smootherProfiles.resize(smootherCFL.size());
                 operatorSeconds.resize(smootherCFL.size());
@@ -375,16 +338,16 @@ namespace DNDS::Cauchy
                 smootherBaseCFL = {settings.pseudoCFL};
                 smootherMaxCFL = {settings.maxPseudoCFL};
                 levelDefinitions.push_back(MakeLevel(state, fineSolver, 0));
-                const auto identity = [mpi = mpi, checks = settings.collectiveChecks](const State &input, State &output)
+                const auto identity = [mpi = mpi, checks = settings.collectiveChecks, operations = operations](const State &input, State &output)
                 {
-                    IdentityTransfer(input, output, mpi, checks);
+                    IdentityTransfer(input, output, mpi, operations, checks);
                 };
                 for (int level = 0; level < settings.multigrid.levels; ++level)
                 {
                     auto lower = PolynomialMultigrid::CoarseSettings(controls, level);
                     smootherBaseCFL.push_back(lower.implicit.pseudoCFL);
                     smootherMaxCFL.push_back(lower.implicit.maxPseudoCFL);
-                    coarse.push_back(std::make_unique<Coarse>(mesh, lower, fine, state, engine, stream, workers));
+                    coarse.push_back(std::make_unique<Coarse>(mesh, lower, fine, state, engine, stream, workers, executionOwner));
                     levelDefinitions.push_back(MakeLevel(coarse.back()->state, *coarse.back()->solver, level + 1));
                     transferDefinitions.push_back({identity, identity, identity, true});
                 }
@@ -423,10 +386,7 @@ namespace DNDS::Cauchy
                 std::vector<real> sum(norms.size() + 1, 0);
                 const auto accumulate = [&]
                 {
-                    const auto geometry = fine.Metrics().AcquireRead();
-                    const auto metric = geometry.HostView();
-                    Profile::ReadPair(source, value, [&](auto b, auto f)
-                                      { CPU::AccumulateFASNorm(b, f, metric, settings.normOrder, {sum.data(), index(sum.size())}); });
+                    sum = fineSolver.MeasureRateNorm(source, settings.normOrder, std::cref(value));
                 };
                 // Only the diagnostic preflight is optional. The residual
                 // norm below is a mathematical collective in both modes.
@@ -457,7 +417,10 @@ namespace DNDS::Cauchy
                     // time/stage/VR provenance. Internal Solve passes only the
                     // immediately preceding measured state, checked below.
                     if (rate.Get() != &fineRate->rate)
-                        Operations::Copy(fineRate->rate, *rate);
+                    {
+                        operations.Copy(fineRate->rate, *rate);
+                        operations.Synchronize();
+                    }
                     fineRate->stateStamp.emplace(state);
                     fineRate->time = time;
                     fineRate->scale = rhsScale;
@@ -619,11 +582,11 @@ namespace DNDS::Cauchy
         ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine,
         EquationDofs &state, NonlinearSolver &solver,
         DomainExecutionContext context, const DomainSettings &settings)
-        : PolynomialMultigrid(std::move(mesh), fine, state, solver,
-                              context.Engine(), context.ComputeStream(), settings,
-                              context.ChemicalWorkers())
     {
-        _data->executionOwner.emplace(std::move(context));
+        MPI::LocalStage(MPIInfo(fine.Metrics().Communicator()), [&]
+                        { _data = std::make_shared<Data>(fine, state, solver, settings); });
+        _data->executionOwner.emplace(context);
+        _data->Build(mesh, context.Engine(), context.ComputeStream(), settings, context.ChemicalWorkers());
     }
     NonlinearIterationReport PolynomialMultigrid::Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage,
                                                         NonlinearSolveControl control)

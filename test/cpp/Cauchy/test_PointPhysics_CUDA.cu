@@ -134,10 +134,12 @@ TEST_CASE("Shared perfect-gas Riemann arithmetic agrees on CUDA for all schemes 
     const auto device = R::Device::CUDA(0);
     const auto input = host.To(device);
     R::Array<real> output(R::RowLayout::Dense(rows, 8), device);
-    for (int scheme = int(C::Riemann::Solver::Rusanov); scheme <= int(C::Riemann::Solver::AUSMPlusUp2); ++scheme)
+    for (const auto *name : {"rusanov", "Roe", "Roe_M1", "Roe_M2", "Roe_M3", "Roe_M4", "Roe_M5", "Roe_M6", "Roe_M7", "Roe_M8", "Roe_M9",
+                             "HLLC", "HLLEP", "HLLEP_V1", "AUSMPWPlus", "AUSMPlusUp", "AUSMPlusUp2"})
     {
-        CAPTURE(scheme);
-        const auto solver = C::Riemann::Solver(scheme);
+        CAPTURE(name);
+        const auto flux = C::Riemann::RiemannFlux::Resolve(name);
+        const auto solver = flux.Kind();
         R::EagerEngine engine;
         auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
         R::SubmitArrays(engine, stream, [gas, solver](auto context, auto x, auto y)
@@ -149,7 +151,6 @@ TEST_CASE("Shared perfect-gas Riemann arithmetic agrees on CUDA for all schemes 
         engine.Close();
         const auto downloaded = output.To(R::Device::Host());
         const auto actual = downloaded.Read(), values = host.Read();
-        const C::Riemann::RiemannFlux flux(solver);
         for (I iRow = 0; iRow < rows; ++iRow)
         {
             C::Riemann::AcousticState states[4];
@@ -198,6 +199,12 @@ TEST_CASE("SA and k-omega CUDA point closures agree with canonical CPU source tr
     const auto input = host.To(device);
     R::Array<real> output(R::RowLayout::Dense(rows, 9), device);
     R::Array<int> status(R::RowLayout::Dense(rows, 1), device);
+    R::Array<int> statusSeed(R::RowLayout::Dense(rows, 1));
+    {
+        auto write = statusSeed.Write();
+        for (I iRow = 0; iRow < rows; ++iRow)
+            write.View()(iRow, 0) = -1;
+    }
     for (const char *name : {"SA", "KOmegaWilcox", "KOmegaSST"})
         for (int desMode = 0; desMode < 4; ++desMode)
         {
@@ -211,6 +218,10 @@ TEST_CASE("SA and k-omega CUDA point closures agree with canonical CPU source tr
             settings.sst.implicitAdditionalSinks = true;
             const P::Model model(settings);
             const auto parameters = model.KernelParameters();
+            CAPTURE(int(parameters.kind));
+            // Prove every thread published its result; zero-initialized output
+            // must not disguise an early device return as NumericalError::None.
+            status.CopyFrom(statusSeed, R::ExecutionContext::CUDA(0)).Wait();
             R::EagerEngine engine;
             auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
             R::SubmitArrays(engine, stream, [parameters](auto context, auto x, auto y, auto s)
@@ -233,8 +244,33 @@ TEST_CASE("SA and k-omega CUDA point closures agree with canonical CPU source tr
                 const auto source = model.Source(point), diagonal = model.ImplicitSourceDiagonal(point);
                 const real expected[9]{turbulent.viscosity, turbulent.conductivity, turbulent.speciesDiffusivity,
                                        diffusion[0], diffusion[1], source[0], source[1], diagonal[0], diagonal[1]};
+                // Distinguish adapter mathematics from CUDA execution/ABI:
+                // the shared point entry must also agree with the established
+                // model on the host before its device result is compared.
+                if (iRow == 0)
+                {
+                    const auto sharedTransport = P::TryTransport(parameters, point);
+                    const auto sharedSource = P::TrySource(parameters, point, 0);
+                    const auto sharedDiagonal = P::TrySource(parameters, point, 1);
+                    REQUIRE(bool(sharedTransport));
+                    REQUIRE(bool(sharedSource));
+                    REQUIRE(bool(sharedDiagonal));
+                    const auto sharedDiffusion = P::TryDiffusionFlux(parameters, point, Eigen::Vector3d(.6, .8, 0), sharedTransport.value.viscosity);
+                    REQUIRE(bool(sharedDiffusion));
+                    const real shared[9]{sharedTransport.value.viscosity, sharedTransport.value.conductivity, sharedTransport.value.speciesDiffusivity,
+                                         sharedDiffusion.value[0], sharedDiffusion.value[1], sharedSource.value[0], sharedSource.value[1], sharedDiagonal.value[0], sharedDiagonal.value[1]};
+                    for (int j = 0; j < 9; ++j)
+                    {
+                        CAPTURE(j);
+                        CHECK(shared[j] == doctest::Approx(expected[j]).epsilon(2e-11).scale(1e-8));
+                    }
+                }
                 for (int j = 0; j < 9; ++j)
+                {
+                    CAPTURE(iRow);
+                    CAPTURE(j);
                     CHECK(actual.View()(iRow, j) == doctest::Approx(expected[j]).epsilon(2e-11).scale(1e-8));
+                }
             }
         }
 }

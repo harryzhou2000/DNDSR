@@ -1,6 +1,7 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Input/StateInput.hpp"
 #include "DNDS/Config/JsonSchema.hpp"
+#include "DNDS/Algebra/AmgXPreconditioner.hpp"
 #include <set>
 
 namespace DNDS::Cauchy
@@ -177,14 +178,14 @@ namespace DNDS::Cauchy
                                   std::isfinite(pseudoCFL) && pseudoCFL > 0 && std::isfinite(maxPseudoCFL) && maxPseudoCFL >= pseudoCFL &&
                                   std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1,
                               "invalid implicit nonlinear/diagonal/pseudo-time controls");
-        DNDS_check_throw_info((linear.method == "sgs" || linear.method == "jacobi" || linear.method == "ilu" || linear.method == "gmres") && (linear.preconditioner == "sgs" || linear.preconditioner == "ilu") &&
+        DNDS_check_throw_info((linear.method == "sgs" || linear.method == "jacobi" || linear.method == "ilu" || linear.method == "gmres") && (linear.preconditioner == "sgs" || linear.preconditioner == "ilu" || linear.preconditioner == "jacobi" || linear.preconditioner == "amgx") &&
                                   linear.jacobiLocalSweeps >= 1 && linear.jacobiLocalSweeps <= 2 &&
                                   (linear.componentScaling == "none" || linear.componentScaling == "meanState") &&
                                   (linear.stopping == "residual" || (linear.stopping == "fixedCount" && linear.method != "gmres")) &&
                                   linear.iterations > 0 && linear.residualCheckInterval > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
                                   nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 && ilu.preconditionerCorrections > 0 &&
                                   (ilu.ordering == "natural" || ilu.ordering == "rcm") &&
-                                  !((linear.method == "ilu" || linear.method == "jacobi" || (linear.method == "gmres" && linear.preconditioner == "ilu")) && sgs.exchangeBetweenSweeps),
+                                  !((linear.method == "ilu" || linear.method == "jacobi" || (linear.method == "gmres" && (linear.preconditioner == "ilu" || linear.preconditioner == "jacobi" || linear.preconditioner == "amgx"))) && sgs.exchangeBetweenSweeps),
                               "invalid implicit linear/SGS/ILU controls");
         DNDS_check_throw_info((positivity.rhsFPPMode == "none" || positivity.rhsFPPMode == "rhs" || positivity.rhsFPPMode == "dTau") &&
                                   (positivity.rhsFPPReduction == "cell" || positivity.rhsFPPReduction == "minimumLimited" || positivity.rhsFPPReduction == "minimumAll") &&
@@ -247,7 +248,11 @@ namespace DNDS::Cauchy
         std::vector<std::string> missing;
         auto require = [&](bool found, const std::string &operation)
         { if (!found) missing.push_back(operation); };
-        require(s.execution.device == "cpu", "residual/BC/reconstruction backend " + s.execution.device);
+        const bool cuda = s.execution.device == "cuda";
+        require(s.execution.device == "cpu" || cuda, "residual/BC/reconstruction backend " + s.execution.device);
+#ifndef DNDS_USE_CUDA
+        require(!cuda, "backend cuda requires a CUDA-enabled build");
+#endif
         require(s.execution.layout == "aos" || s.execution.layout == "soa" || s.execution.layout == "aosoa32", "flow layout " + s.execution.layout);
         require(s.execution.communication == "mpi-direct", "transport " + s.execution.communication);
         require(s.execution.communicationExecution == "caller" || s.execution.communicationExecution == "worker", "communication execution " + s.execution.communicationExecution);
@@ -262,6 +267,33 @@ namespace DNDS::Cauchy
         require(s.equation.system == "compressible", "equation " + s.equation.system);
         const bool mixture = s.equation.eos == "idealGasMixture";
         const bool rans = s.equation.rans.model != "none", extended = mixture || rans;
+        if (cuda)
+        {
+            // Resolve the selected numerical profile without probing hardware
+            // or silently downloading fields. Actual device ordinals and view
+            // residency are checked by context creation and host launchers.
+            require(s.execution.layout == "aos" && s.execution.fieldGrouping == "coupled",
+                    "CUDA requires combined AoS equation fields");
+            require(s.equation.eos == "perfectGas", "backend cuda requires perfectGas EOS");
+            require(!rans || s.equation.rans.model == "SA" || s.equation.rans.model == "KOmegaWilcox" ||
+                        s.equation.rans.model == "KOmegaSST",
+                    "CUDA RANS profile " + s.equation.rans.model);
+            require(s.numerics.reconstruction != "variational" || !s.numerics.cfv.SORInstead,
+                    "CUDA variational reconstruction requires Jacobi (SORInstead=false)");
+            const auto requireLinear = [&](const ImplicitSettings &implicit, const std::string &level)
+            {
+                const auto &linear = implicit.linear;
+                const bool amgx = linear.method == "gmres" && linear.preconditioner == "amgx";
+                require(linear.method == "jacobi" ||
+                            (linear.method == "gmres" && (linear.preconditioner == "jacobi" || amgx)),
+                        level + " CUDA linear solve requires Jacobi or GMRES with Jacobi/AmgX");
+                require(!amgx || (implicit.jacobianAction == "assembled" && Algebra::AmgXPreconditioner::Available()),
+                        level + " AmgX requires assembled storage and the single-device provider in this build");
+            };
+            requireLinear(s.implicit, "finest");
+            for (index level = 1; level <= s.implicit.multigrid.levels; ++level)
+                requireLinear(s.implicit.ResolveCoarseLevel(level), "pMG level " + std::to_string(level));
+        }
         require(rans || s.initialRANS.empty(), "initialRANS without a RANS model");
         if (rans)
         {
@@ -336,7 +368,8 @@ namespace DNDS::Cauchy
                 message += "\n  " + item;
             DNDS_check_throw_info(false, message);
         }
-        return {{std::string(mixture ? "cpu/idealGasMixture/flow5+species" : "cpu/perfectGas/flow5") + (rans ? "+" + s.equation.rans.model : ""), "cpu/" + s.numerics.flux, "cpu/" + s.equation.transport,
+        const std::string backend = cuda ? "cuda/" : "cpu/";
+        return {{backend + (mixture ? "idealGasMixture/flow5+species" : "perfectGas/flow5") + (rans ? "+" + s.equation.rans.model : ""), backend + s.numerics.flux, backend + s.equation.transport,
                  "cfv/" + s.numerics.reconstruction, "cfv/" + s.numerics.limiter, "runtime/mpi-direct"}};
     }
 }

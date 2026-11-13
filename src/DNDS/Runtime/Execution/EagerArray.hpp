@@ -158,20 +158,30 @@ namespace DNDS::Runtime
     /// edges. A Write declaration neither zeros nor proves full initialization.
     /// CUDA kernels must launch on the supplied context stream and report launch
     /// errors; launching on another stream escapes the lifetime contract.
+    /// Captured owners (e.g. immutable metadata/mesh read scopes) are retained
+    /// by the retirement record, not merely the host launch callback. Their
+    /// lifetime therefore ends per completed operation, without an engine drain.
     template <class Kernel, class... Operands>
     void SubmitArrays(EagerEngine &engine, const ExecutionStream &stream, Kernel kernel, Operands... operands)
     {
         using Prepared = std::tuple<Detail::PreparedOperand<Operands>...>;
+        struct Retained
+        {
+            Prepared operands;
+            Kernel kernel;
+            Retained(Kernel body, ExecutionContext context, bool checked, Operands... values)
+                : operands(Detail::PreparedOperand<Operands>(std::move(values), context, checked)...), kernel(std::move(body)) {}
+        };
         const std::vector<ScheduledBufferAccess> accesses{{operands.storage->Values(), operands.mode}...};
         const auto context = stream.Context();
-        auto retained = std::make_shared<Prepared>(Detail::PreparedOperand<Operands>(std::move(operands), context, engine.ChecksAccess())...);
-        engine.SubmitOperation(stream, [retained, kernel = std::move(kernel)](ExecutionContext context) mutable
+        auto retained = std::make_shared<Retained>(std::move(kernel), context, engine.ChecksAccess(), std::move(operands)...);
+        engine.SubmitOperation(stream, [retained](ExecutionContext context) mutable
                                { std::apply([&](auto &...operand)
                                             {
                     try
                     {
                         (operand.access.Validate(), ...);
-                        kernel(context, operand.view...);
+                        retained->kernel(context, operand.view...);
                     }
                     catch (...)
                     {
@@ -183,8 +193,8 @@ namespace DNDS::Runtime
                         (handoff(operand), ...);
                         std::rethrow_exception(error);
                     }
-                    (operand.Handoff(context), ...); }, *retained); }, [retained](std::exception_ptr error) noexcept
+                    (operand.Handoff(context), ...); }, retained->operands); }, [retained](std::exception_ptr error) noexcept
                                { std::apply([&](auto &...operand)
-                                            { (operand.Complete(!error), ...); }, *retained); }, accesses);
+                                            { (operand.Complete(!error), ...); }, retained->operands); }, accesses);
     }
 }

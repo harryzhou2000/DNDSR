@@ -3,6 +3,38 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("CUDA capability resolution requires a complete combined perfect gas profile")
+{
+    C::DomainConfig domain;
+    domain.placement.name = "device-fluid";
+    auto &settings = domain.settings;
+    settings.execution.device = "cuda";
+    settings.execution.layout = "aos";
+    settings.execution.fieldGrouping = "coupled";
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 3;
+    settings.numerics.cfv.SORInstead = false;
+    settings.numerics.viscousGradient = "polynomial";
+    settings.numerics.faceFallback = false;
+    settings.numerics.riemann.useStencil = false;
+    settings.implicit.linear.method = "jacobi";
+    settings.implicit.multigrid.levels = 2;
+#ifdef DNDS_USE_CUDA
+    for (const char *model : {"none", "SA", "KOmegaWilcox", "KOmegaSST"})
+    {
+        settings.equation.rans.model = model;
+        settings.equation.transport = "NewtonianFourier";
+        CHECK_NOTHROW(C::ResolvedExecutionPlan::Resolve(domain));
+    }
+    settings.implicit.multigrid.coarseLevelSettings["1"].solver = {{"linear", {{"method", "ilu"}}}};
+    CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("pMG level 1 CUDA linear solve"));
+    settings.implicit.multigrid.coarseLevelSettings.clear();
+    settings.execution.fieldGrouping = "equationBlocks";
+    CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("combined AoS"));
+#else
+    CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("CUDA-enabled build"));
+#endif
+}
 TEST_CASE("CPU workers require an MPI capability that permits multithreaded execution")
 {
     C::ExecutionSettings execution;

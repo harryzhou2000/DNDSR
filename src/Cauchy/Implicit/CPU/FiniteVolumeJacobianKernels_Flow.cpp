@@ -1,4 +1,5 @@
 #include "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 namespace DNDS::Cauchy::CPU
 {
     using Matrix = Eigen::Matrix<real, 5, 5>;
@@ -86,12 +87,14 @@ namespace DNDS::Cauchy::CPU
                             Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::FixedRows<5>> frozenMean,
                             Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> frozenRadius)
     {
-        for (index iCell = 0; iCell < frozenMean.RowCount(); ++iCell)
+        OMP::ForRows(0, frozenMean.RowCount(), [&](index iCell)
+                     {
             for (int j = 0; j < 5; ++j)
-                frozenMean(iCell, j) = mean(iCell, j);
-        for (index iFace = 0; iFace < frozenRadius.RowCount(); ++iFace)
+                frozenMean(iCell, j) = mean(iCell, j); });
+        OMP::ForRows(0, frozenRadius.RowCount(), [&](index iFace)
+                     {
             for (int j = 0; j < 2; ++j)
-                frozenRadius(iFace, j) = radius(iFace, j);
+                frozenRadius(iFace, j) = radius(iFace, j); });
     }
     NumericalStatus PrepareFlowJacobian(const FlowJacobianPreparation &request, const EquationSystem &equation, const Riemann::RiemannFlux &flux) noexcept
     {
@@ -112,8 +115,8 @@ namespace DNDS::Cauchy::CPU
                 return Riemann::AcousticState{{u, (*packet.meanThermodynamics)(iCell, 0)}, (*packet.meanThermodynamics)(iCell, 1)};
             return equation.PrepareFluxState(u);
         };
-        for (index iCell = 0; iCell < request.diagonal.RowCount(); ++iCell)
-        {
+        return OMP::ForRowsStatus(0, request.diagonal.RowCount(), [&](index iCell) -> NumericalStatus
+                                  {
             const real inverseStep = inverseTau(iCell, 0);
             if (!(std::isfinite(inverseStep) && inverseStep >= 0))
                 return NumericalStatus{NumericalError::InvalidState, 1, iCell};
@@ -244,7 +247,6 @@ namespace DNDS::Cauchy::CPU
             else
                 for (int j = 0; j < 5; ++j)
                     d(iCell, j) = own(j, j);
-        }
-        return {};
+            return {}; });
     }
 }

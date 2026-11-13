@@ -2,17 +2,11 @@
 
 #include "DNDS/Algebra/DofComponentView.hpp"
 #include "DNDS/Core/Span.hpp"
+#include "Cauchy/Interface/InterfacePacketView.hpp"
 #include <array>
 
 namespace DNDS::Cauchy::CPU
 {
-    /// One receiver packet destination selected by the coupling facade.
-    struct InterfacePacketRow
-    {
-        index row = 0;
-        bool faceCenter = false;
-    };
-
     /// Borrowed donor samples and their resolved receiver component ordinals.
     /// The enclosing access scopes and component vectors must outlive the call.
     struct InterfacePacketFieldView
@@ -21,14 +15,6 @@ namespace DNDS::Cauchy::CPU
                            Runtime::UniformTableRows>
             values;
         SpanView<const index> receiverComponents;
-    };
-
-    /// Prepared row-major vector transform from donor axes to receiver axes.
-    struct InterfacePacketRotation
-    {
-        std::array<real, 9> donor{1, 0, 0, 0, 1, 0, 0, 0, 1};
-        std::array<real, 9> receiver{1, 0, 0, 0, 1, 0, 0, 0, 1};
-        bool donorActive = false, receiverActive = false;
     };
 
     /// Pure receiver-side arithmetic. Ownership, access leases, schema

@@ -11,6 +11,7 @@
 #include "Cauchy/Boundary/BoundaryInputs.hpp"
 #include "Cauchy/Discretization/FiniteVolumeStencil.hpp"
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -45,6 +46,25 @@ namespace DNDS::Cauchy::CPU
         real time = 0;
     };
 
+    struct BoundaryTraceScratch
+    {
+        CFV::Math::SmallMatrix basis;
+        std::vector<real> point, mean;
+        explicit BoundaryTraceScratch(index components)
+            : point(size_t(components)), mean(size_t(components)) {}
+    };
+    /// Each slot owns its chemistry lease and all mutable point scratch.
+    /// Operator setup resolves the evaluator property request before queuing.
+    struct BoundaryTraceWorkerScratch
+    {
+        PointEvaluator evaluator;
+        BoundaryTraceScratch scratch;
+        NumericalStatus status;
+        BoundaryTraceWorkerScratch(PointEvaluator value, index components)
+            : evaluator(std::move(value)), scratch(components) {}
+    };
+    NumericalStatus FillBoundaryTraces(const BoundaryTraceRequest &, SpanView<const BoundaryCondition>,
+                                       const BoundaryPointOperator &, SpanView<BoundaryTraceWorkerScratch>) noexcept;
     /// CPU physical producer context is explicit; it contains no array access
     /// or scheduling. All sampled field operands are frozen in request.
     NumericalStatus FillBoundaryTraces(const BoundaryTraceRequest &request,
@@ -89,9 +109,11 @@ namespace DNDS::Cauchy::CPU
     using BoundaryPointRows = Runtime::ArrayView<const BoundaryPoint, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>>;
     NumericalStatus ValidateInterfacePacketRows(Algebra::DofComponentView<const real> rows, BoundaryPointRows points,
                                                 ThermalView thermal, RANSStateView rans, EquationBlockReadView ransValues) noexcept;
+    /// Optional caller-owned worker slots enable independent contiguous scans
+    /// and an ordered FP sum. Empty slots retain the serial reference path.
     Vector3 AccumulateBoundaryForce(FiniteVolumeStencilView stencil,
                                     Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> values,
-                                    SpanView<const int> zones);
+                                    SpanView<const int> zones, SpanView<Vector3> workerSums = {});
     /// Check an alias between identical point layouts under retained scopes.
     NumericalStatus ValidateInterfaceAliasRows(Algebra::DofComponentView<const real> rows,
                                                BoundaryPointRows a, BoundaryPointRows b, ThermalView thermal) noexcept;

@@ -34,6 +34,7 @@ namespace DNDS::ODE
 
     private:
         using Binding = typename Operations::Binding;
+        Operations _operations;
         DITRCoefficients _coefficients;
         real _fraction, _theta, _time = 0, _inverseDt = 0, _dt = 0;
         LocalAction _local;
@@ -66,8 +67,8 @@ namespace DNDS::ODE
 
     public:
         DITRMethod(const State &prototype, real fraction = .55, real theta = .9146,
-                   DITRVariant variant = DITRVariant::U2R2, LocalAction local = {})
-            : _coefficients(fraction, variant), _fraction(fraction), _theta(theta), _local(std::move(local)),
+                   DITRVariant variant = DITRVariant::U2R2, LocalAction local = {}, Operations operations = {})
+            : _operations(std::move(operations)), _coefficients(fraction, variant), _fraction(fraction), _theta(theta), _local(std::move(local)),
               _initial(Operations::NewVector(prototype)), _middle(Operations::NewVector(prototype)),
               _initialRate(Operations::NewVector(prototype)), _middleRate(Operations::NewVector(prototype)),
               _endRate(Operations::NewVector(prototype)), _resOther(Operations::NewVector(prototype)), _middleBinding(_middle)
@@ -115,14 +116,14 @@ namespace DNDS::ODE
                 DNDS_check_throw_info(evaluate && std::isfinite(time) && std::isfinite(dt) && dt > 0 &&
                                           std::isfinite(1 / dt) && std::isfinite(time + dt) && time + dt > time,
                                       "invalid DITR method trial");
-                Operations::CheckCompatible(_initial, initial);
-                Operations::CheckCompatible(_initial, endpoint);
+                _operations.CheckCompatible(_initial, initial);
+                _operations.CheckCompatible(_initial, endpoint);
                 _middleBinding.Check(_middle);
                 Operations::RequireDistinct(initial, endpoint);
                 Operations::RequireDistinct(_middle, endpoint);
-                Operations::Copy(_initial, initial);
-                Operations::Copy(endpoint, initial);
-                Operations::Copy(_middle, initial);
+                _operations.Copy(_initial, initial);
+                _operations.Copy(endpoint, initial);
+                _operations.Copy(_middle, initial);
                 _endpointBinding.emplace(endpoint); });
             _time = time;
             _dt = dt;
@@ -130,8 +131,8 @@ namespace DNDS::ODE
             EvaluateChecked(evaluate, endpoint, _initialRate, time, 1);
             Local([&]
                   {
-                Operations::Copy(_middleRate, _initialRate);
-                Operations::Copy(_endRate, _initialRate); });
+                _operations.Copy(_middleRate, _initialRate);
+                _operations.Copy(_endRate, _initialRate); });
             _active = true;
         }
 
@@ -150,16 +151,16 @@ namespace DNDS::ODE
                 const auto &w = _coefficients.integration;
                 if (coupledStage == 0)
                 {
-                    Operations::LinearCombination(_resOther, (c[0] + _theta) * _inverseDt, _initial,
+                    _operations.LinearCombination(_resOther, (c[0] + _theta) * _inverseDt, _initial,
                                                   (c[1] - _theta) * _inverseDt, endpoint);
-                    Operations::Axpy(_resOther, c[2] + _theta * w[0], _initialRate);
-                    Operations::Axpy(_resOther, c[3] + _theta * w[2], _endRate);
+                    _operations.Axpy(_resOther, c[2] + _theta * w[0], _initialRate);
+                    _operations.Axpy(_resOther, c[3] + _theta * w[2], _endRate);
                     _otherBinding.emplace(endpoint); _otherRateBinding.emplace(_endRate);
                 }
                 else
                 {
-                    Operations::LinearCombination(_resOther, _inverseDt, _initial, w[0], _initialRate);
-                    Operations::Axpy(_resOther, w[1], _middleRate);
+                    _operations.LinearCombination(_resOther, _inverseDt, _initial, w[0], _initialRate);
+                    _operations.Axpy(_resOther, w[1], _middleRate);
                     _otherBinding.emplace(_middle); _otherRateBinding.emplace(_middleRate);
                 }
                 _sourceBinding.emplace(_resOther);
@@ -196,11 +197,11 @@ namespace DNDS::ODE
                     Operations::RequireDistinct(residual, *input);
                 const auto &c = _coefficients.interpolation;
                 const auto &w = _coefficients.integration;
-                Operations::LinearCombination(residual, (1 + c[0]) * _inverseDt, _initial, (c[1] - 1) * _inverseDt, endpoint);
-                Operations::Axpy(residual, -_inverseDt, _middle);
-                Operations::Axpy(residual, w[0] + c[2], _initialRate);
-                Operations::Axpy(residual, w[1], _middleRate);
-                Operations::Axpy(residual, w[2] + c[3], _endRate); });
+                _operations.LinearCombination(residual, (1 + c[0]) * _inverseDt, _initial, (c[1] - 1) * _inverseDt, endpoint);
+                _operations.Axpy(residual, -_inverseDt, _middle);
+                _operations.Axpy(residual, w[0] + c[2], _initialRate);
+                _operations.Axpy(residual, w[1], _middleRate);
+                _operations.Axpy(residual, w[2] + c[3], _endRate); });
             _nextCoupledStage = 0;
         }
         void RestoreActive(State &endpoint, ActiveControl control,
@@ -215,14 +216,14 @@ namespace DNDS::ODE
                                           control.dt > 0 && std::isfinite(1 / control.dt) &&
                                           std::isfinite(control.time + control.dt) && control.time + control.dt > control.time,
                                       "invalid restored DITR control");
-                Operations::CheckCompatible(_initial, endpoint);
+                _operations.CheckCompatible(_initial, endpoint);
                 Operations::RequireDistinct(_middle, endpoint);
-                Operations::Copy(_initial, initial);
-                Operations::Copy(_middle, middle);
-                Operations::Copy(_initialRate, initialRate);
-                Operations::Copy(_middleRate, middleRate);
-                Operations::Copy(_endRate, endRate);
-                Operations::Copy(_resOther, resOther);
+                _operations.Copy(_initial, initial);
+                _operations.Copy(_middle, middle);
+                _operations.Copy(_initialRate, initialRate);
+                _operations.Copy(_middleRate, middleRate);
+                _operations.Copy(_endRate, endRate);
+                _operations.Copy(_resOther, resOther);
                 _endpointBinding.emplace(endpoint); });
             _time = control.time;
             _dt = control.dt;

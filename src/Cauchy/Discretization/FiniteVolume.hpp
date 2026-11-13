@@ -8,6 +8,7 @@
 #include "DNDS/Core/OptionalRef.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Cauchy/Boundary/BoundaryInputs.hpp"
+#include "Cauchy/IO/PreparedVisualization.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
@@ -17,6 +18,7 @@ namespace DNDS::Geom
     class BoundaryPatch;
 }
 #include "Geom/Access/EntityWorkPartition.hpp"
+#include "Geom/Access/MeshAccess.hpp"
 #include <array>
 #include <functional>
 #include <map>
@@ -175,6 +177,9 @@ namespace DNDS::Cauchy
             BoundaryTarget target = BoundaryTarget::Quadrature;
             bool exterior = false, repairRANS = true;
             real time = 0;
+            /// Diagnostic surface sampling always permits the existing
+            /// mean-state fallback, independently of production PP switches.
+            bool forcePointFallback = false;
         };
         /// Queued boundary producer used by spatial/mean-gradient operators.
         /// Retains geometry and every operand through completion. Status is
@@ -250,9 +255,14 @@ namespace DNDS::Cauchy
         {
             std::reference_wrapper<Workspace> workspace;
             OptionalRef<const ReconstructionState> reconstruction;
+            /// Optional retained execution lane for this synchronous operator.
+            /// CUDA requires it; the context owner manages its engine/resources.
+            std::optional<Runtime::ExecutionStream> stream;
             explicit JacobianContext(Workspace &scratch) : workspace(scratch) {}
             JacobianContext(const ReconstructionState &state, Workspace &scratch)
                 : workspace(scratch), reconstruction(state) {}
+            JacobianContext(const ReconstructionState &state, Workspace &scratch, Runtime::ExecutionStream lane)
+                : workspace(scratch), reconstruction(state), stream(std::move(lane)) {}
         };
         /// Reserved synchronous warm-guess publication. Construction validates
         /// every input and retains its reads, destination writes and workspace.
@@ -286,12 +296,15 @@ namespace DNDS::Cauchy
                 commit();
             }
         };
-        /// Reservation is memory-only. With collectiveChecks=false it performs
-        /// no MPI; the caller must agree all reservations before any Commit.
+        /// Reservation validates inputs (including read-only backend kernels)
+        /// and acquires access without changing destinations. With
+        /// collectiveChecks=false it performs no MPI; the caller must agree
+        /// all reservations before any Commit.
         /// Simulation uses that mode for one cross-domain publication preflight.
         ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<ReconstructionState> state, const EquationDofs &guess,
                                                            OptionalRef<const Runtime::Array<real>> limitedVRHistory = {},
-                                                           bool collectiveChecks = true) const;
+                                                           bool collectiveChecks = true,
+                                                           std::optional<Runtime::ExecutionStream> stream = {}) const;
         /// Allocate durable variational coefficients and their communication
         /// bindings independently of reusable scratch. Direct P0/P1 allocate
         /// neither: their modal slots stay empty and physical gradients live
@@ -395,24 +408,31 @@ namespace DNDS::Cauchy
         /// lease preflight precedes every write. No halo transfer/mean mutation.
         /// Caller joins workspace work and supplies a distinct snapshot.
         /// Requires a polynomial plan; direct P0/P1 rejects before any write.
+        /// CUDA requires an explicit stream. With a stream, inline/worker CPU
+        /// and CUDA share reserved submission and synchronous completion. No
+        /// payload staging occurs; source buffers must already match placement.
         void RestoreReconstructionGuess(ReconstructionState &state, const EquationDofs &guess,
-                                        OptionalRef<const Runtime::Array<real>> limitedVRHistory = {}) const;
+                                        OptionalRef<const Runtime::Array<real>> limitedVRHistory = {},
+                                        std::optional<Runtime::ExecutionStream> stream = {}) const;
         /// Copy one complete durable polynomial publication, including the
         /// finalized limiter/PP coefficients and LVR history. Used when a new
         /// DITR midpoint starts from the accepted endpoint publication while
         /// both stages continue to share scratch.
         void CopyReconstructionState(ReconstructionState &destination,
-                                     const ReconstructionState &source) const;
+                                     const ReconstructionState &source,
+                                     std::optional<Runtime::ExecutionStream> stream = {}) const;
         /// Exact checkpoint restore of both warm and finalized coefficient
         /// publications. Unlike RestoreReconstructionGuess this never infers or
         /// recomputes limiter/PP output from the warm state.
         void RestoreReconstructionState(ReconstructionState &state,
                                         const EquationDofs &warm, const EquationDofs &finalized,
-                                        OptionalRef<const Runtime::Array<real>> limitedVRHistory = {}) const;
+                                        OptionalRef<const Runtime::Array<real>> limitedVRHistory = {},
+                                        std::optional<Runtime::ExecutionStream> stream = {}) const;
         std::optional<Runtime::Array<real>> LimitedVRHistory(const ReconstructionState &state) const;
         std::optional<Runtime::Array<real>> LimitedVRAlpha(const Workspace &workspace) const;
         /// Local reset; caller coordinates failures and joins workspace work.
-        void ResetReconstruction(ReconstructionState &state, Workspace &workspace) const;
+        void ResetReconstruction(ReconstructionState &state, Workspace &workspace,
+                                 std::optional<Runtime::ExecutionStream> stream = {}) const;
         /// Retain finalized modal coefficients. Direct P0/P1 rejects: its
         /// gradients are temporary fields, not modal reconstruction storage.
         FinalizedReconstruction AcquireFinalizedReconstruction(const ReconstructionState &state) const;
@@ -474,8 +494,10 @@ namespace DNDS::Cauchy
             /// Bind a known packet before submitting boundary-consuming work.
             /// Synchronous execution acquires packet reads; queued execution
             /// retains handles and validates publication after caller ordering.
-            /// This is not a promise for a packet whose publication is still
-            /// unknown on the controller. No MPI or hidden wait is performed.
+            /// CPU queued execution also accepts the stable PendingInputs of
+            /// an interface round: its event and publication callback must
+            /// precede consumption. It cannot bind unknown future allocations.
+            /// No MPI or hidden wait is performed.
             void BindBoundary(const BoundaryInputs &input);
             void Apply(CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
             /// Enqueue the same core/dependent protocol. Both CPU and CUDA use
@@ -658,6 +680,9 @@ namespace DNDS::Cauchy
         /// an empty borrow and construct no hidden Taylor/VR plan.
         OptionalRef<const CFV::VariationalReconstructionPlan> PolynomialReconstruction() const;
         const Geom::UnstructuredMesh &Mesh() const;
+        /// Managed host geometry access for setup/reporting operators. Retains
+        /// the mesh generation and requested arrays; no unmanaged borrow escapes.
+        Geom::MeshReadAccess AcquireMeshRead(Geom::MeshReadRequirements requirements) const;
         const RigidMotion &Motion() const;
         std::vector<BoundaryPoint> BoundaryPoints() const;
         /// Retain canonical quadrature-point geometry for an operator submission.
@@ -673,17 +698,23 @@ namespace DNDS::Cauchy
         bool HasInterfaces() const;
         BoundaryInputs BuildBoundaryInputs(
             std::optional<Physics::Chemistry::ChemicalWorkerPool> workers =
-                std::nullopt) const;
+                std::nullopt,
+            std::optional<Runtime::ExecutionStream> stream = std::nullopt) const;
         /// Deep-copy one published packet into independent immutable storage.
         /// Use this when several physical/coupled stages must coexist while the
         /// interface coordinator reuses its mutable incoming allocation.
-        BoundaryInputs FreezeBoundaryInputs(const BoundaryInputs &input) const;
+        BoundaryInputs FreezeBoundaryInputs(const BoundaryInputs &input,
+                                            std::optional<Runtime::ExecutionStream> stream = std::nullopt) const;
         /// Synchronous local point operations, no MPI. Begin withdraws the
         /// publication; publish checks complete admissible interface rows only.
-        void BeginBoundaryUpdate(BoundaryInputs &input) const;
+        /// With a supplied lane, clearing is queued there and callers order
+        /// subsequent writers on that lane. Without it, clearing is synchronous.
+        void BeginBoundaryUpdate(BoundaryInputs &input,
+                                 std::optional<Runtime::ExecutionStream> stream = std::nullopt) const;
         void PublishBoundaryInputs(
             BoundaryInputs &input, real time, StateEpoch epoch = {},
-            std::vector<BoundaryInterfaceSource> sources = {}) const;
+            std::vector<BoundaryInterfaceSource> sources = {},
+            std::optional<Runtime::ExecutionStream> stream = std::nullopt) const;
         void ValidateBoundaryInputs(const BoundaryInputs &input, real time) const;
         /// Metadata/provenance check only: grants no payload access/readiness.
         /// Queued operators call this after the packet event under declared
@@ -757,7 +788,10 @@ namespace DNDS::Cauchy
         /// A point failure can leave partial setup output; discard it on error.
         void InitializeField(EquationDofs &state, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = {}) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
-        std::array<FlowState, 3> Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
+        /// One-shot analytic error report. A persistent FlowErrorOperator reuses
+        /// reference quadrature across reports; CUDA callers supply their lane.
+        std::array<FlowState, 3> Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time,
+                                       std::optional<Runtime::ExecutionStream> stream = {}) const;
         /// Prepare the complete equation mean-state predicate. Mixtures require
         /// their retained worker pool exactly once here; subsequent row checks
         /// perform no EOS inversion or worker acquisition.
@@ -779,8 +813,8 @@ namespace DNDS::Cauchy
         /// this call evaluates neither chemical rates nor the physical RHS.
         /// A supplied interface dependency is imported before boundary reads;
         /// flow/mixture auxiliary core work independent of the interface can
-        /// run first. The current two-equation gradient provider has an explicit
-        /// host preparation boundary. Return is quiescent for all providers.
+        /// run first. Two-equation gradient/auxiliary work shares the enclosing
+        /// schedule and mean-halo ordering. Return is quiescent for all providers.
         void PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, AuxiliaryValues &auxiliary,
                                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
         void PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, AuxiliaryValues &auxiliary,
@@ -791,9 +825,11 @@ namespace DNDS::Cauchy
         /// publication from a stage's durable finalized polynomial. This does
         /// not touch auxiliary face/cell signals, so a DITR endpoint can retain
         /// its RHS-refined auxiliary packet after another stage used shared
-        /// reconstruction scratch.
+        /// reconstruction scratch. Sampling is submitted on the supplied
+        /// backend stream, then joined before publishing its provenance.
         void RefreshCorrectionSource(EquationDofs &state, ReconstructionState &reconstruction,
-                                     Workspace &workspace, real time) const;
+                                     Workspace &workspace, Runtime::EagerEngine &engine,
+                                     const Runtime::ExecutionStream &stream, real time) const;
         /// Five-component affine bound retained for specialized perfect-gas
         /// flow kernels and their compatibility tests. Complete-equation
         /// orchestration uses PrepareAdmissibility/Admissible instead.
@@ -814,15 +850,28 @@ namespace DNDS::Cauchy
         /// Per-quadrature outputs include the actual numerical pressure, RANS
         /// stress and viscous traction; no separate EOS/flux recomputation.
         /// Workspace access is controller-serialized; do not read during Evaluate.
-        Vector3 LastBoundaryForce(const Workspace &workspace, const std::vector<int> &zones) const;
+        /// Production callers supply their compute lane. Standalone synchronous
+        /// CPU callers may omit it; resident CUDA input requires an explicit lane.
+        Vector3 LastBoundaryForce(const Workspace &workspace, const std::vector<int> &zones,
+                                  std::optional<Runtime::ExecutionStream> stream = {}) const;
         /// All conservative blocks plus mean thermodynamic/species fields and
         /// reconstructed boundary traces. Reads an observation workspace only;
         /// does not modify the production reconstruction or any state values.
         void WriteVisualization(const EquationDofs &state, const ReconstructionState &reconstruction, const Workspace &workspace,
                                 const std::string &prefix, real time, int hdfDeflateLevel,
                                 const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const;
+        /// Complete numerical observation before returning immutable host file
+        /// input. The returned object retains geometry, not solver fields.
+        PreparedVisualization PrepareVisualization(const EquationDofs &, const ReconstructionState &, const Workspace &,
+                                                   real time, int hdfDeflateLevel,
+                                                   const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const;
 
     private:
+        /// Output adapter: resident boundary tracing/properties, followed by an
+        /// explicit host I/O snapshot. Never downloads coefficients for CPU
+        /// sampling or evaluates point physics inside the file writer.
+        std::string PrepareDeviceSurfaceVisualization(const EquationDofs &, const ReconstructionState &, const Workspace &,
+                                                      real, Runtime::EagerEngine &, const Runtime::ExecutionStream &) const;
         /// Resolve the retained interface publication after the canonical
         /// equation-level provenance check. Every equation packet uses this one
         /// leaf input.
@@ -833,17 +882,32 @@ namespace DNDS::Cauchy
         /// numerical CPU/CUDA dispatch does not alter the enclosing schedule.
         void SubmitMeanGradientBoundary(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                         const EquationDofs &, MeanGradients &, real time,
-                                        std::shared_ptr<PointEvaluator>,
+                                        std::optional<Physics::Chemistry::ChemicalWorkerPool>,
                                         OptionalRef<const Runtime::Array<real>> incoming = {}) const;
+        /// Queue the gradient-dependent auxiliary segment. An enclosing FV
+        /// schedule may already have ordered the mean halo; exchangeMeans=false
+        /// reuses that ordering rather than launching a second transfer. Deferred
+        /// boundary inputs expose stable buffers and must have an imported event.
+        AuxiliaryPreparation QueueMeanGradientAuxValues(EquationDofs &, AuxiliaryValues &, MeanGradients &,
+                                                        Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                                        const Runtime::ExecutionStream &, real time,
+                                                        std::optional<Physics::Chemistry::ChemicalWorkerPool>,
+                                                        AuxiliaryInputs, bool exchangeMeans) const;
+        /// Publish the queued gradient/auxiliary generations after completion.
+        void FinishMeanGradientAuxValues(const EquationDofs &, AuxiliaryValues &, MeanGradients &,
+                                         AuxiliaryPreparation &) const;
         /// Established fixed perfect-gas Roe leaf selected by the equation
         /// Jacobian resolver. It is not a second public state API.
         void PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
                                   const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
                                   JacobianPreparation controls, real time) const;
+        void PrepareDeviceJacobian(const EquationDofs &, const AuxiliaryValues &, const Runtime::Array<real> &inversePseudoTime,
+                                   LinearProblemContext &, JacobianPreparation, real time, const JacobianContext &) const;
         ReconstructionRestore ReserveReconstructionRestoreImpl(ReconstructionState &state, const EquationDofs &guess,
                                                                OptionalRef<const Runtime::Array<real>> limitedVRHistory,
                                                                std::shared_ptr<ReconstructionState> retained, bool collectiveChecks = true,
-                                                               OptionalRef<const EquationDofs> finalized = {}) const;
+                                                               OptionalRef<const EquationDofs> finalized = {},
+                                                               std::optional<Runtime::ExecutionStream> stream = {}) const;
         std::shared_ptr<Workspace> BuildWorkspaceImpl(EquationDofs &state,
                                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                                                       bool meanOnly, WorkspaceOptions options = WorkspaceOptions()) const;

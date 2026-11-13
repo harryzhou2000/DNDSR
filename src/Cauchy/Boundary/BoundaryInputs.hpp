@@ -5,12 +5,14 @@
 #include "Cauchy/Core/StateEpoch.hpp"
 #include "Geom/Spatial/ElementGeometry.hpp"
 #include <optional>
+#include <atomic>
 
 namespace DNDS::Cauchy
 {
     class FiniteVolume;
     class InterfaceDonorPublication;
     class ThermalPolicy;
+    class MeanStateCheck;
     namespace Detail
     {
         struct BoundaryPointLayout;
@@ -53,8 +55,12 @@ namespace DNDS::Cauchy
     /// publication; fill/transfer every required row, then PublishBoundaryInputs.
     /// This catches incomplete updates without a row-sized coverage bitmap.
     /// The packet adds no communication to a domain by itself. Copies share
-    /// payload storage but retain their actual publication identity; mutation
-    /// invalidates old copies through native allocation/shape generations.
+    /// payload storage and the publication slot of one update round. A copy
+    /// obtained during that round may declare queued array reads before the
+    /// producer completes; it must import the producer event and publication
+    /// dependency before consuming values. BeginBoundaryUpdate installs a new
+    /// slot, so old copies never silently acquire a later round's identity.
+    /// Mutation invalidates old copies through allocation/shape generations.
     struct BoundaryInputs
     {
     private:
@@ -64,6 +70,9 @@ namespace DNDS::Cauchy
         EquationPropertyKey _property;
         std::shared_ptr<const ThermalPolicy> _thermal;
         std::shared_ptr<const Detail::BoundaryPointLayout> _layout;
+        /// Optional resident validation workspaces; shared packet copies refer
+        /// to the same serial publication round, never concurrent checks.
+        std::shared_ptr<MeanStateCheck> _quadratureCheck, _faceCheck;
         struct Publication
         {
             real time;
@@ -71,8 +80,17 @@ namespace DNDS::Cauchy
             std::vector<uint64_t> versions, shapes, faceVersions, faceShapes;
             std::vector<BoundaryInterfaceSource> sources;
         };
-        std::shared_ptr<const Publication> _publication;
-        bool _updating = false;
+        struct PublicationSlot
+        {
+            // Atomically installed once, after all writes and validation.
+            // This is metadata publication, not an array readiness mechanism.
+            std::shared_ptr<const Publication> value;
+        };
+        std::shared_ptr<PublicationSlot> _publication;
+        std::shared_ptr<const Publication> Published() const
+        {
+            return _publication ? std::atomic_load(&_publication->value) : nullptr;
+        }
         BoundaryInputs(EquationDofs quadrature, EquationDofs faceCenters,
                        EquationPropertyKey property,
                        std::shared_ptr<const ThermalPolicy> thermal)
@@ -86,7 +104,8 @@ namespace DNDS::Cauchy
         /// separately rejects a write or shape edit after publication.
         bool SamePublication(const BoundaryInputs &other) const
         {
-            return _publication && _publication == other._publication;
+            const auto publication = Published();
+            return publication && publication == other.Published();
         }
         /// Managed complete equation rows. Mutable access is intentional for a
         /// begun controller update; any later write invalidates publication by
@@ -99,21 +118,25 @@ namespace DNDS::Cauchy
         /// these queries never refresh a field or assert current donor state.
         real Time() const
         {
-            DNDS_check_throw_info(_publication, "boundary packet is unpublished");
-            return _publication->time;
+            const auto publication = Published();
+            DNDS_check_throw_info(publication, "boundary packet is unpublished");
+            return publication->time;
         }
         StateEpoch Epoch() const
         {
-            DNDS_check_throw_info(_publication, "boundary packet is unpublished");
-            return _publication->epoch;
+            const auto publication = Published();
+            DNDS_check_throw_info(publication, "boundary packet is unpublished");
+            return publication->epoch;
         }
         /// Immutable source identities for an interface-controller packet.
         /// A manually prepared physical/test packet may have no sources.
         const std::vector<BoundaryInterfaceSource> &InterfaceSources() const
         {
-            DNDS_check_throw_info(_publication,
+            const auto publication = Published();
+            DNDS_check_throw_info(publication,
                                   "boundary packet is unpublished");
-            return _publication->sources;
+            // The slot retains this immutable publication for its lifetime.
+            return publication->sources;
         }
     };
 }

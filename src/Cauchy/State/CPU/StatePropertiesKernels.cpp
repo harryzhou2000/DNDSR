@@ -1,6 +1,18 @@
 #include "Cauchy/State/CPU/StatePropertiesKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 namespace DNDS::Cauchy::CPU
 {
+    NumericalStatus ValidateMeanState(EquationLayoutView<const real> layout, AdmissibilityView bounds,
+                                      Runtime::ArrayView<const uint8_t, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> activeRows) noexcept
+    {
+        return DispatchCPUEquationLayouts([&](auto values) -> NumericalStatus
+                                          { return OMP::ForRowsStatus(0, values.RowCount(), [&](index iCell) -> NumericalStatus
+                                                                      {
+                if (activeRows.RowCount() && !activeRows(iCell, 0)) return {};
+                if (!bounds.Admissible(ThermalAdmissibilityDetail::PointRow<decltype(values)>{values, iCell}))
+                    return {NumericalError::InvalidState, 1, iCell};
+                return {}; }); }, layout);
+    }
     NumericalStatus RefreshDerivedRows(EquationBlockArrayView<const real> rows, EquationBlockArrayView<const real> species,
                                        Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> values,
                                        std::array<int, DerivedQuantityNumber> columns, bool useTemperatureGuess, PointEvaluator &evaluator) noexcept

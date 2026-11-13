@@ -237,6 +237,16 @@ namespace DNDS::Algebra
             _data->active = true;
             return Operation(_data, std::move(operation), std::move(epoch), std::move(source));
         }
+        /// Import the producer prefix before starting the halo on another lane.
+        /// Native providers keep this dependency queued; portable MPI observes
+        /// that prefix through Begin's provider-specific readiness bridge.
+        Operation BeginAfter(Epoch epoch, Runtime::EagerEngine &engine,
+                             const Runtime::ExecutionStream &communication,
+                             Runtime::StreamEvent producer, bool checks = false)
+        {
+            communication.WaitFor(std::move(producer));
+            return Begin(std::move(epoch), engine, communication, checks);
+        }
         /// Begin on a dedicated communication lane after the owned payload is
         /// CPU-visible (MPI), or already ordered on that lane (native provider).
         /// Use EnqueueWait/EnqueuePublication before ghost consumers; native

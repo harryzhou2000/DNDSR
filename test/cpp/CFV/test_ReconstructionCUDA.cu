@@ -579,6 +579,7 @@ TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate d
         auto deviceMean = metrics.BuildField(R::RowLayout::Dense(0, components), device);
         auto deviceInput = reduced.BuildCoefficients(components);
         auto deviceWork = reduced.BuildWorkspace(components, std::vector<I>{1});
+        auto tensorWork = reduced.BuildWorkspace(components, std::vector<I>{1});
         auto deviceBoundary = reduced.PlaceBoundaryValues(boundary);
         deviceMean.Owned().CopyFrom(mean.Owned(), context).Wait();
         deviceMean.Ghost().CopyFrom(mean.Ghost(), context).Wait();
@@ -598,7 +599,18 @@ TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate d
                                                C::ReconstructionRegion::HaloDependent, C::ReconstructionDeviceKernel::FP32);
             engine.Synchronize();
             reduced.CheckStatus(deviceWork);
-            Compare(work.temporary, deviceWork.temporary, 2e-5);
+            Equal(work.temporary, deviceWork.temporary, 2e-5);
+            if (reduced.SupportsKernel(C::ReconstructionDeviceKernel::TF32TensorCore))
+            {
+                // Deliberately a different arithmetic policy. Compare the
+                // same frozen inputs with the FP64 oracle as well as recording
+                // a stricter FP32 reference above; this is not a finite-only gate.
+                reduced.SubmitReconstructionIterTo(engine, stream, deviceMean, deviceInput, tensorWork, deviceBoundary,
+                                                   C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::TF32TensorCore);
+                engine.Synchronize();
+                reduced.CheckStatus(tensorWork);
+                Equal(work.temporary, tensorWork.temporary, 3e-3);
+            }
             cpu.CommitReconstruction(input, work);
         }
         auto target = cpu.BuildCoefficients(components), deviceTarget = reduced.BuildCoefficients(components);
@@ -620,7 +632,7 @@ TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate d
                                                   deviceTarget, devicePenalty);
         engine.Synchronize();
         reduced.CheckStatus(deviceWork);
-        Compare(work.temporary, deviceWork.temporary, 2e-5);
+        Equal(work.temporary, deviceWork.temporary, 2e-5);
     }
 }
 

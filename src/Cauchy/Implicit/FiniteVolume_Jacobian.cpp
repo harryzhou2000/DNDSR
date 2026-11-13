@@ -6,6 +6,7 @@
 #include "Cauchy/Physics/PointProperties.hpp"
 #include "Cauchy/Physics/PhysicalFlux.hpp"
 #include "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp"
+#include "Cauchy/Physics/PointWorkerContexts.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 
 namespace DNDS::Cauchy
@@ -136,10 +137,21 @@ namespace DNDS::Cauchy
         Metrics().Validate();
         _data->partition.Validate();
         prototype.RequireSchema(_data->equation.Schema());
-        _data->equation.ResolveKernelProfile(prototype.Device());
-        DNDS_check_throw_info(prototype.Space().Same(Metrics().Space()), "equation linear prototype row space differs");
+        if (prototype.Device() == R::Device::Host())
+            _data->equation.ResolveKernelProfile(prototype.Device());
+        else
+            PerfectGasSpatialParameters::FromEquation(_data->equation, Metrics().Dimension()).Validate(int(prototype.ComponentNumber()));
+        DNDS_check_throw_info(prototype.Space().Same(Metrics().Space()) && prototype.Device() == Device(),
+                              "equation linear prototype row space or placement differs");
+        LinearSweepPartitions partitions;
+        if (prototype.Device() == R::Device::Host() && Mesh().NLocalParts() > 0)
+        {
+            for (int part = 0; part < Mesh().NLocalParts(); ++part)
+                partitions.starts.push_back(Mesh().LocalPartStart(part));
+            partitions.starts.push_back(Mesh().LocalPartEnd(Mesh().NLocalParts() - 1));
+        }
         return std::make_shared<LinearProblemContext>(prototype.Space(), prototype.ComponentNumber(),
-                                                      _data->jacobianColumns->CopyColumns(), _data->partition.Core(), diagonal, offDiagonal);
+                                                      _data->jacobianColumns->CopyColumns(), _data->partition.Core(), diagonal, offDiagonal, prototype.Device(), std::move(partitions));
     }
     void FiniteVolume::PrepareJacobian(const EquationDofs &state, const AuxiliaryValues &auxiliary, const R::Array<real> &inversePseudoTime,
                                        LinearProblemContext &output, JacobianPreparation controls, real time, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
@@ -147,6 +159,12 @@ namespace DNDS::Cauchy
     {
         const auto *sourceWorkspace = context ? &context->workspace.get() : nullptr;
         ValidateAuxValues(state, auxiliary, time);
+        if (state.Device() != R::Device::Host())
+        {
+            DNDS_check_throw_info(context && !workers, "device Jacobian requires its workspace/lane context and no CPU chemical workers");
+            PrepareDeviceJacobian(state, auxiliary, inversePseudoTime, output, controls, time, *context);
+            return;
+        }
         if (controls.roeDissipation && sourceWorkspace && HasRoeJacobianKernel(*sourceWorkspace))
         {
             DNDS_check_throw_info(!workers && state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
@@ -190,7 +208,8 @@ namespace DNDS::Cauchy
             if (sourceWorkspace)
                 ValidateEquationSourceJacobian(state, *context, time);
         }
-        auto evaluator = _data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {rans, false, true, chemical, chemical});
+        auto pointWorkers = MakeCPUPointWorkers<CPU::EquationJacobianWorker>(_data->equation, workers,
+                                                                             {rans, false, true, chemical, chemical}, nv);
         auto snapshot = std::make_shared<JacobianData>(*this, state, output, controls, time);
         std::optional<JacobianData::WriteAccess> snapshotWrite(std::in_place, *snapshot);
         const auto input = state.ReadWithGhost();
@@ -260,8 +279,10 @@ namespace DNDS::Cauchy
             bool ownedPropertiesPrepared = false;
             if ((chemical || rans) && sourceWorkspace)
                 ownedPropertiesPrepared = AddEquationSourceJacobian(state, *context, *diagonal,
-                                                                    output.DiagonalMode(), controls.residualScale, evaluator, std::cref(request.linearization));
-            RequireNumericalSuccess(CPU::CompleteEquationJacobian(request, _data->boundaryPoint, evaluator, ownedPropertiesPrepared), "complete equation Jacobian");
+                                                                    output.DiagonalMode(), controls.residualScale, pointWorkers.front().evaluator, std::cref(request.linearization));
+            RequireNumericalSuccess(CPU::CompleteEquationJacobian(request, _data->boundaryPoint,
+                                                                  {pointWorkers.data(), index(pointWorkers.size())}, ownedPropertiesPrepared),
+                                    "complete equation Jacobian");
         }
         catch (...)
         {

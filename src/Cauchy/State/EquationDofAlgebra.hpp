@@ -2,15 +2,23 @@
 
 #include "Cauchy/State/EquationViews.hpp"
 #include "DNDS/Algebra/LocalProducts.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
 #include <optional>
 
 namespace DNDS::Cauchy
 {
-    /// Semantic adapter over DNDS pointwise algebra. These synchronous CPU
-    /// operations touch owned values only, with no halo/collective or global
+    /// Placement-copy allocation policy. Page locking is explicit, accounted
+    /// and valid only for a host destination; there is no pageable fallback.
+    struct EquationSnapshotOptions
+    {
+        bool pinnedHost = false;
+    };
+    /// Semantic adapter over DNDS pointwise algebra. Both synchronous CPU and
+    /// queued backend operations touch owned values only, with no halo/collective or global
     /// repacking. All output reservations precede numerical writes. Binary
     /// operands must have distinct allocations; Scale is explicitly in-place.
-    /// Caller serializes state rebinding; run/move the state owners with CPU work.
+    /// Caller serializes state rebinding. Queued operations retain numeric
+    /// allocation handles; MPI resource ownership stays with the controller.
     struct EquationDofOperations
     {
         using State = EquationDofs;
@@ -30,6 +38,16 @@ namespace DNDS::Cauchy
             }
             return prototype.RebindFields(std::move(fields));
         }
+        /// Explicit setup/I/O allocation on another device. Preserves physical
+        /// layouts, logical bindings and row identity; neither owned nor ghost
+        /// values are initialized. This is never an arithmetic fallback.
+        static State NewVectorOn(const State &prototype, Runtime::Device device);
+        /// Synchronous owned-value snapshot/placement transfer. Host snapshots
+        /// are deep copies even for CPU input. Ghosts are deliberately not copied
+        /// or marked fresh. The caller must first order/drain source producers;
+        /// context identifies the device stream for a CUDA transfer.
+        static State CopyOwnedTo(const State &source, Runtime::Device device, Runtime::ExecutionContext context,
+                                 EquationSnapshotOptions options = {});
         static void CheckCompatible(const State &prototype, const State &state)
         {
             prototype.RequireCompatible(state);
@@ -73,6 +91,8 @@ namespace DNDS::Cauchy
         };
 
     private:
+        static void SubmitApply(Runtime::EagerEngine &, const Runtime::ExecutionStream &, Algebra::PointwiseOperation,
+                                State &, OptionalRef<const State>, OptionalRef<const State>, real, real);
         static bool SameOwnedBinding(const State &a, const State &b)
         {
             for (index iBlock = 0; iBlock < a.BlockNumber(); ++iBlock)
@@ -129,6 +149,40 @@ namespace DNDS::Cauchy
         }
 
     public:
+        /// Synchronous publication using scopes already reserved across all
+        /// participating domains. Launches through the same engine lane on
+        /// inline CPU, worker CPU and CUDA, then drains before returning.
+        /// Scopes must belong to x/out and were acquired on stream.Context()
+        /// after prior queued work completed. They retain all allocations until
+        /// completion; this function neither rebinds nor reacquires arrays.
+        /// Intended for accepted-state publication, not iterative arithmetic.
+        static void CopyReserved(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                 State &out, const State &x, State::WriteScope &, State::ReadScope &);
+        /// Queued owned-only algebra. All physical allocations are reserved in
+        /// one operation; segmented/general CPU layouts keep logical component
+        /// indexing. CUDA currently requires the declared combined-AoS profile.
+        /// Inputs and output are distinct except the explicit Scale/Axpy target.
+        static void Copy(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, State &out, const State &x)
+        {
+            SubmitApply(engine, stream, Algebra::PointwiseOperation::Copy, out, std::cref(x), {}, 0, 0);
+        }
+        static void Fill(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, State &out, real value)
+        {
+            SubmitApply(engine, stream, Algebra::PointwiseOperation::Fill, out, {}, {}, value, 0);
+        }
+        static void Scale(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, State &out, real value)
+        {
+            SubmitApply(engine, stream, Algebra::PointwiseOperation::Scale, out, {}, {}, value, 0);
+        }
+        static void Axpy(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, State &out, real value, const State &x)
+        {
+            SubmitApply(engine, stream, Algebra::PointwiseOperation::Axpy, out, std::cref(x), {}, value, 0);
+        }
+        static void LinearCombination(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream,
+                                      State &out, real a, const State &x, real b, const State &y)
+        {
+            SubmitApply(engine, stream, Algebra::PointwiseOperation::Combination, out, std::cref(x), std::cref(y), a, b);
+        }
         static void Copy(State &out, const State &x) { Apply(Algebra::PointwiseOperation::Copy, out, &x, nullptr, 0); }
         static void CopyGuess(State &out, const State &x) { Copy(out, x); }
         static void Fill(State &out, real value) { Apply(Algebra::PointwiseOperation::Fill, out, nullptr, nullptr, value); }

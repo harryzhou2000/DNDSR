@@ -11,6 +11,7 @@ namespace DNDS::Cauchy::CPU
 {
     using GradientReadView = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using GradientWriteView = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
+    using GradientScratchView = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows>;
     struct GradientLimiterRequest
     {
         FiniteVolumeStencilView stencil;
@@ -27,6 +28,9 @@ namespace DNDS::Cauchy::CPU
     /// Componentwise Barth limiting of physical gradients, with periodic vector
     /// and spatial-frame transforms. Read inputs and write outputs are distinct.
     void LimitPhysicalGradients(const GradientLimiterRequest &request);
+    /// Each slot supplies six component-wide scratch rows. The operator owns
+    /// and leases these disjoint arrays before submitting the kernel.
+    void LimitPhysicalGradients(const GradientLimiterRequest &, SpanView<const GradientScratchView> workers);
     struct GradientPositivityRequest
     {
         FiniteVolumeStencilView stencil;
@@ -46,9 +50,17 @@ namespace DNDS::Cauchy::CPU
         index limited = 0;
         real minimum = 1;
     };
+    struct GradientPositivityWorkerScratch
+    {
+        /// At least max-cell-quadrature-count rows by component count.
+        GradientScratchView samples;
+        NumericalResult<GradientPositivityResult> result{GradientPositivityResult{}};
+    };
     /// Cauchy PP policy: locked flow/species beta, separate RANS repair and final
     /// clipped-composition EOS/T verification. Raw species gradients are retained.
     NumericalResult<GradientPositivityResult> LimitPositivePhysicalGradients(const GradientPositivityRequest &request) noexcept;
+    NumericalResult<GradientPositivityResult> LimitPositivePhysicalGradients(const GradientPositivityRequest &,
+                                                                             SpanView<GradientPositivityWorkerScratch>) noexcept;
     /// Pure perfect-gas mean conversion; caller has frozen physics selection.
     void FillPrimitiveMeans(GradientReadView input, GradientWriteView output, const PerfectGas &gas);
 }

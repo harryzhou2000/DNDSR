@@ -228,3 +228,22 @@ certifies the completed transfer, not an independent assertion that all remote
 producers chose the right physical stage. Solver orchestration supplies that
 association. Outputs of numerical operations continue to guarantee owned values
 only; no output halo exchange is implicit.
+
+## Queued local product scratch
+
+`Algebra::LocalProductWorkspace` reserves scalar result slots and bounded tree
+scratch for weighted dot products and finiteness checks. It has no communicator
+or halo policy. `SubmitProduct` computes `sum((x*inverseScale)*(y*inverseScale))`
+over logical owned entries, including noncompact table strides. The inverse
+scales are immutable during queued use; changing them is an explicit setup
+boundary. Identical scales reuse the resident buffer.
+
+All operands and scratch are retained by the eager record. Reused partials
+require one ordered lane or explicit dependencies between lanes. CPU uses
+canonical row/component summation; CUDA uses deterministic two-level trees,
+without floating-point atomics. The results need not be bitwise equal across
+backends. `SubmitFinite` uses a logical AND and reports true on empty ranks.
+`ReadResults` is an explicit host observation after the caller drains the lane;
+only the small result buffer is copied. Numerical MPI reductions remain the
+caller's responsibility. Plan 61 integration/tests are source-only pending
+the grouped Phase C validation.

@@ -56,6 +56,8 @@ namespace
 TEST_CASE("CUDA physical-dt forecast ignores RANS bounds and reports invalid means")
 {
     C::EquationSettings settings;
+    settings.transport = "NewtonianFourier";
+    settings.viscosity = .001;
     settings.rans.model = "KOmegaSST";
     const auto equation = C::EquationSystem::Resolve(settings);
     C::ThermalPolicy thermal(equation, 1e-6, 1e-6, 0, 1e-6);
@@ -134,6 +136,8 @@ TEST_CASE("CUDA polynomial positivity matches CPU flow compression and independe
         {
             INFO("model=" << model << ", recovery=" << int(policy));
             C::EquationSettings settings;
+            settings.transport = "NewtonianFourier";
+            settings.viscosity = .001;
             settings.rans.model = model;
             const auto equation = C::EquationSystem::Resolve(settings);
             const int width = 5 + (equation.HasRANS() ? equation.RANS().ComponentNumber() : 0), modes = 9;
@@ -171,7 +175,7 @@ TEST_CASE("CUDA polynomial positivity matches CPU flow compression and independe
             cpu.means = meanLayout.View();
             cpu.offsets = offsetRead.View<R::FixedRows<1>>();
             cpu.bounds = thermal.View();
-            cpu.rans = C::ResolveRANSReconstructionPolicy(equation);
+            cpu.rans = equation.HasRANS() ? C::ResolveRANSReconstructionPolicy(equation) : C::RANSReconstructionView{};
             cpu.ransFirst = width > 5 ? 5 : -1;
             cpu.modes = modes;
             cpu.maxOrder = 3;

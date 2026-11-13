@@ -1,12 +1,31 @@
 # Plan 61 CUDA implementation inventory
 
-Baseline: `c1700f6d`, branch `codex/cauchy-cuda`. Updated 2026-11-13 (Asia/Taipei).
+Baseline: `c1700f6d`, branch `codex/cauchy-cuda`. Updated 2026-11-13 (Asia/Shanghai).
 
-**Phase A validated; phase B source editing in progress.** The initial header catalog
+For the current source-linked execution boundaries, optional CPU-only API
+limits and evidence qualifications, see [the coverage review](plan61_cuda_coverage.md).
+Historical pending statements below describe their dated checkpoints.
+
+**Phase A foundations and Phase B spatial gates passed at their recorded snapshots; Phase C is in its grouped build/validation round.** The initial header catalog
 below is a navigation aid. The recursive source-linked call/leaf audit is still
 open; header enumeration alone does not establish complete hot-path coverage.
 Every numerical helper reached by supported flow5/SA/2EQ AoS perfect-gas paths
 must execute on CUDA. CPU OMP=1 remains the mathematical anchor.
+
+The source checkpoints below are chronological; later integration entries
+supersede earlier pending lists. Current source includes the managed spatial
+schedule, generic CPU mixture characteristics and experimental TF32 Jacobi.
+The full build passed; focused CPU checks passed all 15 selected entries across
+the initial run and the corrected drain-contract rerun. Cauchy Python operator
+checks passed 2/2 at np=1. The later B correction gate passed all twelve selected
+CUDA executables across reruns, including the two-device spatial schedule;
+the RANS point mismatch and CPU gradient lifetime defect were resolved.
+Phase C's first runs exposed queued-entry and immutable-stream lifetime defects,
+now corrected: the full build, 16 selected CPU entries, device implicit/time/FAS
+checks and four two-device entries pass across recorded reruns. Remaining
+fixture/checks and the recursive coverage audit are open; final application
+qualification remains open. Later entries retain exact
+checkpoint/evidence references; earlier failure records are historical.
 
 ### State and analytic-error reduction source additions (unbuilt)
 
@@ -570,7 +589,730 @@ Boundary provenance checks are separate from immediate access acquisition.
 A queued consumer must still receive a known packet publication before being
 submitted. The existing deferred synchronous path is preserved. Wiring a
 controller submission ahead of an as-yet-unknown interface publication requires
-a stable packet/publication dependency handle; the current callback alone does
-not provide that. This remains an `EvaluateImpl` integration item, not a reason
-to add a hidden host drain or duplicate a backend-specific solver loop.
+a stable packet/publication dependency handle. The subsequent source edits
+below implement that contract without adding a host drain or another solver loop.
+
+### B shared spatial integration (source-only, not validated)
+
+`EvaluateImpl` now calls managed boundary, auxiliary, gradient/projection,
+reconstruction-copy, RHS and volume-source submissions directly. The numerical
+CPU leaves remain the same. `FiniteVolume_SourceHostQueued.cpp` retains generic
+CPU equation/source support; `FiniteVolume_DirectGradientQueued.cpp` separates
+queued projections from completed provenance. Rotation's optional low-order
+residual is an explicit output. Optional CPU point evaluators acquire chemistry
+workers during execution, avoiding controller-time starvation of earlier work.
+
+Interface receiver mapping now reserves writes at submission. Pending packet
+copies retain a one-round publication slot and payload allocations; completion
+includes mapping, followed by validation/publication. `QueuedEvaluationDependency`
+carries those handles before the callback runs. Access-check policy follows
+the receiver, including mixed-domain configurations. Existing distributed tests
+now retain pending handles across publication and exercise inline/worker and
+mixed checking policies. Source tests are unbuilt/unrun.
+
+The subsequent B source batch replaces the CPU-only spatial admission with
+stream/array placement checks. This is not yet a validated CUDA solver claim:
+the production driver and linear/time-integration path remain later work.
+
+### B queued reconstruction, limiting and source integration (unbuilt/unrun)
+
+- `CFV/CPU/ReconstructionKernels.*` shares the existing CPU VR, limited-VR,
+  WBAP and commit mathematics between synchronous and queued wrappers. Queued
+  wrappers reserve actual payload operands at submission; callbacks no longer
+  reacquire immediate mutable leases. SOR ordering and general CPU layouts remain.
+- `FiniteVolume_CharacteristicsQueued.cpp` declares matrix writes and mean/aux
+  reads. CPU mixtures consume cached thermodynamics; specialized CUDA computes
+  perfect-gas thermodynamics inline. Inverse-consistency checks remain diagnostic
+  only. Integer fallback counts use a bounded deterministic reduction.
+- `FiniteVolume_GradientHostQueued.cpp` and `FiniteVolume_PositivityQueued.cpp`
+  supply the common direct-gradient and modal-PP operator entries. Modal PP keeps
+  the all-good and recovery-any observation points and existing recovery bound;
+  it does not issue an unconditional fixed number of recovery steps.
+- `FiniteVolume_ReconstructionNorm.cpp` computes local norms on the execution
+  backend. Only the two scalars become host-visible at the configured stopping
+  interval; MPI reduction and the host decision remain outside the queued segment.
+- `FiniteVolume_LimitedVRExecution.cpp` now queues target conversion, WBAP,
+  target PP, scalar/face sensors, CFV gate expansion and history/penalty writes.
+  CPU keeps the original face loop; CUDA uses independent face sensors plus
+  deterministic owned-cell gathering. Target and gate exchanges retain their
+  producer-prefix ordering. LVR history/scratch is allocated at plan residency.
+- Correction preparation uses queued auxiliary/source sampling; the public
+  sampling refresh now validates placement instead of requiring host fields.
+  Finalized reconstruction and optional halo checks publish after completion.
+
+`test_SpatialScheduleCUDA.cu` adds a production-entry comparison on distributed
+physical-boundary hex meshes: generic CPU inline, CPU worker, and CUDA, repeated
+evaluations with P3 WBAP, P3 LVR, direct-gradient SA, and P3 SST. The source also
+covers reconstruction norm observations. Together with the focused CFV queued
+chain and existing primitive tests, this is the intended B validation, not
+evidence of a completed test run.
+
+Mean-gradient auxiliary preparation now has a private enqueue/finalize split.
+The standalone public API uses the same segment and joins before returning;
+the FV residual/correction schedule reuses its already ordered mean halo and
+publishes at the enclosing final join. This removes the intermediate drain and
+duplicate exchange. Stable pending interface buffers can feed that segment.
+Mean-gradient boundary chemistry workers are acquired during execution.
+`RefreshCorrectionSource` now accepts the caller's engine/stream and submits the
+same sampling operator before publishing; its nonlinear caller is updated.
+
+### B source consolidation: timing, algebra, OMP and quantized MMA
+
+The common orchestration sequence is established. Remaining queued work is
+operator contract/backend completion, not another CPU/GPU solver loop.
+`FiniteVolume_Profiling.cpp` now records optional CPU lane intervals with queued
+start/end markers and merges them after completion. These intervals can include
+scheduling gaps; they are not exclusive kernel cycle timings. CUDA reports only
+the enclosing host total here. Fail-closed diagnostic extraction now targets the
+queued RHS/source wrappers; source generation succeeded, but compilation and the
+diagnostic executable remain unrun. Old campaigns are untouched.
+
+`EquationDofAlgebra.cpp` adds owned-only queued copy/fill/scale/AXPY/combination.
+All physical operands are reserved together, including CPU segmented fields and
+cross-layout inputs. CUDA dispatch requires combined AoS and delegates to DNDS
+algebra. Operation captures use numeric aliases so a worker does not become the
+owner of MPI resources. Focused CPU test source chains operations across two
+ordered lanes, destroys caller temporary handles before drain, and checks one
+late-output reservation conflict. The spatial CPU-inline/worker/CUDA test now
+advances the means by a small forward step between residual evaluations; it
+checks evolved state as well as residual/coefficient agreement. This is a
+producer/halo/consumer test, not an implicit driver or temporal accuracy gate.
+
+CPU generic boundary/RHS/source kernels accept private evaluator/scratch slots;
+perfect-gas/RANS operators create the slots before OMP work. Chemistry retains
+one leased worker until bounded team reservation is supported. Gradient limiting
+and PP use disjoint per-worker scratch windows. LVR CPU now uses face sensors
+followed by deterministic cell gathering, sharing the GPU decomposition; the old
+scatter path remains a test oracle. Independent initialization, admissibility
+and stable-step scans also have OMP paths. Error norms and generic boundary-force
+reporting accept caller-owned per-worker scalar slots and merge in fixed slot
+order. Reconstruction norms reuse managed two-column partial storage. Later
+implicit/time kernels still need their remaining OMP work; this is not a claim
+of complete CPU coverage.
+
+`ReconstructionDeviceKernels_TF32.cu` adds the explicit experimental
+`TF32TensorCore` selection for quantized unlimited Jacobi. It rounds FP32 map and
+coefficient tiles to TF32, accumulates MMA products in FP32, and adds relaxed
+increments to FP64 state. Mean/BC terms keep the existing FP32-map/FP64-state
+arithmetic. The wrapper uses compact sweep POD arguments and explicit device
+capability admission. Limited Jacobi still uses the FP32 SIMT path. Test and
+benchmark sources select TF32 separately and record its error against FP64;
+neither accuracy nor performance has been accepted yet.
+
+All changes in this subsection are **unbuilt/unrun source edits**. Remaining B
+work is source/inventory closure followed by the grouped build/test gate. Full
+driver/linear/ODE and output integration remains Phase C, and final application
+acceptance remains Phase D.
+
+The spatial test has an explicit np=2 registration using the existing
+one-rank-per-GPU launcher, in addition to its single-process registration.
+Actual distributed coverage requires the np=2 result; the serial CTest entry
+alone is not evidence for halo/communication correctness.
+
+### B validation entry
+
+The grouped CPU/CUDA/Python build has started in `build-plan61` at `-j16`.
+An initial CMake aggregate-target check caught missing dependencies for the two
+new CFV CUDA tests; this was corrected before successful regeneration. Logs and
+source-state records live in `workspace/plan61-validation/B/`. No B runtime
+acceptance is claimed until the focused tests finish.
+
+### B runtime correction batch
+
+The grouped build succeeded. Focused CPU entries passed after correcting the
+expected drain counts for queued preparation; installed Cauchy Python operators
+passed 2 tests and Runtime Python engine passed 42. Device Riemann/boundary,
+Cauchy characteristic and LVR checks passed, but other CUDA suites remain open.
+Unused host-only Eigen::seq construction inside shared RANS helpers caused
+silent device early return; remove those declarations, retain fixed-block math,
+and seed the point-test status to prove publication. CFV host BindHalo now uses
+its metric mapping instead of dereferencing device placement. RANS test setup
+and the combined-buffer rotation-source wrapper were corrected. Rebuilding and
+rerunning this batch is still Phase B, not a new validation group. Full details
+and preserved failed logs are in the plan61 status document and workspace/B.
+
+The focused correction reruns now pass all twelve selected CUDA kernel
+executables, plus the common spatial schedule at np1 and np2 with distinct
+local GPUs. OMP4 spatial/RHS comparisons also pass. The queued-versus-sync
+gradient check exposed and corrected a dangling Eigen displacement expression;
+the np2 run corrected an owned-versus-owned+ghost wall-metric extent check.
+Evidence: `workspace/plan61-validation/B/cuda-final-tests-20261113T192146+0800/`
+and `B/cuda-omp4-20261113T192407+0800/`. These close the tested spatial schedule,
+not the still-open implicit/time/pMG/output or final application gates.
+
+### C source batch: sparse storage and first linear leaves
+
+`Implicit/LinearPattern.*` and `Implicit/JacobianGeometry.*` now provide explicit
+setup placement and context-aware read scopes. DNDS `BlockMatrixStorage` owns
+its offsets as Runtime data and exposes a retained device-callable
+`BlockMatrixArrayView`; its CPU Eigen adapter is preserved.
+
+`Implicit/CUDA/LinearBlockKernels.hpp` / `.cu` add assembled matrix action and
+ordinary/zero-start Jacobi for 5/6/7 combined AoS components. Selected core rows
+need no ghost input. Whole-array residency/shape checks occur at the host
+wrapper; no numerical atomics or host waits occur in these leaves.
+`test/cpp/Cauchy/test_LinearBlockCUDA.cu` contains CPU-oracle and split/unsplit
+comparisons with variable sparse row lengths and remote columns. **Source only:
+not built or tested yet.** Managed linear integration, evaluated actions,
+inversion, AmgX, GMRES, pMG/time and output remain open in Phase C.
+
+`Implicit/LinearProblem_Queued.cpp` now retains managed numerical operands and
+symbolic views for Field/EquationDofs actions. `LinearSolver.cpp` uses those
+entries in the existing exchange/core/dependent sequence; the optional second
+local Jacobi sweep uses queued DNDS halo copy/fill. Inverse freshness checks
+submission mutation epochs. CPU matrix action/Jacobi and diagonal inversion
+have independent-row OMP work with private scratch/counters. The delayed-owner
+and pending-diagonal-write test source is in `test_LinearProblem.cpp`. All these
+C additions still await the grouped build/test; no full implicit CUDA gate is
+claimed. Evaluated CUDA actions and device inversion are still pending.
+
+CUDA inverse source foundations are now present: DNDS
+`Algebra/BatchedSVD.hpp/.cpp` isolates the cuSOLVER FP64 provider; Cauchy
+`Implicit/CUDA/LinearDiagonalKernels.hpp/.cu` implements scalar inversion,
+row scaling and SVD recovery with explicit per-cell numerical status. The
+approved initial CUDA full-block policy uses SVD for every block with the
+native epsilon-relative filter, while CPU retains guarded LU/SVD. Provider
+workspace and inverse publication integration/tests are still pending; these
+leaves have not been built or executed.
+
+`Implicit/LinearProblem_Inverse.cpp` now owns the reusable inverse workspace and
+managed scale/provider/recovery/status submissions. `LinearSolver.cpp` observes
+the compact result at its preparation boundary before consuming the inverse.
+`test_LinearInverseCUDA.cu` compares all inverse columns against CPU for 5/6/7,
+scalar/full modes, healthy/rank-one blocks and empty ranks, plus one rejected
+invalid diagonal. **Source-only, unbuilt/unrun.** No full-driver CUDA acceptance
+is inferred from this wiring.
+
+### C source batch: frozen Jacobian leaves (not yet validated)
+
+`Implicit/CUDA/FrozenJacobianKernels.hpp/.cu` now provides assembled
+off-diagonal block filling and direct evaluated matrix/Jacobi actions. Both
+consume the same independent mean/pressure/pressure-derivative snapshot and
+two-level CSR geometry. Rotated periodic images stay separate contributions;
+component selection is applied in the stored equation frame, after composing
+the physical derivative with the rotation. Identity faces skip rotation.
+Scalar dissipation supports flow5/SA/2EQ, including the two-equation rho*k
+normal-stress derivative; flow5 also supports the existing Roe matrix option
+with prepared contact/acoustic magnitudes. Per-row numerical statuses replace
+device exceptions or silent characteristic fallbacks.
+
+`Implicit/CUDA/FiniteVolumeJacobianKernels.hpp/.cu` freezes owned+ghost means
+with perfect-gas pressure derivatives and initializes diagonal mass and rigid
+frame terms. RANS destruction and face/boundary contributions are separate
+additive operators. `Boundary/BoundaryJacobian.hpp` shares the existing CPU
+approximate wall reflection formula as host/device arithmetic; it does not
+change prescribed/open or thermal boundary derivative policy.
+
+`test_FrozenJacobianCUDA.cu` adds existing-CPU-block comparisons, direct
+action/Jacobi checks, core launches without ghost descriptors, repeated images
+of one neighbor, selected momentum components, moving frames and widths 5/6/7.
+It also checks diagonal initialization. These are **source-only tests**. The
+full CUDA boundary/face producer, frozen-evaluator publication and production
+linear integration remain unfinished. No C compilation or execution has been
+performed, and the full CUDA driver gate remains closed.
+
+The next source edit adds
+`Implicit/CUDA/FiniteVolumeJacobianKernels_Faces.cu`: centered scalar/Roe face
+dissipation, mean-based physical/interface exterior states, the approximate
+wall chain rule, self-periodic diagonal contributions and final component
+projection. RANS no-slip exterior derivatives remain `-I`; these are not the
+exact thermal/property derivatives. `eulerScalar` skips physical BC evaluation
+in the scalar-dissipation diagonal, while Roe preserves its wall derivative.
+Roe magnitudes are produced per incidence for subsequent evaluated actions.
+
+Assembly, evaluated actions and diagonal face preparation now share the
+point arithmetic in `FrozenJacobianKernels_Point.hpp`. Failed evaluated rows
+write explicit status and NaN output, so deferred observation cannot mistake
+old finite scratch values for a successful result. The focused test source now
+also compares centered wall/open/self-periodic diagonals against CPU flux and
+boundary producers, for scalar/physical/Roe policies and diagonal-entry/full
+storage where supported. **Still unbuilt/unrun.** Managed device snapshot
+publication, production preparation/scheduling and linear-solver wiring remain
+open; these kernel additions do not enable the full driver.
+
+The managed evaluated-action layer is now source-edited in
+`Implicit/FrozenJacobianOperator.*`, `LinearProblem_Queued.cpp` and
+`LinearProblem_ActionStatus.cpp`. Its geometry/column agreement is checked once
+and shared by numeric publications. Eager callbacks retain the immutable
+publication and managed operands. Context-owned action status is sticky across
+the segment, explicitly reset/observed, and reduced to one result at the
+solver's final numerical decision boundary. CPU/assembled operators do not
+allocate this extra workspace. The focused test source includes the managed
+`LinearProblemContext -> FrozenJacobianOperator -> CUDA` entry in addition to
+bare-kernel comparisons. **Not built/run.** The production FV preparation
+operator still needs to construct this device publication; full driver and
+application gates remain open.
+
+### Phase C linear orchestration and provider connection (source only)
+
+The resident FV Jacobian producer is now connected through
+`FiniteVolume_DeviceJacobian.cpp` and `FiniteVolumeDeviceJacobian.*`, with one
+explicit status/publication boundary. Its spatial schedule test now includes
+production matrix preparation and assembled/evaluated actions.
+
+`LinearSolver` uses the same controller for CPU inline/worker and CUDA Jacobi
+or GMRES. `LinearSolverAlgebra.hpp` binds vector operations to the compute lane;
+`Solver/StateGMRES.hpp` accepts that per-instance adapter. Linear transfers
+import the compute prefix before posting. Host Arnoldi/stopping decisions
+remain explicit. `DNDS/Algebra/LocalProducts.*` provides reserved weighted
+products and finite reductions, with deterministic device trees.
+
+`LocalAMGPreconditioner.*` and `CUDA/LocalAMGKernels.*` connect the single-device
+AmgX provider to an assembled rank-owned principal matrix. DNDS retains global
+communication/operator semantics. Compact AoS vectors are borrowed; padded
+rows use reusable device packing. Provider calls drain the engine first and
+are intentionally not stream-native/capture-ready.
+
+`test_LinearSolverCUDA.cu` adds known-solution distributed solve and reduction
+checks. **All these Phase C changes remain unbuilt/unrun.** The next unfinished
+parts are nonlinear update/time/pMG/output integration and the grouped C gate.
+
+### Phase C nonlinear operator connection (source only)
+
+`Implicit/NonlinearOperators.*` now separates managed submission/observation
+from the controller and the CPU/CUDA arithmetic leaves. The solver's ordinary
+and pMG single-correction paths call the same operators for defect assembly,
+pseudo-time alpha, final increment repair, volume/rate conversion and mean
+metrics. CPU worker, inline and CUDA use the same calls. Host-returning methods
+drain at explicit convergence/acceptance boundaries; pointwise Submit methods
+retain managed operands without an implicit numerical MPI operation.
+
+`CUDA/NonlinearKernels.*` implements bounded deterministic summaries and the
+perfect-gas 5/6/7 pseudo-time/correction leaves. The correction follows the CPU
+policy: whole-increment thermal forecast, final thermal line search, separate
+RANS scalar repair, then controller validation before mean commit. It is not
+an explicit physical-time PP policy. `LinearScaling.hpp` shares the final MPI
+and component normalization after backend-local mean statistics.
+
+The spatial-schedule test source now also exercises managed nonlinear
+operators and compares CPU inline/worker/CUDA with one analytical defect
+check and a critical output-alias rejection. **This expanded test has not run;
+old Phase B evidence applies only to its earlier source snapshot.** No Phase C
+build/test has started. ODE/pMG, output, remaining OMP and full-driver gates
+remain open.
+
+### Current launch mappings (source inspection; not a performance ranking)
+
+All mappings below describe work assignment, not SM ownership. CUDA may place
+multiple thread blocks on an SM. Grid-stride loops reuse blocks/threads across
+more entities than the launch grid. Specialized reconstruction selections are
+explicit; they do not imply an automatic measured winner for every shape.
+
+| Kernel | Work assignment | Notes |
+|---|---|---|
+| CFV Jacobi FP64 / quantized FP32 SIMT | 128-thread block per cell | Component/mode output entries distributed across threads; each thread visits neighbors and inner matrix dimension. |
+| CFV FP64 MMA | Warp per cell, four cells/block | Shared matrix tiles and padded 8x8x4 MMA. |
+| CFV shared FP64 MMA / async variant | 128-thread block per cell | Four component-tile warps share each neighbor matrix; async variant double-buffers `cp.async` loads. |
+| CFV experimental TF32 MMA | Warp per cell, four cells/block | Shared tiles, FP32 product, FP64 coefficient contribution. |
+| CFV polynomial WBAP | 128-thread block per cell | Component/mode parallelism, serial neighbor visits, barriers and six bounded global scratch rows per active block. |
+| Cached/direct polynomial sampling | Thread per quadrature/sample point | Serial component/modal evaluation; separate cached/on-demand kernel specialization. |
+| Cauchy polynomial PP | Thread per cell, 128 threads/block | Serial quadrature scan; separate degree-selection, compression, recovery and verification launches. No cooperative warp-per-cell implementation yet. |
+| Gradient reconstruction/WBAP/Barth/PP | Thread per selected cell, 128 threads/block | Serial stencil/component work. |
+| RHS flux / assembly | Thread per face / thread per cell, 128 threads/block | Face quadrature loop then ordered cell gather; no FP scatter atomics. |
+| Characteristics | Thread per face, 128 threads/block | Analytic L/R matrices. |
+| Aux / LVR | Thread per cell or face, 128 threads/block | Mapping follows each pass's output entity; propagation visits neighbors. |
+| RANS source / source Jacobian | Thread per cell, 128 threads/block | Serial cell quadrature and source accumulation. |
+| Jacobian row assembly/action, block Jacobi | Thread per block row/cell, 128 threads/block | Serial neighbor/small-block arithmetic; Phase C unvalidated. |
+| Nonlinear defect/PP update | Thread per cell, 128 threads/block | Deterministic block and final summaries where requested; Phase C unvalidated. |
+| Explicit SSPRK update/blend | Thread per cell, 128 threads/block | Flow5 shared flux blend or raw flow plus separate RANS repair; bounded deterministic status/minimum/count summaries. Phase C unvalidated. |
+| pMG selected update/frozen check | Thread per cell, 128 threads/block | Independent selected components; bitwise frozen check uses a deterministic first-invalid-row reduction. Phase C unvalidated. |
+| Diagonal pseudoinverse | cuSOLVER batched SVD | Library owns internal mapping; pre/postprocessing is thread per cell. |
+
+The PP optimization candidate is warp-per-cell quadrature checks/reduction,
+followed by cooperative coefficient scaling. It must preserve the current
+degree/base selection and final recovery semantics. This is an unmeasured
+candidate, not an implemented mapping or a new acceptance requirement. The
+thread-per-face RHS and thread-per-cell source/PP paths can incur high serial
+work and register pressure; correctness evidence does not establish optimal
+mapping or coalescing.
+
+### Phase C time/history/publication continuation (source only)
+
+`QueuedEquationOperations` binds the generic BDF/DIRK/DITR arithmetic to a
+compute lane. Method coefficient/history semantics stay in the ODE module;
+whole-array algebra is dispatched by DNDS. `PolynomialMultigridOperations`
+similarly supplies selected updates and cross-space identity transfers to
+the unchanged FAS recursion. Coarse plans inherit device placement and the
+domain context. Level callback/pool release boundaries remain explicit drains.
+The reserved DOF pool now supports resident arrays; no asynchronous return of
+borrowed scratch is implied.
+
+`Core/TimeStageOperators` owns explicit-stage submission, with CPU and CUDA
+leaves and no solver-loop backend branch. The CPU blend reduction uses only
+minima, exact integer counts and flags, so its OMP path introduces no floating
+sum-order change. Flow/species SSPRK increments remain conservative; only
+RANS receives scalar exponential repair. `State/MeanStateCheck` is shared by
+domain acceptance and nonlinear validation. Invalid physical candidates are
+status results; invalid programming contracts remain host-side failures.
+
+Accepted-state copying now uses `EquationDofOperations::CopyReserved`: retain
+the cross-domain pre-acquired scopes, submit on the ordinary engine lane and
+drain before publication. Trial/observation copies use queued algebra with
+explicit observation boundaries. Quiescent snapshots acquire device-aware
+read pins and mark their already-observed completion, so their destruction
+does not require a stream owned by a potentially destroyed domain. This is
+still a pinning snapshot, not the planned detached asynchronous output copy.
+
+`test_TimeFASCUDA.cu` adds all-method variable-step arithmetic comparisons and
+a selected two-level FAS formula oracle. `test_SpatialScheduleCUDA.cu` now also
+checks explicit blending/RANS repair and numerical rejection as a status.
+**Unbuilt/unrun.** Remaining C source coverage includes reconstruction restore,
+full-driver device setup/capability closure, physical-step selection, interface
+sampling, diagnostics/output and remaining OMP work. A/B pass records do not
+validate these additions; no new build/test group has started.
+
+### Phase C restore, timestep and reduction continuation (source only)
+
+Reconstruction reservation/restore/reset now have context-aware CPU/CUDA
+execution in `FiniteVolume_ReconstructionRestore.cpp`; finite/history checks
+and coefficient copies retain their scopes through completion. Physical-step
+selection dispatches through `Core/TimeStageOperators` on the common engine
+lane. Driver construction places finalized metrics and combined fields once;
+the full-driver CUDA capability gate remains closed until interfaces and
+output/diagnostic paths are complete. CPU nonlinear norm/scale leaves now
+have pre-reserved OMP partial sums with a fixed merge order; OMP=1 retains
+the canonical order. These are source changes, not validated capabilities.
+
+CFL uses block-local CUB minima followed by unsigned-bit atomic minima for
+positive FP64 steps and the first invalid row. A retained immutable device
+identity resets the scalar result in stream order before each call. There is
+no partial table, 256-block ceiling, or separate final reduction kernel.
+Empty partitions produce the identity. Invalid radii are diagnosed separately;
+positive finite cell volumes are a setup precondition. This exception to
+tree reduction applies to order-independent extrema, not floating sums.
+
+`DNDS/Algebra/LocalProducts_CUDA.cu` now elects the last block using the shared
+`DNDS/Device/ReductionCompletion.hpp` acquire/release helper. It completes
+the fixed-index sum tree in the same kernel, without grid spinning or FP
+atomic adds. The managed workspace owns/reset-orders its completion counter
+and partials. Other fused numerical summaries still use their existing
+two-launch implementations; conversion is not claimed complete. Integer
+counts and extrema may instead use atomics when their overflow/NaN policies
+permit. A hardware/library memset or copy used for initialization is still
+queued work; removing the explicit tail kernel does not promise a single
+device command or a measured speedup.
+
+Focused test source covers empty/single/multiblock CFL, more than 256 blocks,
+larger next-call minima, and repeated fixed-tree products. **Unbuilt/unrun**;
+they belong to the grouped Phase C gate. Remaining source work includes
+interfaces, diagnostics/checkpoint/async output, capability closure and the
+remaining OMP/kernel inventory audit.
+
+### Phase C checkpoint ingress and state diagnostics (source only)
+
+`EquationDofOperations::NewVectorOn` and `CopyOwnedTo` preserve logical blocks,
+physical layouts and row identity while explicitly allocating/copying on another
+device. Only owned values are transferred. `StateArchive::Restore` remaps host
+file shards into a host ingress mirror before uploading to resident destinations;
+this also covers regrouped archive fields. Cauchy's `WriteStateArray` stages
+resident checkpoint payloads explicitly. Runtime array serialization retains
+its host-only direct-I/O contract. Exact stage/history snapshots are drained
+after their method-owned queued copies and before serialization.
+
+Checkpoint publication now uses retained context-aware scopes and the same
+reserved queued copy used by accepted-state publication. Reconstruction and
+limited-VR restart payloads are placed on the domain device, with no host loop
+dereferencing them. `DomainStateSnapshot::DetachedHost` provides a deep copy of
+owned means, optional reconstruction/history and their captured metadata,
+including for CPU input. This is the immutable payload foundation, **not yet
+the asynchronous writer queue or pinned asynchronous D2H implementation**.
+
+`State/StateDiagnostics` dispatches the existing generic CPU point kernel and
+the new perfect-gas CUDA leaf on the domain engine. It returns local mass,
+energy, residual-squared and thermodynamic extrema; the domain still owns MPI
+reductions and residual normalization. CUDA sums use a fixed tree with the
+last-block tail; only a compact summary is downloaded. Boundary-force and
+analytic-error reporting and visualization still require integration.
+
+Focused source tests cover deep CPU snapshots, CUDA archive write/read with
+padded flow5/SA/2EQ and cross-rank reverse-row remapping, and inline/worker/CUDA
+diagnostic agreement with repeatable same-backend reductions. **Unbuilt/unrun.**
+No new build/test group, commit, remote job or application run was started.
+
+### Phase C force and analytic-error reporting (source only)
+
+`Discretization/BoundaryForceReduction` now submits the CPU and CUDA force
+reduction on the caller's lane. It consumes the actual per-boundary-quadrature
+momentum flux written by RHS, preserving zone selection, RANS stress and
+viscous traction semantics. Workspace-owned partials and selected-zone metadata
+are reused. Only the final three numbers cross to the host; domain aggregation
+stays outside the queued segment. The fixed-flow CPU diagnostic accumulator
+remains its existing fast path.
+
+`Discretization/FlowErrorOperator` supplies the production analytic-error path
+for inline/worker/CUDA execution. Its lazy CUDA cache stores max-order reference
+quadrature coordinates/weights, prepared once with count/allocate/fill and OMP
+after warming shape caches. It uses the same cell-average analytic profile and
+rigid-frame transform as the CPU oracle; optional RANS components do not enter
+the flow-five error. Geometry access is managed and validates the metric
+generation. The one-shot `FiniteVolume::Error` delegates to the same operator;
+Domain retains the operator across reports. GPU errors and forces both use the
+last-arriving-block fixed-tree tail and operation-owned completion counters.
+
+Test source adds selected-zone force comparisons including duplicate zones,
+empty selection and repeatability, and production error-operator comparisons
+across backends. Existing raw analytic-kernel tests now exercise the fused tail.
+**Unbuilt/unrun**; these additions await the grouped C gate. Visualization and
+asynchronous output, interface sampling, capability closure and the remaining
+OMP/source inventory review are still open.
+
+### Phase C interface numerical operators (source only)
+
+`CFV::DistributedInterfaceSamplingPlan` now has one queued donor-evaluation
+entry for inline CPU, worker CPU and CUDA. Constant and physical-gradient
+sampling use view-only kernels (one CUDA thread per query); VR sampling uses
+the existing queued polynomial evaluator. The return payload still uses the
+canonical direct Runtime transfer binding. Matching/query routing remain CPU
+setup. The synchronous convenience explicitly drains its private engine.
+
+Device-only VR can retain cell moments via the opt-in
+`ReconstructionResidencyOptions::arbitraryPointSampling`. Cauchy requests this
+for interface configurations. Rebuilding sample points receives explicit FV
+metrics and can temporarily download moments/metrics for CPU setup without
+retaining or downloading VR matrices or solution fields. Non-interface cached
+configurations do not gain an unused moment allocation.
+
+Receiver mapping has moved from `InterfaceCoupling`'s inline numerical wrapper
+to `InterfacePacketOperator`, with separate CPU/CUDA leaves and shared pure
+frame rotation. The prepared operator snapshots row mappings, validates unique
+destinations and component permutations, retains placed metadata and operands,
+and preserves packet rows belonging to other connections. CPU query rows use
+OMP; CUDA supports the combined AoS contract. This does **not** yet close the
+full Cauchy CUDA coupling path: its lane placement, boundary packet allocation,
+publication/validation and MPI completion bridge still need integration.
+
+Focused test source covers distributed direct-return sampling on CPU/worker/GPU,
+rebuilding sampling from device-only VR, and receiver component permutation,
+frame rotation and untouched rows. **Unbuilt/unrun**; the grouped C build/test
+gate has not started.
+
+### Phase C interface integration and output production (source only)
+
+The follow-on source edits connect device-aware `InterfaceCoupling` lanes,
+resident boundary packets, queued donor sampling, Runtime `SubmitAfter` /
+`EnqueueWait` transfer edges and the receiver mapping operator. All connection
+transfers are posted before receiver completion is consumed. Repeated refresh
+reuses the CPU-prepared matching route. Packet publication checks only selected
+interface rows with `MeanStateCheck`, avoiding a full packet download. Its
+host-observed publication boundary remains explicit: the full interface path
+is not claimed capture-safe or sync-free. Cauchy's selected transport remains
+direct MPI; the generic Runtime edge does not itself enable NCCL in Cauchy.
+
+`SubmitArrays` and `SubmitArrayBatch` now retain their kernel capture alongside
+operand reservations through retirement, even when a launcher discards its
+submission callback after launch. Thus geometry/metadata owners captured by
+sampling/mapping survive device execution without accumulating engine-wide
+retentions across refreshes. Test source uses a deferred-retirement launcher
+to exercise this contract directly.
+
+Focused CUDA test source now includes actual colocated/dislocated interface
+refresh and route reuse, masked packet acceptance and frozen packet placement.
+These are operator/coupling correctness tests, not a full multidomain flow
+accuracy campaign. The public synchronous `FiniteVolume::Admissible` also uses
+the resident `MeanStateCheck`; domain MPI acceptance still occurs on the host.
+
+Visualization cell preparation is extracted into `OutputFields`, with
+view-only CPU/OpenMP and CUDA leaves. It produces logical conservative columns
+plus p,T,u,v,w,Mach and, on CPU mixtures, all mass fractions. CPU point workers
+use the nonthrowing property entry; CUDA uses the shared perfect-gas helper.
+Status is checked before output is copied to host. The device surface adapter
+uses the existing resident boundary-trace producer with finalized coefficients
+and frozen interface values, then the same output-property producer. The file
+writer only formats prepared host fields; it does not download coefficients
+for CPU sampling or recompute device point physics. Boundary records now carry
+their already-prepared quadrature weight for output without downloading all
+volume metrics. Output fallback is explicit and does not mutate reconstruction.
+
+The output-field test source checks inline/worker/GPU, empty rows, 257 rows and
+5/6/7 components against independent perfect-gas values. **None of these Phase C
+edits have been built or executed yet.** `git diff --check` passes. Asynchronous
+pinned snapshots/writer queue and full output/restart validation remain open,
+as do driver capability closure, remaining OMP/inventory review, the grouped C
+gate and final Phase D solver campaigns. Synchronous output is not credited as
+completion of the asynchronous-output requirement.
+
+### Phase C detached checkpoint and writer foundations (source only)
+
+`Buffer::AllocatePinnedHost` adds zero-initialized portable CUDA page-locked
+storage while preserving `Device::Host()` view residency. Allocation records
+identify pinned storage and reports include unique pinned-host bytes. There is
+no pageable fallback when CUDA is unavailable. Ordinary CopyOperation leases
+retain source/destination until completion; this is reusable Runtime support,
+not a Cauchy-owned raw allocation.
+
+`EquationSnapshotOptions::pinnedHost` selects that destination policy. All
+physical-field copy operations are submitted before observing their completion.
+`DomainStateSnapshot::DetachedHost` uses it for device means, reconstruction,
+history and LVR payloads; CPU snapshots remain independent ordinary copies.
+The source snapshot remains pinned through D2H, so later mutation cannot race
+the copy. The detached result may remain alive during subsequent solver work.
+
+`PreparedCheckpoint` separates accepted-step capture from serialization. It
+owns the frozen state/control metadata, cell IDs, mesh envelope and shared I/O
+communicator, and contains no live Domain reference. Its Write preserves the
+v5 schema. The synchronous Domain writer uses this implementation too, retaining
+the zero-copy immutable CPU snapshot option; device capture explicitly stages
+to host. Internal exact-stage checkpoint writing has not yet been converted
+into an asynchronous request.
+
+`OutputQueue` provides one ordered writer, a default capacity of two, and
+backpressure before controller-side snapshot preparation. Submitted writers
+must own complete immutable inputs. Production failure callbacks must abort
+without collective recovery; only UT callbacks may return to inspect a recorded
+failure. Drain observes completion; Close joins pending work. Test source covers
+ordering/snapshot independence and terminal failure. Additional test source
+covers pinned DMA exclusion/accounting and checkpoint ownership after its
+source Domain/communicator handle is released.
+
+These facilities are **not yet connected to OutputCoordinator's asynchronous
+mode**, and do not establish MPI/HDF5 thread-safety or complete async output.
+Pending integration must validate MPI_THREAD_MULTIPLE, isolate I/O collective
+ordering, serialize HDF5 access, prepare visualization snapshots, publish
+manifests only after success, and drain before synchronous internal/final output
+and shutdown. Everything remains unbuilt/unrun until the grouped Phase C gate.
+
+### Phase C asynchronous output integration (source only)
+
+`output.asynchronous=false` is now a registered configuration option.
+`AsyncOutput` validates MPI_THREAD_MULTIPLE, creates separate I/O control/domain
+contexts once, and shares them across bounded writer requests. Capture runs on
+the controller, with no live Domain/Simulation reference escaping into the
+writer. `PreparedVisualization` separates numerical preparation from VTKHDF
+and surface writing, retaining detached fields and a mesh read. CPU production
+already makes a distinct output allocation; no second full cell-field copy is
+needed. GPU fields transfer to accounted pinned host storage.
+
+`OutputCoordinator` routes accepted-step/final snapshots through this service
+when selected; internal output drains before retaining its synchronous path.
+Final output and teardown drain too. The writer preserves direct/multidomain
+checkpoint schemas, generation directories, output names and manifest ordering.
+Its failure scope and handler abort independently without distributed recovery.
+SerializerH5 sessions and Geom's VTKHDF transaction now share an HDF5 lock;
+the installed HDF5 reports `Threadsafety: OFF`, making this serialization
+necessary. Raw external HDF5/CGNS use and mesh mutation require a prior drain.
+The serializer also checks file-close success before output is considered done.
+
+Focused test source exercises detached checkpoint+visualization output while
+the foreground mutates its means and performs MPI, then restores the captured
+state and checks surface values/completion metadata. Reduced MPI thread support
+exercises the explicit rejection instead. **Still unbuilt/unrun**; no async
+runtime acceptance is claimed. Remaining Phase C work includes source review
+of this integration, capability/inventory closure, OMP review and the grouped
+CPU/CUDA/distributed output-restart validation. Phase D runs remain open.
+
+### Phase C placement and capability audit continuation
+
+The uniform-layout `FiniteVolumePlan::BuildField` overload now inherits the
+plan's device, matching `BuildField(width)`. Previously its default host
+argument placed pMG coarse means on CPU even when the coarse metrics were on
+CUDA. Explicit placement remains available for staging, and Python exposes the
+same two overloads. The queued interface fixture now checks this allocation
+contract on host and device; full pMG execution remains a grouped-test gate.
+
+Async output resource construction and initial reporting now precede callback
+installation. A rejected MPI thread capability or failed output initialization
+must not leave callbacks borrowing an incompletely constructed coordinator.
+
+The configuration resolver now selects the implemented CUDA profile instead
+of rejecting every CUDA domain. It requires combined AoS/perfect gas, supported
+SA or k-omega models, Jacobi VR, and Jacobi or GMRES with Jacobi/AmgX. The same
+linear checks apply to each resolved coarse-level override; AmgX requires the
+compiled provider and assembled storage. Existing CPU and extended-equation
+restrictions are retained. This is source-level capability routing, **not
+runtime qualification**. Focused configuration tests are added but unrun.
+
+Source tracing confirms the CPU `PrepareFlow5Jacobian` specialization is
+downstream of the device dispatch in `PrepareJacobian`, and production mean
+scaling uses the queued CPU/CUDA reduction operator. The host-only helper
+overloads are not the GPU nonlinear path. Phase C remains unbuilt/unrun;
+remaining inventory/OMP review and grouped validation are still required.
+
+The independent Jacobian-initialization loops now use the established OMP row
+helpers. Dense mass/rotation initialization writes the strided output directly
+instead of sharing a temporary Eigen matrix. Pseudo-time/PP-alpha preparation
+now partitions rows with exact count/minimum reductions and deterministic
+first-invalid-row status. No FP summation atomics or MPI work enter these
+loops. These changes are also unbuilt/unrun. The more involved correction and
+thermodynamic Jacobian loops still need their worker/scratch ownership review;
+the OMP coverage audit is not closed by these two changes.
+
+### Phase C source batch entering grouped validation
+
+Nonlinear correction now receives operator-owned partition scratch and merges
+exact counts/minima after independent row updates. The leaf no longer allocates
+species scratch. Generic Jacobian completion has separate joined phases for
+mean properties, boundary properties and row assembly, with private evaluator,
+point and matrix scratch. Perfect-gas/RANS source Jacobian calls select the
+existing parallel worker kernel; mixture calls retain their already-held
+single chemistry worker to avoid bounded-pool starvation. Flow5 Roe assembly,
+frozen-row copies and ILU template filling also partition independent rows.
+Ordered SGS/ILU triangular algorithms are unchanged by these edits.
+
+`test_DomainCUDA.cpp` adds production-domain checks beyond leaf tests: a
+nonuniform P3 BDF2/GMRES solve, ESDIRK4/pMG solve, inline/worker/device comparison,
+and CUDA checkpoint continuation preserving BDF history and coefficients.
+Its distributed entry exposes one local device per rank. The diagnostic
+extraction anchor follows the new Jacobian worker argument.
+
+The Phase C source batch is now entering its grouped build/test round. All new
+results remain pending; fixes and reruns belong to this same round. Phase D
+physical campaigns and final requirement-by-requirement qualification remain
+separate gates, including the OMP=1 numerical anchor and OMP scaling reading.
+
+### Phase C first build observations
+
+The grouped j16 build and retries are recorded under
+`workspace/plan61-validation/C/`. The Cauchy static library and canonical
+`app/cauchy.exe` linked in `build-retry3.log`. The complete target set has not
+passed and no Phase C test execution is credited. Corrected the first compiler
+findings: dependent-template disambiguation in queued linear access, direct
+OptionalRef/ComponentSelection includes, the concrete reconstruction-state
+include in the interface test, and doctest's single-argument CAPTURE contract
+across the new CUDA tests. Retry4 terminated on the latter test issue; its
+corrections await the next build invocation.
+
+A further source audit found a remaining requirement in section 9 of Plan61:
+CPU linear SGS does not yet consume mesh subpartition ranges, although VR SOR
+does. Close this before Phase C acceptance. Preserve the single-thread scan;
+with multiple threads, lower scans read frozen old values across partitions,
+and upper scans read the completed frozen lower result across partitions.
+Within each partition retain the existing logical order, core/dependent call
+contract and distinct output buffers. Carry immutable partition metadata from
+FV/mesh setup through the linear operator; do not query mesh ownership or add
+lease work inside numerical loops. ILU elimination/triangular ordering stays
+unchanged. This gap is not covered by independent-row OMP tests.
+
+The subsequent source correction now carries `LinearSweepPartitions` from
+FV mesh setup through the retained linear pattern into CPU SGS. Within-block
+logical scans and frozen cross-block reads implement the policy above. A
+four-owned/two-ghost dense oracle exercises ordinary/zero-start and optional
+middle-exchange split sweeps, with both Field and EquationDofs interfaces and
+column-major storage. A separate np2/OMP2 entry checks the threaded policy;
+ordinary linear tests retain the OMP1 oracle. Source implementation is complete
+for this gap; build and numerical validation remain pending.
+
+Retry5 compiled the SGS implementation and test but failed in two other test
+fixtures: dynamic Eigen inverse under nvcc and obsolete raw-communicator
+`DofSpace` constructor calls. The inverse oracle now resides in a host `.cpp`
+driver calling the same CUDA launch wrappers; time/FAS fixtures retain an
+explicit shared communication context. Retry6 continues the same grouped
+build round. Source-review notes and the exact dirty source snapshot are in
+`workspace/plan61-validation/C/`; numerical tests are not yet credited.
+
+### Phase C runtime corrections and partial validation
+
+Retry7 rebuilt the full targets. All 16 selected CPU entries passed, including
+the np2/OMP2 SGS oracle. Device1 linear, time/FAS and full-domain advancement
+(BDF2 and ESDIRK4/pMG plus restart) now pass. Four two-device entries passed:
+distributed sampling, colocated/dislocated interface refresh, linear solve and
+complete domain advancement. Python operator and RANS domain checks passed four
+cases at np1 and on each np2 rank after rebuilding/installing the libraries.
+
+The production fixes are queued producer-to-transfer ordering (without immediate
+FV-entry lease probes), and stable-context immutable Jacobian read guards that
+cannot retain an expired preparation-stream address. Existing failed tests were
+retained, then rerun. Remaining spatial fixture branches must supply complete
+RANS references; this is still part of the current C correction round. Final
+physical campaigns and source-linked coverage closure are not established by
+these UT results. Detailed failure/pass logs remain in the C evidence folder.
 

@@ -50,6 +50,11 @@ namespace DNDS::Cauchy
                 std::lock_guard<std::mutex> lock(_mutex);
                 return _operation.Inputs(domain);
             }
+            std::optional<BoundaryInputs> PendingInputs(index domain)
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                return _operation.PendingInputs(domain);
+            }
         };
     }
     StepResult Simulation::Advance(real dt,
@@ -173,6 +178,8 @@ namespace DNDS::Cauchy
                         QueuedEvaluationDependency dependency;
                         dependency.completion = completion;
                         dependency.owner = publication;
+                        if (auto packet = publication->PendingInputs(iDomain))
+                            dependency.incoming = std::make_shared<const BoundaryInputs>(std::move(*packet));
                         dependency.publish =
                             [publication, receiver = std::move(receiver), iDomain]
                         {

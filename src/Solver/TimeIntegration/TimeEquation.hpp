@@ -24,14 +24,14 @@ namespace DNDS::ODE
         /// Output must have distinct storage. Only owned values are produced;
         /// storage/layout and access synchronization belong to Operations.
         template <class Operations, class State>
-        void AssembleResidual(State &out, const State &resOther, const State &state, const State &rate) const
+        void AssembleResidual(State &out, const State &resOther, const State &state, const State &rate, const Operations &operations = {}) const
         {
             Validate();
             Operations::RequireDistinct(out, resOther);
             Operations::RequireDistinct(out, state);
             Operations::RequireDistinct(out, rate);
-            Operations::LinearCombination(out, 1, resOther, -inverseDt, state);
-            Operations::Axpy(out, rhsScale, rate);
+            operations.LinearCombination(out, 1, resOther, -inverseDt, state);
+            operations.Axpy(out, rhsScale, rate);
         }
     };
 

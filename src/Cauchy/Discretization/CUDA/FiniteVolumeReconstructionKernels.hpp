@@ -35,4 +35,18 @@ namespace DNDS::Cauchy::CUDA
                                            PerfectGas gas, CharacteristicOutput forward, CharacteristicOutput inverse,
                                            Runtime::ArrayView<NumericalStatus, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> status,
                                            Runtime::ArrayView<int, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> fallback);
+    /// Deterministic integer summary; partial rows = min(256, ceil(faces/128)),
+    /// with at least one row for an empty mesh. Result has one row. No host wait.
+    void ReduceCharacteristicFallbacks(Runtime::ExecutionContext,
+                                       Runtime::ArrayView<const int, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> flags,
+                                       Runtime::ArrayView<index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> partial,
+                                       Runtime::ArrayView<index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> result);
+    /// Local sum of (next-current)^2 and next^2. Scratch has the same row count
+    /// rule as fallback reduction and width two; result is one row of width two.
+    /// The nonlinear controller performs MPI and stopping after observation.
+    void ReconstructionUpdateNorm(Runtime::ExecutionContext,
+                                  Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> current,
+                                  Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> next,
+                                  Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::FixedRows<2>> partial,
+                                  Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::FixedRows<2>> result);
 }

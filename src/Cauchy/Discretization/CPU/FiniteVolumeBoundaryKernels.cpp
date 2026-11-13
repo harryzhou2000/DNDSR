@@ -2,6 +2,7 @@
 #include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"
 #include "Physics/EvaluationStatus.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -18,21 +19,21 @@ namespace DNDS::Cauchy::CPU
         }
     }
 
-    NumericalStatus FillBoundaryTraces(const BoundaryTraceRequest &request,
-                                       SpanView<const BoundaryCondition> conditions,
-                                       const BoundaryPointOperator &boundary,
-                                       PointEvaluator &evaluator) noexcept
+    static NumericalStatus FillBoundaryTraceRows(const BoundaryTraceRequest &request,
+                                                 SpanView<const BoundaryCondition> conditions,
+                                                 const BoundaryPointOperator &boundary,
+                                                 PointEvaluator &evaluator, BoundaryTraceScratch &worker,
+                                                 index first, index last) noexcept
     {
         DNDS_assert((request.polynomial ? request.means.size() == request.coefficients.size()
                                         : request.coefficients.empty()) &&
                     request.means.size() == request.output.size() &&
                     request.means.size() == request.logicalFirst.size());
-        CFV::Math::SmallMatrix scratch;
-        std::vector<real> point(size_t(request.componentNumber)),
-            cellMean(size_t(request.componentNumber));
-        const index count = request.usePointRows ? request.pointRows.RowCount()
-                                                 : request.points.RowCount();
-        for (index iPoint = 0; iPoint < count; ++iPoint)
+        auto &scratch = worker.basis;
+        auto &point = worker.point;
+        auto &cellMean = worker.mean;
+        DNDS_assert(index(point.size()) == request.componentNumber && index(cellMean.size()) == request.componentNumber);
+        for (index iPoint = first; iPoint < last; ++iPoint)
         {
             const auto sample = request.points(
                 request.usePointRows ? request.pointRows(iPoint, 0) : iPoint, 0);
@@ -109,6 +110,32 @@ namespace DNDS::Cauchy::CPU
         return {};
     }
 
+    NumericalStatus FillBoundaryTraces(const BoundaryTraceRequest &request, SpanView<const BoundaryCondition> conditions,
+                                       const BoundaryPointOperator &boundary, PointEvaluator &evaluator) noexcept
+    {
+        BoundaryTraceScratch scratch(request.componentNumber);
+        return FillBoundaryTraceRows(request, conditions, boundary, evaluator, scratch, 0,
+                                     request.usePointRows ? request.pointRows.RowCount() : request.points.RowCount());
+    }
+    NumericalStatus FillBoundaryTraces(const BoundaryTraceRequest &request, SpanView<const BoundaryCondition> conditions,
+                                       const BoundaryPointOperator &boundary, SpanView<BoundaryTraceWorkerScratch> workers) noexcept
+    {
+        if (workers.empty())
+            return NumericalStatus{NumericalError::InvalidInput};
+        const index count = request.usePointRows ? request.pointRows.RowCount() : request.points.RowCount();
+        OMP::ForRows(0, workers.size(), [&](index iWorker)
+                     {
+            const index quotient = count / workers.size(), remainder = count % workers.size();
+            const index first = iWorker * quotient + std::min(iWorker, remainder);
+            auto &worker = workers[iWorker];
+            worker.status = FillBoundaryTraceRows(request, conditions, boundary, worker.evaluator, worker.scratch,
+                                                 first, first + quotient + (iWorker < remainder)); });
+        for (const auto &worker : workers)
+            if (!worker.status)
+                return worker.status;
+        return {};
+    }
+
     void CopyBoundaryRows(
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks,
                            Runtime::UniformTableRows>
@@ -121,24 +148,29 @@ namespace DNDS::Cauchy::CPU
             sourceRows)
     {
         DNDS_assert(sourceRows.RowCount() == destination.RowCount());
-        for (index iPoint = 0; iPoint < destination.RowCount(); ++iPoint)
+        OMP::ForRows(0, destination.RowCount(), [&](index iPoint)
+                     {
             for (index j = 0; j < destination.Width(); ++j)
-                destination(iPoint, j) = source(sourceRows(iPoint, 0), j);
+                destination(iPoint, j) = source(sourceRows(iPoint, 0), j); });
     }
 
     NumericalStatus FillPrimitiveBoundary(const PrimitiveBoundaryRequest &request,
                                           SpanView<const BoundaryCondition> conditions) noexcept
     {
-        std::vector<real> cellMean(size_t(request.componentNumber));
-        for (index iPoint = 0; iPoint < request.output.RowCount(); ++iPoint)
-        {
+        return OMP::ForRowsStatus(0, request.output.RowCount(), [&](index iPoint) -> NumericalStatus
+                                  {
             const auto sample =
                 request.points(request.sourceRows(iPoint, 0), 0);
             const auto &condition = conditions[sample.condition];
-            Gather(request.means, sample.cell, cellMean);
             FlowState inside{};
-            for (int j = 0; j < 5; ++j)
-                inside[j] = cellMean[size_t(request.flowFirst + j)];
+            index first = 0;
+            for (const auto &block : request.means)
+            {
+                for (index j = std::max<index>(0, request.flowFirst - first);
+                     j < std::min<index>(block.ComponentNumber(), request.flowFirst + 5 - first); ++j)
+                    inside[first + j - request.flowFirst] = block(sample.cell, j);
+                first += block.ComponentNumber();
+            }
             FlowState state;
             if (condition.kind == BoundaryKind::Interface)
             {
@@ -162,14 +194,14 @@ namespace DNDS::Cauchy::CPU
                                     value.temperature};
             for (int j = 0; j < 5; ++j)
                 request.output(iPoint, j) = converted[j];
-        }
-        return {};
+            return {}; });
     }
 
     NumericalStatus ValidateInterfacePacketRows(Algebra::DofComponentView<const real> rows, BoundaryPointRows points,
                                                 ThermalView thermal, RANSStateView rans, EquationBlockReadView ransValues) noexcept
     {
-        for (index iPoint = 0; iPoint < rows.RowCount(); ++iPoint)
+        return OMP::ForRowsStatus(0, rows.RowCount(), [&](index iPoint) -> NumericalStatus
+                                  {
             if (points(iPoint, 0).interface)
             {
                 if (!(thermal.Admissible(
@@ -179,27 +211,44 @@ namespace DNDS::Cauchy::CPU
                     if (!(rans.Admissible(ransValues[iPoint])))
                         return NumericalStatus{NumericalError::InvalidState, 2, iPoint};
             }
-        return {};
+            return {}; });
     }
     Vector3 AccumulateBoundaryForce(FiniteVolumeStencilView stencil,
                                     Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> values,
-                                    SpanView<const int> zones)
+                                    SpanView<const int> zones, SpanView<Vector3> workerSums)
     {
-        Vector3 force{};
-        for (index iPoint = 0; iPoint < stencil.boundaryEntries.RowCount(); ++iPoint)
+        const auto accumulate = [&](index first, index end)
         {
-            const auto &sample = stencil.samples(stencil.boundaryEntries(iPoint, 0), 0);
-            if (std::find(zones.begin(), zones.end(), sample.zone) != zones.end())
-                for (int d = 0; d < 3; ++d)
-                    force[d] += values(iPoint, d);
-        }
+            Vector3 force{};
+            for (index iPoint = first; iPoint < end; ++iPoint)
+            {
+                const auto &sample = stencil.samples(stencil.boundaryEntries(iPoint, 0), 0);
+                if (std::find(zones.begin(), zones.end(), sample.zone) != zones.end())
+                    for (int d = 0; d < 3; ++d)
+                        force[d] += values(iPoint, d);
+            }
+            return force;
+        };
+        const index count = stencil.boundaryEntries.RowCount();
+        if (workerSums.empty())
+            return accumulate(0, count);
+        const index quotient = count / workerSums.size(), remainder = count % workerSums.size();
+        OMP::ForRows(0, workerSums.size(), [&](index iWorker)
+                     {
+            const index first = iWorker * quotient + std::min(iWorker, remainder);
+            workerSums[iWorker] = accumulate(first, first + quotient + (iWorker < remainder)); });
+        // Fixed slot order, no floating-point atomic or runtime tree choice.
+        auto force = workerSums[0];
+        for (index iWorker = 1; iWorker < workerSums.size(); ++iWorker)
+            for (int d = 0; d < 3; ++d)
+                force[d] += workerSums[iWorker][d];
         return force;
     }
     NumericalStatus ValidateInterfaceAliasRows(Algebra::DofComponentView<const real> rows,
                                                BoundaryPointRows a, BoundaryPointRows b, ThermalView thermal) noexcept
     {
-        for (index iPoint = 0; iPoint < a.RowCount(); ++iPoint)
-        {
+        return OMP::ForRowsStatus(0, a.RowCount(), [&](index iPoint) -> NumericalStatus
+                                  {
             if (!(a(iPoint, 0).cell == b(iPoint, 0).cell && a(iPoint, 0).face == b(iPoint, 0).face && a(iPoint, 0).quadrature == b(iPoint, 0).quadrature &&
                   a(iPoint, 0).zone == b(iPoint, 0).zone && a(iPoint, 0).point == b(iPoint, 0).point && a(iPoint, 0).normal == b(iPoint, 0).normal && a(iPoint, 0).interface == b(iPoint, 0).interface))
                 return NumericalStatus{NumericalError::InvalidState, 1, iPoint};
@@ -209,8 +258,7 @@ namespace DNDS::Cauchy::CPU
                             ThermalAdmissibilityDetail::PointRow<decltype(rows)>{
                                 rows, iPoint})))
                     return NumericalStatus{NumericalError::InvalidState, 2, iPoint};
-        }
-        return {};
+            return {}; });
     }
 
 }

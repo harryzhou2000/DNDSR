@@ -8,16 +8,13 @@
 
 namespace DNDS::Cauchy::NonlinearDetail
 {
-    /// Freeze Euler's mean-state GMRES component metric before the linear
-    /// solve. The preparation is collective; it reads only owned physical
-    /// means and never changes halos or the equation. It is independent of
-    /// linear block storage, preconditioner and logical field grouping.
-    template <class Values, class Geometry>
-    std::vector<real> MeanStateScales(Values values, Geometry metric, index components,
-                                      index flowFirst, MPI_Comm comm)
+    /// Finalize an observed rank-local metric. CUDA and CPU prepare identical
+    /// raw quantities; only this controller boundary performs MPI and the
+    /// Euler momentum/energy normalization. The input ends with total volume.
+    inline std::vector<real> FinalizeMeanStateScales(std::vector<real> sum, index components, index flowFirst, MPI_Comm comm)
     {
-        std::vector<real> sum(size_t(components + 1), 0);
-        CPU::AccumulateMeanScale(values, metric, components, {sum.data(), index(sum.size())});
+        DNDS_check_throw_info(index(sum.size()) == components + 1 && flowFirst >= 0 && flowFirst + 5 <= components,
+                              "invalid mean-state component metric shape");
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(
             MPI::ContiguousView<real>{sum.data(), sum.size()}, comm);
         DNDS_check_throw_info(std::isfinite(sum[components]) && sum[components] > 0, "invalid mean-state metric volume");
@@ -39,6 +36,19 @@ namespace DNDS::Cauchy::NonlinearDetail
             DNDS_check_throw_info(std::isfinite(scale) && scale > 0 && std::isfinite(1 / scale), "invalid mean-state component scale");
         }
         return sum;
+    }
+
+    /// Freeze Euler's mean-state GMRES component metric before the linear
+    /// solve. The preparation is collective; it reads only owned physical
+    /// means and never changes halos or the equation. It is independent of
+    /// linear block storage, preconditioner and logical field grouping.
+    template <class Values, class Geometry>
+    std::vector<real> MeanStateScales(Values values, Geometry metric, index components,
+                                      index flowFirst, MPI_Comm comm)
+    {
+        std::vector<real> sum(size_t(components + 1), 0);
+        CPU::AccumulateMeanScale(values, metric, components, {sum.data(), index(sum.size())});
+        return FinalizeMeanStateScales(std::move(sum), components, flowFirst, comm);
     }
 
     inline std::vector<real> LinearScales(const ImplicitSettings &settings, const CFV::FVField &state,

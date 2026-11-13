@@ -11,6 +11,45 @@
 
 using namespace DNDS::Runtime;
 
+TEST_CASE("Pinned host snapshots retain DMA leases and are accounted once")
+{
+    AllocationDiagnostics::Enable();
+    const auto baseline = AllocationDiagnostics::Snapshot().pinnedHostBytes;
+    constexpr DNDS::index rows = 257;
+    {
+        auto target = Array<double>::FromStorage(RowLayout::Dense(rows, 1), Buffer::AllocatePinnedHost(rows * sizeof(double)));
+        target.SetName("test/pinnedSnapshot", DNDS_ALLOCATION_SITE());
+        const auto alias = target;
+        CHECK(AllocationDiagnostics::Snapshot().pinnedHostBytes == baseline + rows * sizeof(double));
+        {
+            auto read = target.Read();
+            cudaPointerAttributes attributes{};
+            REQUIRE(cudaPointerGetAttributes(&attributes, read.View().data) == cudaSuccess);
+            CHECK(attributes.type == cudaMemoryTypeHost);
+            for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+                CHECK(read.View()(iRow, 0) == 0);
+        }
+        Array<double> seed(RowLayout::Dense(rows, 1));
+        {
+            auto write = seed.Write();
+            for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+                write.View()(iRow, 0) = iRow + .25;
+        }
+        const auto context = ExecutionContext::CUDA(0);
+        auto device = seed.To(Device::CUDA(0), context);
+        auto copy = target.CopyFrom(device, context);
+        // Completion may already have occurred physically, but access remains
+        // reserved until this operation publishes/retires its leases.
+        CHECK_THROWS(alias.Read());
+        copy.Wait();
+        const auto read = alias.Read();
+        for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+            CHECK(read.View()(iRow, 0) == iRow + .25);
+    }
+    CHECK(AllocationDiagnostics::Snapshot().pinnedHostBytes == baseline);
+    AllocationDiagnostics::Enable(false);
+}
+
 __global__ void ApplyMetadataWeights(DNDS::SpanView<const double> weights,
                                      ArrayView<double, AccessBoundsChecks, FixedRows<1>> output)
 {

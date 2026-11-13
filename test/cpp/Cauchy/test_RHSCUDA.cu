@@ -325,10 +325,39 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                 request.produceLow = controls.produceLow;
                 request.time = controls.time;
                 C::BoundaryPointOperator bc(equation);
-                auto worker = equation.MakePointEvaluator();
-                const auto status = C::CPU::EvaluateEquationFlux(request, equation, bc, C::Riemann::RiemannFlux(controls.solver), worker, own.View(), ghost.View(), result.View(), lowResult.View(), F::ReconstructionRegion::All);
+                auto worker = equation.MakePointEvaluator({}, {true, true, true});
+                const auto flux = C::Riemann::RiemannFlux::Resolve(model == "SA" ? "Roe_M9" : "AUSMPWPlus");
+                const auto status = C::CPU::EvaluateEquationFlux(request, equation, bc, flux, worker, own.View(), ghost.View(), result.View(), lowResult.View(), F::ReconstructionRegion::All);
+                CAPTURE(int(status.status.code));
+                CAPTURE(status.status.detail);
+                CAPTURE(status.status.row);
+                CAPTURE(status.status.point);
                 REQUIRE(bool(status));
                 cpuFallbacks = status.value;
+                // Three worker slots also exercise an empty cell range. The
+                // face pass must join before gather; otherwise a different
+                // worker could consume an unfinished neighboring face value.
+                std::vector<real> serialFaces(size_t(4 * width)), serialRHS(size_t(2 * width));
+                for (I iFace = 0; iFace < 4; ++iFace)
+                    for (I j = 0; j < width; ++j)
+                        serialFaces[size_t(iFace * width + j)] = face.View()(iFace, j);
+                for (I iCell = 0; iCell < 2; ++iCell)
+                    for (I j = 0; j < width; ++j)
+                        serialRHS[size_t(iCell * width + j)] = rhs.View()(iCell, j);
+                std::vector<C::CPU::EquationRHSWorkerScratch> workers;
+                for (int iWorker = 0; iWorker < 3; ++iWorker)
+                    workers.emplace_back(equation.MakePointEvaluator({}, {true, true, true}), width, request.species, request.produceLow);
+                const auto threaded = C::CPU::EvaluateEquationFlux(request, equation, bc, flux,
+                                                                   DNDS::SpanView<C::CPU::EquationRHSWorkerScratch>{workers.data(), I(workers.size())},
+                                                                   own.View(), ghost.View(), result.View(), lowResult.View(), F::ReconstructionRegion::All);
+                REQUIRE(bool(threaded));
+                CHECK(threaded.value == cpuFallbacks);
+                for (I iFace = 0; iFace < 4; ++iFace)
+                    for (I j = 0; j < width; ++j)
+                        CHECK(face.View()(iFace, j) == serialFaces[size_t(iFace * width + j)]);
+                for (I iCell = 0; iCell < 2; ++iCell)
+                    for (I j = 0; j < width; ++j)
+                        CHECK(rhs.View()(iCell, j) == serialRHS[size_t(iCell * width + j)]);
             }
             auto du = u.To(device), dug = ug.To(device), dr = rec.To(device), drg = recg.To(device), dv = vis.To(device), dvg = visg.To(device);
             auto di = incoming.To(device), da = meanAux.To(device), dw = wave.To(device), dwg = waveg.To(device), dp = pressure.To(device), dpg = pressureg.To(device);

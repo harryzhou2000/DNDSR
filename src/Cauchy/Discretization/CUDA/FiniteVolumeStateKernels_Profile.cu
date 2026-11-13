@@ -1,5 +1,6 @@
 #include "Cauchy/Discretization/CUDA/FiniteVolumeStateKernels.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
+#include "DNDS/Device/ReductionCompletion.hpp"
 #include <cuda_runtime.h>
 #include <cub/block/block_reduce.cuh>
 
@@ -9,7 +10,6 @@ namespace DNDS::Cauchy::CUDA
     namespace
     {
         constexpr int Threads = 128;
-        using SummaryInput = R::ArrayView<const FlowErrorReduction, R::AccessBoundsChecks, R::FixedRows<1>>;
 
         __device__ void Merge(FlowErrorReduction &a, const FlowErrorReduction &b)
         {
@@ -37,16 +37,16 @@ namespace DNDS::Cauchy::CUDA
                 return a;
             }
         };
-        __device__ void StoreBlock(FlowErrorReduction value, FlowErrorOutput output)
+        __device__ void StoreBlock(FlowErrorReduction value, FlowErrorOutput output, index row)
         {
             // Use CCCL's reduction primitive, with an explicit non-atomic tree.
             // The regular partial table is reduced by the same primitive in
-            // the final launch. No host scalar return or hidden allocation.
+            // the last arriving block. No host scalar return or hidden allocation.
             using Reduce = cub::BlockReduce<FlowErrorReduction, Threads, cub::BLOCK_REDUCE_RAKING_COMMUTATIVE_ONLY>;
             __shared__ typename Reduce::TempStorage temporary;
             const auto reduced = Reduce(temporary).Reduce(value, MergeErrors{});
             if (!threadIdx.x)
-                output(blockIdx.x, 0) = reduced;
+                output(row, 0) = reduced;
         }
         __device__ NumericalResult<FlowState> CellAverage(FlowProfileQuadrature geometry, index iCell,
                                                           FlowProfileParameters profile, FlowState primitive,
@@ -77,7 +77,7 @@ namespace DNDS::Cauchy::CUDA
         }
         __global__ void ErrorRows(FlowProfileQuadrature geometry, StateInput means, FlowProfileParameters profile,
                                   FlowState primitive, PerfectGas gas, RigidFrameParameters frame, real time,
-                                  FlowErrorOutput scratch)
+                                  FlowErrorOutput scratch, FlowErrorOutput result, FlowErrorCounter completed)
         {
             FlowErrorReduction sum;
             for (index iCell = index(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -103,35 +103,37 @@ namespace DNDS::Cauchy::CUDA
                 }
                 Merge(sum, cell);
             }
-            StoreBlock(sum, scratch);
-        }
-        __global__ void FinishError(SummaryInput scratch, FlowErrorOutput result)
-        {
-            FlowErrorReduction sum;
+            StoreBlock(sum, scratch, blockIdx.x);
+            __shared__ bool last;
+            if (!threadIdx.x)
+                last = Device::ArriveReductionBlock(completed(0, 0), gridDim.x);
+            __syncthreads();
+            if (!last)
+                return;
+            FlowErrorReduction tail;
             for (index iRow = threadIdx.x; iRow < scratch.RowCount(); iRow += blockDim.x)
-                Merge(sum, scratch(iRow, 0));
-            StoreBlock(sum, result);
+                Merge(tail, scratch(iRow, 0));
+            StoreBlock(tail, result, 0);
         }
     }
     void MeasureFlowError(R::ExecutionContext context, FlowProfileQuadrature geometry, StateInput means,
                           FlowProfileParameters profile, FlowState primitive, PerfectGas gas, RigidFrameParameters frame,
-                          real time, FlowErrorOutput scratch, FlowErrorOutput result)
+                          real time, FlowErrorOutput scratch, FlowErrorOutput result, FlowErrorCounter completed)
     {
         DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "flow error reduction requires CUDA");
         geometry.ValidateDevice(context.device);
-        R::ValidateViewDevices(context.device, means, scratch, result);
+        R::ValidateViewDevices(context.device, means, scratch, result, completed);
         DNDS_check_throw_info(means.kind == R::RowLayoutKind::Table && means.Width() >= 5 && means.Width() <= 7 &&
                                   geometry.offsets.RowCount() == means.RowCount() + 1 && geometry.cells.RowCount() >= means.RowCount() &&
                                   scratch.RowCount() == StateReductionScratchRows(means.RowCount()) && result.RowCount() == 1 &&
-                                  scratch.data != result.data && std::isfinite(time),
+                                  scratch.data != result.data && completed.RowCount() == 1 && std::isfinite(time),
                               "flow error reduction shape/placement differs");
         R::CheckKernelArgumentBudget<FlowProfileQuadrature, StateInput, FlowProfileParameters, FlowState,
-                                     PerfectGas, RigidFrameParameters, real, FlowErrorOutput>();
-        ErrorRows<<<unsigned(scratch.RowCount()), Threads, 0, static_cast<cudaStream_t>(context.stream)>>>(
-            geometry, means, profile, primitive, gas, frame, time, scratch);
+                                     PerfectGas, RigidFrameParameters, real, FlowErrorOutput, FlowErrorOutput, FlowErrorCounter>();
+        const auto stream = static_cast<cudaStream_t>(context.stream);
+        DNDS_check_throw_info(cudaMemsetAsync(completed.data, 0, sizeof(unsigned int), stream) == cudaSuccess, "CUDA flow error counter reset failed");
+        ErrorRows<<<unsigned(scratch.RowCount()), Threads, 0, stream>>>(
+            geometry, means, profile, primitive, gas, frame, time, scratch, result, completed);
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA flow error row launch failed");
-        R::CheckKernelArgumentBudget<SummaryInput, FlowErrorOutput>();
-        FinishError<<<1, Threads, 0, static_cast<cudaStream_t>(context.stream)>>>(scratch.ConstView(), result);
-        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA flow error reduction launch failed");
     }
 }

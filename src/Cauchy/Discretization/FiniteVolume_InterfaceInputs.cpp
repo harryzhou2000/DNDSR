@@ -6,15 +6,35 @@
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "Cauchy/State/MeanStateCheck.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy
 {
+    namespace R = Runtime;
     namespace
     {
+        R::ExecutionStream PacketStream(R::EagerEngine &engine, R::Device device,
+                                        const std::optional<R::ExecutionStream> &requested)
+        {
+            if (requested)
+            {
+                DNDS_check_throw_info(engine.Owns(*requested) && requested->Context().device == device, "boundary packet execution lane differs");
+                return *requested;
+            }
+            if (device == R::Device::Host())
+                return engine.CreateCPUStream();
+#ifdef DNDS_USE_CUDA
+            return engine.CreateStream(std::make_shared<R::CUDALauncher>(device.ordinal));
+#else
+            DNDS_check_throw_info(false, "CUDA boundary packet execution is unavailable");
+            return {};
+#endif
+        }
         EquationDofs BuildPacketRows(const EquationSchema &schema, index rows,
-                                     const std::string &name)
+                                     const std::string &name, R::Device device)
         {
             index components = 0;
             for (const auto &block : schema.blocks)
@@ -23,7 +43,7 @@ namespace DNDS::Cauchy
             return EquationDofs::Coupled(
                 schema,
                 Algebra::DofField<real>(
-                    space, Runtime::RowLayout::Dense(0, components)),
+                    space, Runtime::RowLayout::Dense(0, components), device),
                 "equation");
         }
         void Snapshot(const EquationDofs &values, std::vector<uint64_t> &versions,
@@ -100,7 +120,8 @@ namespace DNDS::Cauchy
     }
     bool FiniteVolume::HasInterfaces() const { return _data->hasInterfaces; }
     BoundaryInputs FiniteVolume::BuildBoundaryInputs(
-        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
+        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+        std::optional<R::ExecutionStream> stream) const
     {
         Metrics().Validate();
         DNDS_check_throw_info(_data->equation.HasMixture() == bool(workers),
@@ -115,17 +136,17 @@ namespace DNDS::Cauchy
         BoundaryInputs input(
             BuildPacketRows(_data->equation.Schema(),
                             _data->boundaryLayout->points.RowCount(),
-                            "boundary quadrature"),
+                            "boundary quadrature", Device()),
             BuildPacketRows(_data->equation.Schema(),
                             _data->boundaryLayout->faces.RowCount(),
-                            "boundary face centers"),
+                            "boundary face centers", Device()),
             _data->equation.PropertyKey(), std::move(thermal));
         input._layout = _data->boundaryLayout;
-        BeginBoundaryUpdate(input);
+        BeginBoundaryUpdate(input, stream);
         return input;
     }
     BoundaryInputs FiniteVolume::FreezeBoundaryInputs(
-        const BoundaryInputs &input) const
+        const BoundaryInputs &input, std::optional<R::ExecutionStream> stream) const
     {
         ValidateBoundaryInputs(input, input.Time());
         BoundaryInputs frozen(
@@ -133,11 +154,14 @@ namespace DNDS::Cauchy
             EquationDofOperations::NewVector(input._faceCenters),
             input._property, input._thermal);
         frozen._layout = _data->boundaryLayout;
-        BeginBoundaryUpdate(frozen);
-        EquationDofOperations::Copy(frozen._quadrature, input._quadrature);
-        EquationDofOperations::Copy(frozen._faceCenters, input._faceCenters);
+        auto engine = stream ? stream->LockEngine() : R::EagerEngine{};
+        const auto lane = PacketStream(engine, Device(), stream);
+        BeginBoundaryUpdate(frozen, lane);
+        EquationDofOperations::Copy(engine, lane, frozen._quadrature, input._quadrature);
+        EquationDofOperations::Copy(engine, lane, frozen._faceCenters, input._faceCenters);
+        engine.Synchronize();
         PublishBoundaryInputs(frozen, input.Time(), input.Epoch(),
-                              input.InterfaceSources());
+                              input.InterfaceSources(), lane);
         return frozen;
     }
     void FiniteVolume::ValidateBoundaryLayout(const BoundaryInputs &input) const
@@ -152,10 +176,10 @@ namespace DNDS::Cauchy
         const auto validate = [&](const EquationDofs &values, index rows)
         {
             values.RequireSchema(_data->equation.Schema());
-            DNDS_check_throw_info(values.Device() == Runtime::Device::Host() &&
+            DNDS_check_throw_info(values.Device() == Device() &&
                                       values.Space().OwnedRows() == size_t(rows) &&
                                       values.Space().GhostRows() == 0,
-                                  "boundary packet requires compatible CPU equation rows");
+                                  "boundary packet requires compatible equation rows and placement");
             for (index iField = 0; iField < values.PhysicalFieldNumber(); ++iField)
                 DNDS_check_throw_info(
                     !values.PhysicalField(iField).Owned().Layout().IsVariable(),
@@ -164,11 +188,20 @@ namespace DNDS::Cauchy
         validate(input._quadrature, input._layout->points.RowCount());
         validate(input._faceCenters, input._layout->faces.RowCount());
     }
-    void FiniteVolume::BeginBoundaryUpdate(BoundaryInputs &input) const
+    void FiniteVolume::BeginBoundaryUpdate(BoundaryInputs &input, std::optional<R::ExecutionStream> stream) const
     {
         ValidateBoundaryLayout(input);
-        input._publication.reset();
-        input._updating = true;
+        input._publication = std::make_shared<BoundaryInputs::PublicationSlot>();
+        if (Device() != R::Device::Host() || stream)
+        {
+            auto engine = stream ? stream->LockEngine() : R::EagerEngine{};
+            const auto lane = PacketStream(engine, Device(), stream);
+            EquationDofOperations::Fill(engine, lane, input._quadrature, std::numeric_limits<real>::quiet_NaN());
+            EquationDofOperations::Fill(engine, lane, input._faceCenters, std::numeric_limits<real>::quiet_NaN());
+            if (!stream)
+                engine.Synchronize();
+            return;
+        }
         for (auto *values : {&input._quadrature, &input._faceCenters})
         {
             auto write = values->WriteOwned();
@@ -179,10 +212,10 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::PublishBoundaryInputs(
         BoundaryInputs &input, real time, StateEpoch epoch,
-        std::vector<BoundaryInterfaceSource> sources) const
+        std::vector<BoundaryInterfaceSource> sources, std::optional<R::ExecutionStream> stream) const
     {
         ValidateBoundaryLayout(input);
-        DNDS_check_throw_info(input._updating && std::isfinite(time), "boundary publication needs a begun update and finite physical time");
+        DNDS_check_throw_info(input._publication && !input.Published() && std::isfinite(time), "boundary publication needs a begun update and finite physical time");
         // PP POLICY -- an interface packet is a frozen complete mean-like point
         // state, not a raw reconstruction polynomial. Flow/species therefore
         // satisfy the stored-state simplex and clipped EOS/T invariant, while
@@ -205,8 +238,39 @@ namespace DNDS::Cauchy
                                                    : EquationBlockReadView{};
             RequireNumericalSuccess(CPU::ValidateInterfacePacketRows(rows, pointView, thermal, rans, ransBlock), "ValidateInterfacePacketRows");
         };
-        validate(input._quadrature, input._layout->points);
-        validate(input._faceCenters, input._layout->faces);
+        if (Device() == R::Device::Host())
+        {
+            if (stream)
+                stream->Record().WaitHost();
+            validate(input._quadrature, input._layout->points);
+            validate(input._faceCenters, input._layout->faces);
+        }
+        else
+        {
+            auto engine = stream ? stream->LockEngine() : R::EagerEngine{};
+            const auto lane = PacketStream(engine, Device(), stream);
+            const auto check = [&](const EquationDofs &values, const R::Array<BoundaryPoint> &points, std::shared_ptr<MeanStateCheck> &checker)
+            {
+                if (!checker)
+                {
+                    R::Array<uint8_t> active(R::RowLayout::Dense(points.RowCount(), 1));
+                    {
+                        const auto read = points.Read();
+                        auto write = active.Write();
+                        for (index iPoint = 0; iPoint < points.RowCount(); ++iPoint)
+                            write.View()(iPoint, 0) = read.View()(iPoint, 0).interface;
+                    }
+                    const auto &n = _data->settings.numerics;
+                    const auto rans = _data->equation.HasRANS() ? RANSStateView{_data->equation.RANS().Kind(), _data->equation.RANS().ComponentNumber()} : RANSStateView{};
+                    checker = std::make_shared<MeanStateCheck>(values.Space(),
+                                                               AdmissibilityPolicy(_data->equation, n.densityFloor, n.temperatureFloor, n.sensibleEnergyFloor, n.pressureFloor, rans),
+                                                               lane.Context(), active.To(Device(), lane.Context()));
+                }
+                RequireNumericalSuccess(checker->Evaluate(engine, lane, values), "ValidateInterfacePacketRows");
+            };
+            check(input._quadrature, input._layout->points, input._quadratureCheck);
+            check(input._faceCenters, input._layout->faces, input._faceCheck);
+        }
         for (const auto &source : sources)
         {
             DNDS_check_throw_info(
@@ -221,14 +285,13 @@ namespace DNDS::Cauchy
         Snapshot(input._quadrature, publication.versions, publication.shapes);
         Snapshot(input._faceCenters, publication.faceVersions,
                  publication.faceShapes);
-        input._publication = std::make_shared<const BoundaryInputs::Publication>(
-            std::move(publication));
-        input._updating = false;
+        std::atomic_store(&input._publication->value,
+                          std::make_shared<const BoundaryInputs::Publication>(std::move(publication)));
     }
     void FiniteVolume::ValidateBoundaryInputs(const BoundaryInputs &input, real time) const
     {
-        const auto read = input._quadrature.ReadOwned();
-        const auto faceRead = input._faceCenters.ReadOwned();
+        const auto read = input._quadrature.ReadOwned({Device(), nullptr});
+        const auto faceRead = input._faceCenters.ReadOwned({Device(), nullptr});
         ValidateBoundaryPublication(input, time);
     }
     void FiniteVolume::ValidateBoundaryPublication(const BoundaryInputs &input, real time) const
@@ -237,12 +300,13 @@ namespace DNDS::Cauchy
         // Active writers have not advanced their generations yet.
         // The immediate wrapper or queued declared operands must establish
         // read access; this function checks provenance, never readiness.
-        DNDS_check_throw_info(input._publication && !input._updating && input._publication->time == time &&
-                                  Current(input._quadrature, input._publication->versions,
-                                          input._publication->shapes) &&
+        const auto publication = input.Published();
+        DNDS_check_throw_info(publication && publication->time == time &&
+                                  Current(input._quadrature, publication->versions,
+                                          publication->shapes) &&
                                   Current(input._faceCenters,
-                                          input._publication->faceVersions,
-                                          input._publication->faceShapes),
+                                          publication->faceVersions,
+                                          publication->faceShapes),
                               "boundary packet is unpublished, stale, modified or from another physical stage");
     }
     BoundaryInputs FiniteVolume::AliasBoundaryInputs(const BoundaryInputs &input) const
@@ -250,15 +314,16 @@ namespace DNDS::Cauchy
         Metrics().Validate();
         DNDS_check_throw_info(input._layout && input._layout->stamp.Valid() && input._layout->mesh.lock() == _data->mesh,
                               "boundary alias requires the same live reference mesh");
-        const auto read = input._quadrature.ReadOwned();
-        const auto faceRead = input._faceCenters.ReadOwned();
-        DNDS_check_throw_info(input._publication && !input._updating &&
+        const auto read = input._quadrature.ReadOwned({Device(), nullptr});
+        const auto faceRead = input._faceCenters.ReadOwned({Device(), nullptr});
+        const auto publication = input.Published();
+        DNDS_check_throw_info(publication &&
                                   Current(input._quadrature,
-                                          input._publication->versions,
-                                          input._publication->shapes) &&
+                                          publication->versions,
+                                          publication->shapes) &&
                                   Current(input._faceCenters,
-                                          input._publication->faceVersions,
-                                          input._publication->faceShapes),
+                                          publication->faceVersions,
+                                          publication->faceShapes),
                               "cannot alias an unpublished or modified boundary packet");
         if (input._layout != _data->boundaryLayout)
         {
@@ -268,6 +333,21 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(a.RowCount() == b.RowCount(), "boundary alias point counts differ");
                 const auto aRead = a.Read(), bRead = b.Read();
                 const auto av = aRead.template View<Runtime::FixedRows<1>>(), bv = bRead.template View<Runtime::FixedRows<1>>();
+                if (Device() != R::Device::Host())
+                {
+                    // Pure host geometry/provenance check: publication already
+                    // validated resident values and the generation checks above
+                    // prove they have not changed. Do not download the packet
+                    // just to repeat its thermodynamic predicate during pMG.
+                    for (index iPoint = 0; iPoint < a.RowCount(); ++iPoint)
+                    {
+                        const auto x = av(iPoint, 0), y = bv(iPoint, 0);
+                        DNDS_check_throw_info(x.cell == y.cell && x.face == y.face && x.quadrature == y.quadrature &&
+                                                  x.zone == y.zone && x.point == y.point && x.normal == y.normal && x.interface == y.interface,
+                                              "boundary alias point order or geometry differs");
+                    }
+                    return;
+                }
                 const auto valueRead = values.ReadOwned();
                 const auto layout = valueRead.ComponentLayout();
                 const auto rows = layout.View();

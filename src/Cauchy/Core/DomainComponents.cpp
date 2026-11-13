@@ -142,11 +142,38 @@ namespace DNDS::Cauchy
     }
 
     DomainExecution::DomainExecution(
-        const DomainProblem &problem, DomainState &state,
+        DomainProblem &problem, DomainState &state,
         const ExecutionSettings &settings,
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
-        : workspace(problem.finiteVolume.BuildWorkspace(state.trial, workers)),
-          context(settings, std::move(workers))
+        : context(settings, std::move(workers))
     {
+        const auto where = context.ComputeStream().Context();
+        if (where.device != R::Device::Host())
+        {
+            // Mesh/CFV setup and programmable initial-value evaluation remain
+            // host operations. Place the finalized immutable plan once, then
+            // copy only owned initialized values; the first halo fills ghosts.
+            // This is an explicit setup transfer, never a loop fallback.
+            DNDS_check_throw_info(state.accepted.CoupledField().Owned().Layout().Kind() == R::RowLayoutKind::Table,
+                                  "CUDA domain placement requires combined AoS state");
+            auto placed = problem.finiteVolume.Placed(where.device, where);
+            auto field = placed.Metrics().BuildField(state.accepted.CoupledField().Owned().Layout(), where.device);
+            field.Owned().CopyFrom(state.accepted.CoupledField().Owned(), where).Wait();
+            auto accepted = EquationDofs::Coupled(problem.equation.Schema(), std::move(field), state.accepted.Fields().Name(0));
+            auto trial = EquationDofOperations::NewVector(accepted);
+            EquationDofOperations::Copy(context.Engine(), context.ComputeStream(), trial, accepted);
+            context.Synchronize();
+            state.accepted = std::move(accepted);
+            state.trial = std::move(trial);
+            state.initial = EquationDofOperations::NewVector(state.accepted);
+            state.residual = EquationDofOperations::NewVector(state.accepted);
+            problem.finiteVolume = std::move(placed);
+            state.reconstruction = problem.finiteVolume.BuildReconstructionState(state.trial);
+            state.accepted.Fields().SetName(problem.name + "/accepted", DNDS_ALLOCATION_SITE());
+            state.trial.Fields().SetName(problem.name + "/trial", DNDS_ALLOCATION_SITE());
+            state.initial.Fields().SetName(problem.name + "/initial", DNDS_ALLOCATION_SITE());
+            state.residual.Fields().SetName(problem.name + "/residual", DNDS_ALLOCATION_SITE());
+        }
+        workspace = problem.finiteVolume.BuildWorkspace(state.trial, context.ChemicalWorkers());
     }
 }

@@ -258,8 +258,19 @@ namespace DNDS::Cauchy::CPU
     };
     /// Initialize mass/rotation and freeze face signals before source addition.
     NumericalStatus InitializeEquationJacobian(const EquationJacobianPreparation &) noexcept;
+    /// Operator-created private thermodynamics and dense point scratch. No
+    /// chemistry worker is acquired, nor scratch resized, inside an OMP team.
+    struct EquationJacobianWorker
+    {
+        PointEvaluator evaluator;
+        EquationFVDetail::PointScratch point, cellMean;
+        Eigen::MatrixXd own, other, boundaryDerivative;
+        EquationJacobianWorker(PointEvaluator properties, index components)
+            : evaluator(std::move(properties)), point(components), cellMean(components),
+              own(components, components), other(components, components), boundaryDerivative(components, components) {}
+    };
     /// Prepare the remaining EOS rows, boundary derivatives and face blocks.
     /// ownedPropertiesPrepared skips only means already emitted by the source kernel.
     NumericalStatus CompleteEquationJacobian(const EquationJacobianPreparation &, const BoundaryPointOperator &,
-                                             PointEvaluator &, bool ownedPropertiesPrepared) noexcept;
+                                             SpanView<EquationJacobianWorker>, bool ownedPropertiesPrepared) noexcept;
 }

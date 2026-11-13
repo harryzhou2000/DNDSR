@@ -128,7 +128,8 @@ namespace DNDS::CFV
             .def("NumFaceProc", &FiniteVolumePlan::NumFaceProc)
             .def("Axisymmetric", &FiniteVolumePlan::Axisymmetric)
             .def("BuildField", py::overload_cast<index>(&FiniteVolumePlan::BuildField, py::const_))
-            .def("BuildFieldWithLayout", py::overload_cast<Runtime::RowLayout, Runtime::Device>(&FiniteVolumePlan::BuildField, py::const_), py::arg("prototype"), py::arg("device") = Runtime::Device::Host())
+            .def("BuildFieldWithLayout", py::overload_cast<Runtime::RowLayout>(&FiniteVolumePlan::BuildField, py::const_), py::arg("prototype"))
+            .def("BuildFieldWithLayout", py::overload_cast<Runtime::RowLayout, Runtime::Device>(&FiniteVolumePlan::BuildField, py::const_), py::arg("prototype"), py::arg("device"))
             .def("BindHalo", &FiniteVolumePlan::BindHalo, py::arg("field"), py::arg("options") = Runtime::TransferOptions{}, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
             .def("GetCellVol", &FiniteVolumePlan::GetCellVol)
             .def("GetCellCent", &FiniteVolumePlan::GetCellCent)
@@ -156,7 +157,8 @@ namespace DNDS::CFV
             .value("FP64TensorCore", ReconstructionDeviceKernel::FP64TensorCore)
             .value("FP64TensorCoreShared", ReconstructionDeviceKernel::FP64TensorCoreShared)
             .value("FP64TensorCoreAsync", ReconstructionDeviceKernel::FP64TensorCoreAsync)
-            .value("FP32", ReconstructionDeviceKernel::FP32);
+            .value("FP32", ReconstructionDeviceKernel::FP32)
+            .value("TF32TensorCore", ReconstructionDeviceKernel::TF32TensorCore);
         py::enum_<ReconstructionMatrixPrecision>(m, "ReconstructionMatrixPrecision")
             .value("FP64", ReconstructionMatrixPrecision::FP64)
             .value("FP32", ReconstructionMatrixPrecision::FP32);
@@ -166,6 +168,7 @@ namespace DNDS::CFV
             .def_readwrite("metrics", &ReconstructionResidencyOptions::metrics)
             .def_readwrite("basis", &ReconstructionResidencyOptions::basis)
             .def_readwrite("retain_host_payloads", &ReconstructionResidencyOptions::retainHostPayloads)
+            .def_readwrite("arbitrary_point_sampling", &ReconstructionResidencyOptions::arbitraryPointSampling)
             .def_readwrite("basis_derivative_order", &ReconstructionResidencyOptions::basisDerivativeOrder)
             .def_readwrite("matrix_precision", &ReconstructionResidencyOptions::matrixPrecision);
         py::class_<ResidentBufferInfo>(m, "ResidentBufferInfo")

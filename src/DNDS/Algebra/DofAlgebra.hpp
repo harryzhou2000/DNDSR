@@ -213,6 +213,18 @@ namespace DNDS::Algebra
         }
     };
 
+    /// Backend-dispatched arithmetic on retained whole-field views. No leases,
+    /// allocation, halo or synchronization are hidden here. The caller declares
+    /// operands and validates matching logical shapes/aliasing before invoking
+    /// this host launcher; residency is checked once at this boundary.
+    template <class T>
+    void ApplyRowViews(Runtime::ExecutionContext context, PointwiseOperation operation,
+                       Runtime::ArrayView<T> output, Runtime::ArrayView<const T> x = {},
+                       Runtime::ArrayView<const T> y = {}, double a = 0, double b = 0)
+    {
+        Detail::Apply(context, operation, output, x, y, a, b);
+    }
+
     template <class T, size_t N>
     void Fill(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, DofField<T, N> &output, T value)
     {

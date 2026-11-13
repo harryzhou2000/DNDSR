@@ -35,21 +35,21 @@ namespace DNDS::ODE
         /// prev is required only for a nonzero history coefficient. No current
         /// unknown or RHS appears here. Output/history must not alias.
         template <class Operations, class State>
-        void AssembleResOther(State &out, const State &start, const State *prev = nullptr) const
+        void AssembleResOther(State &out, const State &start, const State *prev = nullptr, const Operations &operations = {}) const
         {
             Operations::RequireDistinct(out, start);
             if (previous != 0)
             {
                 DNDS_check_throw_info(prev, "BDF2 source requires accepted history");
                 Operations::RequireDistinct(out, *prev);
-                Operations::LinearCombination(out, initial, start, previous, *prev);
+                operations.LinearCombination(out, initial, start, previous, *prev);
             }
             else if (initial == 0)
-                Operations::Fill(out, 0);
+                operations.Fill(out, 0);
             else
             {
-                Operations::Copy(out, start);
-                Operations::Scale(out, initial);
+                operations.Copy(out, start);
+                operations.Scale(out, initial);
             }
         }
     };

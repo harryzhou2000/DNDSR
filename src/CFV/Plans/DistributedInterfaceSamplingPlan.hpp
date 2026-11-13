@@ -4,6 +4,7 @@
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
 #include "DNDS/Runtime/Communication/SparseBatchExchange.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 
 namespace DNDS::CFV
 {
@@ -54,7 +55,6 @@ namespace DNDS::CFV
         struct Data
         {
             std::optional<FiniteVolumePlan> metrics;
-            std::optional<VariationalReconstructionPlan> reconstruction;
             Geom::DistributedInterfacePointMap map;
             Runtime::Array<index> cells;
             Runtime::Array<real> points;
@@ -63,16 +63,29 @@ namespace DNDS::CFV
             Data(std::optional<FiniteVolumePlan> finiteVolume,
                  std::optional<VariationalReconstructionPlan> rec,
                  Geom::DistributedInterfacePointMap correspondence,
-                 Runtime::Array<index> rows, Runtime::Array<real> locations, Runtime::RowTransferPlan route)
-                : metrics(std::move(finiteVolume)), reconstruction(std::move(rec)),
+                 Runtime::Array<index> rows, Runtime::Array<real> locations, Runtime::RowTransferPlan route,
+                 Runtime::ExecutionContext execution)
+                : metrics(std::move(finiteVolume)),
                   map(std::move(correspondence)), cells(std::move(rows)),
                   points(std::move(locations)), returnRoute(std::move(route))
             {
-                if (reconstruction)
-                    sampling.emplace(*reconstruction, cells, points);
+                if (rec)
+                    sampling.emplace(*metrics, *rec, cells, points, false,
+                                     rec->Device() == Runtime::Device::Host() && metrics->Device() == Runtime::Device::Host() ? Runtime::ExecutionContext::Host() : execution);
+                if (execution.device != Runtime::Device::Host())
+                {
+                    if (metrics && metrics->Device() != execution.device)
+                        metrics = metrics->Placed(execution.device, execution);
+                    if (sampling)
+                        sampling = sampling->Placed(execution.device, execution);
+                    cells = cells.To(execution.device, execution);
+                    points = points.To(execution.device, execution);
+                }
+                DNDS_check_throw_info(!metrics || metrics->Device() == execution.device, "sampling plan placement differs from its donor metrics");
             }
         };
         std::shared_ptr<const Data> _data;
+        explicit DistributedInterfaceSamplingPlan(std::shared_ptr<const Data> data) : _data(std::move(data)) {}
 
     public:
         DistributedInterfaceSamplingPlan(VariationalReconstructionPlan reconstruction, Geom::DistributedInterfacePointMap map)
@@ -91,7 +104,8 @@ namespace DNDS::CFV
         DistributedInterfaceSamplingPlan(
             std::optional<FiniteVolumePlan> metrics,
             std::optional<VariationalReconstructionPlan> reconstruction,
-            Geom::DistributedInterfacePointMap map)
+            Geom::DistributedInterfacePointMap map,
+            Runtime::ExecutionContext execution = Runtime::ExecutionContext::Host())
         {
             const auto context = map.Context();
             const MPIInfo mpi(context->Communicator());
@@ -112,7 +126,7 @@ namespace DNDS::CFV
                 if (metrics)
                 {
                     metrics->Validate();
-                    geometryPin.emplace(metrics->AcquireRead());
+                    geometryPin.emplace(metrics->AcquireRead(metrics->Device() == Runtime::Device::Host() ? Runtime::ExecutionContext::Host() : execution));
                     DNDS_check_throw_info(
                         map.Donor().Cells().SameOrder(metrics->Cells()),
                         "distributed interface and reconstruction mesh/order differ");
@@ -120,7 +134,7 @@ namespace DNDS::CFV
                     {
                         reconstruction->Validate();
                         DNDS_check_throw_info(
-                            reconstruction->Metrics().Cells().SameOrder(metrics->Cells()),
+                            reconstruction->Space().Same(metrics->Space()),
                             "interface VR and finite-volume metrics differ");
                     }
                 }
@@ -151,9 +165,13 @@ namespace DNDS::CFV
                         "selected donor row is not owned by its destination");
                 _data = std::make_shared<Data>(
                     std::move(metrics), std::move(reconstruction), std::move(map),
-                    std::move(cells), std::move(points), route.Route().Reverse()); });
+                    std::move(cells), std::move(points), route.Route().Reverse(), execution); });
         }
         index Size() const { return _data->map.Size(); }
+        Runtime::Device Device() const { return _data->cells.GetDevice(); }
+        /// Explicit immutable setup placement; routing and identity are shared.
+        /// Retains only the sampling cache, not a VR matrix/workspace owner.
+        DistributedInterfaceSamplingPlan Placed(Runtime::Device, Runtime::ExecutionContext) const;
         /// Shared coupling owner for frontend input agreement, not a new namespace.
         std::shared_ptr<Runtime::CommunicationContext> Communication() const { return _data->returnRoute.Context(); }
         void Validate() const
@@ -161,14 +179,14 @@ namespace DNDS::CFV
             _data->map.Validate();
             if (_data->metrics)
                 _data->metrics->Validate();
-            if (_data->reconstruction)
-                _data->reconstruction->Validate();
+            if (_data->sampling)
+                _data->sampling->Validate();
         }
         DistributedSamplingWorkspace BuildWorkspace(index components) const
         {
             Validate();
             DNDS_check_throw_info(components > 0, "sampling component count must be positive");
-            return {Runtime::Array<real>(Runtime::RowLayout::Dense(_data->cells.RowCount(), components)), _data};
+            return {Runtime::Array<real>(Runtime::RowLayout::Dense(_data->cells.RowCount(), components), Device()), _data};
         }
         /// Rank-local computation only. Callers may bind the result transfer
         /// persistently with BindResult and schedule it explicitly afterward.
@@ -182,6 +200,11 @@ namespace DNDS::CFV
         /// both inputs throughout synchronous evaluation.
         void EvaluateDonors(const std::optional<DonorInputs> &input,
                             DistributedSamplingWorkspace &workspace) const;
+        /// Queued rank-local evaluation on inline/worker/CUDA. Inputs and
+        /// queries are retained by submitted operations. No MPI or host wait;
+        /// the caller orders the transfer after this producer's completion.
+        void EvaluateDonors(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                            const std::optional<DonorInputs> &, DistributedSamplingWorkspace &) const;
         /// Collective setup. Reuse this binding for repeated fixed-buffer
         /// sampling; wait for donors before Begin and before reading receivers.
         Runtime::TransferBinding BindResult(const DistributedSamplingWorkspace &workspace,
@@ -192,8 +215,8 @@ namespace DNDS::CFV
                                                      {
                 Validate();
                 DNDS_check_throw_info(workspace.plan == _data && values.RowCount() == Size() &&
-                                          values.GetDevice() == Runtime::Device::Host() && values.Layout().Kind() == Runtime::RowLayoutKind::Table,
-                                      "sampling output/workspace mismatch or non-host output"); });
+                                          values.GetDevice() == Device() && workspace.donorValues.GetDevice() == Device() && values.Layout().Kind() == Runtime::RowLayoutKind::Table,
+                                      "sampling output/workspace mismatch or placement differs"); });
             Runtime::PayloadPlan payload(_data->returnRoute, workspace.donorValues.Layout(), values.Layout(), Runtime::ElementSchema::Arithmetic<real>());
             return payload.Bind(workspace.donorValues, values, Runtime::TransferTransport::Direct,
                                 {mode, _data->returnRoute.Context(), tag});
@@ -212,7 +235,7 @@ namespace DNDS::CFV
                 Validate();
                 DNDS_check_throw_info(workspace.plan == _data &&
                                           values.RowCount() == Size() &&
-                                          values.GetDevice() == Runtime::Device::Host() &&
+                                          values.GetDevice() == Device() && workspace.donorValues.GetDevice() == Device() &&
                                           values.Layout().Kind() == Runtime::RowLayoutKind::Table &&
                                           !channel.empty(),
                                       "sampling output/workspace or channel is invalid"); });
@@ -242,7 +265,7 @@ namespace DNDS::CFV
             _data->returnRoute.Context()->LocalStage([&]
                                                      { EvaluateDonors(input, workspace); });
             auto binding = BindResult(workspace, values, Runtime::TransferMode::Transient);
-            binding.Begin().Wait();
+            binding.Begin({Device(), nullptr}).Wait();
         }
     };
 }

@@ -3,10 +3,73 @@
 #include "DNDS/Algebra/AmgXPreconditioner.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include <algorithm>
 #include <cmath>
 
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
+
+TEST_CASE("Native flow-five AMG preserves an uncoupled zero transverse equation")
+{
+    constexpr I rows = 47, width = 5, entries = 3 * rows - 2;
+    R::Array<int> offsets(R::RowLayout::Dense(rows + 1, 1)), columns(R::RowLayout::Dense(entries, 1));
+    R::Array<double> values(R::RowLayout::Dense(entries * width * width, 1)), rhs(R::RowLayout::Dense(rows * width, 1));
+    {
+        auto o = offsets.Write(), c = columns.Write();
+        auto a = values.Write(), b = rhs.Write();
+        I entry = 0;
+        for (I iRow = 0; iRow < rows; ++iRow)
+        {
+            o.View()(iRow, 0) = int(entry);
+            for (I neighbor = std::max<I>(0, iRow - 1); neighbor <= std::min<I>(rows - 1, iRow + 1); ++neighbor)
+            {
+                c.View()(entry, 0) = int(neighbor);
+                for (I i = 0; i < width; ++i)
+                    for (I j = 0; j < width; ++j)
+                        a.View()(entry * width * width + i * width + j, 0) = neighbor != iRow   ? (i == j ? -1 : 0)
+                                                                             : i == j           ? 4
+                                                                             : i == 3 || j == 3 ? 0
+                                                                                                : -.1;
+                ++entry;
+            }
+            for (I j = 0; j < width; ++j)
+                b.View()(iRow * width + j, 0) = j == 3 ? 0 : 1 + .01 * (iRow + j);
+        }
+        o.View()(rows, 0) = int(entry);
+        REQUIRE(entry == entries);
+    }
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    DNDS::Algebra::AmgXPreconditioner provider(device);
+    const auto o = offsets.Read(), c = columns.Read();
+    provider.SetPattern(o.View(), c.View(), int(width));
+    REQUIRE(provider.RowNumber() == rows * width);
+    auto a = values.To(device), b = rhs.To(device);
+    R::Array<double> x(R::RowLayout::Dense(rows * width, 1), device);
+    {
+        const auto ar = a.Read(context), br = b.Read(context);
+        auto xw = x.Write(context);
+        provider.UpdateValuesBorrowed(context, ar.View());
+        provider.ApplyBorrowed(context, br.View(), xw.View());
+    }
+    const auto host = x.To(R::Device::Host());
+    const auto xr = host.Read(), br = rhs.Read(), ar = values.Read();
+    double initial = 0, residual = 0;
+    for (I iRow = 0; iRow < rows; ++iRow)
+    {
+        CHECK(std::abs(xr.View()(iRow * width + 3, 0)) < 1e-14);
+        for (I i = 0; i < width; ++i)
+        {
+            double defect = br.View()(iRow * width + i, 0);
+            for (I k = o.View()(iRow, 0); k < o.View()(iRow + 1, 0); ++k)
+                for (I j = 0; j < width; ++j)
+                    defect -= ar.View()(k * width * width + i * width + j, 0) * xr.View()(c.View()(k, 0) * width + j, 0);
+            initial += std::pow(br.View()(iRow * width + i, 0), 2);
+            residual += defect * defect;
+        }
+    }
+    CHECK(residual < .1 * initial);
+}
 
 TEST_CASE("Single-device AmgX applies a fixed linear local preconditioner and refreshes values")
 {
@@ -81,7 +144,30 @@ TEST_CASE("Single-device AmgX applies a fixed linear local preconditioner and re
             final += residual * residual;
         }
         CHECK(final < 0.1 * initial);
+        // Nonlinear setup/replacement and pMG keep multiple matrices alive.
+        // AmgX Resources manages global pools: an independent resource per
+        // instance used to invalidate the first matrix at creation/destruction
+        // of the second. Different cycle settings must stay solver-local.
+        {
+            DNDS::Algebra::AmgXSettings settings;
+            settings.cycles = 2;
+            DNDS::Algebra::AmgXPreconditioner second(device, settings);
+            second.SetPattern(offsetRead.View(), columnRead.View());
+            const auto valueRead = values.Read(R::ExecutionContext::CUDA(0));
+            second.UpdateValuesBorrowed(R::ExecutionContext::CUDA(0), valueRead.View());
+            const auto rhsRead = rhs.Read(R::ExecutionContext::CUDA(0));
+            R::Array<double> other(R::RowLayout::Dense(n, 1), device);
+            {
+                auto write = other.Write(R::ExecutionContext::CUDA(0));
+                second.ApplyBorrowed(R::ExecutionContext::CUDA(0), rhsRead.View(), write.View());
+            }
+            const auto hostOther = other.To(R::Device::Host());
+            const auto readOther = hostOther.Read();
+            for (I iRow = 0; iRow < n; ++iRow)
+                CHECK(std::isfinite(readOther.View()(iRow, 0)));
+        }
         // Repeated zero-start application must not retain the previous correction.
+        // It must also survive retirement of the independent second solver.
         const auto again = apply(false);
         const auto againRead = again.Read();
         for (I iRow = 0; iRow < n; ++iRow)

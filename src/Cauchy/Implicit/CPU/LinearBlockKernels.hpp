@@ -26,6 +26,9 @@ namespace DNDS::Cauchy::CPU
         LinearDiagonalRows diagonal;
         index components;
         bool fullDiagonal;
+        /// Immutable setup metadata; used only by CPU SGS. Each parallel block
+        /// reads frozen values across its physical-row interval boundaries.
+        SpanView<const index> sweepPartitions;
     };
     /// Apply A to the supplied rows; output is distinct from both inputs.
     void ApplyLinearRows(const LinearBlockInput &, LinearReadRows owned, LinearReadRows ghost, LinearWriteRows output);

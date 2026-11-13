@@ -131,6 +131,26 @@ namespace DNDS::Cauchy
             publication->EnqueuePublication(_engine, _compute, publication);
         }
         template <class Action>
+        void PublishAfter(Runtime::StreamEvent event, Action &&action) const
+        {
+            // This is a host metadata/validation boundary, not a numerical
+            // kernel callback. CUDA stream waits alone cannot make a CPU
+            // publication observe completed values. Keep the explicit host
+            // observation here; already queued independent core work continues.
+            // TODO: queued device-status publication can remove this observation
+            // once the publication contract no longer requires immediate host
+            // validation. Do not claim capture-safe interface publication yet.
+            if (_compute.Context().device != Runtime::Device::Host())
+            {
+                event.WaitHost();
+                _compute.WaitFor(event);
+                std::forward<Action>(action)();
+                return;
+            }
+            _compute.WaitFor(std::move(event));
+            Submit(std::forward<Action>(action));
+        }
+        template <class Action>
         void Submit(Action &&action) const
         {
             DNDS_check_throw_info(_compute.Context().device == Runtime::Device::Host(),

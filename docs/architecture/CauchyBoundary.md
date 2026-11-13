@@ -132,6 +132,24 @@ so a packet cannot outlive the resources that define its sampled rows. The
 caller must release write views before publishing or launching readers; the
 packet does not perform hidden refreshes.
 
+For queued interface refreshes, `RefreshOperation::PendingInputs(domain)`
+exposes stable receiver allocations before completion. Each begun update owns
+a new publication slot. Pending copies share that slot; publication installs
+immutable time/epoch/version metadata once. Copies of an older completed round
+never follow the next update, even when the same allocations are reused.
+`Time()`, `Epoch()` and publication validation reject an unfinished slot.
+
+Receiver component mapping and momentum rotation are declared queued Array
+operations, included in `CompletionEvent()`. A consumer may reserve reads at
+submission, then import that event and run the publication callback before
+using the packet. Publication performs validation and metadata installation,
+not a late immediate write into arrays already reserved by consumers. The
+interface uses the receiver's `execution.checkAccess` policy for its payload
+operations, with shared checked/unchecked lane pairs; mixed domain settings
+do not require a host wait to switch an allocation's access policy.
+Current interface transport/mapping remains CPU-side. This contract does not
+claim that device interface sampling/publication is already implemented.
+
 Focused tests cover prescribed isothermal pressure/temperature/velocity, exact
 physical versus approximate implicit derivatives, sonic farfield branches,
 flow5/logical residual agreement, mixture wall conduction/species isolation,

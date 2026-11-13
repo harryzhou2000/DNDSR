@@ -101,3 +101,25 @@ Focused tests cover first-step closure, warm guesses, extreme preconditioner
 scaling, restarted nonnormal dense oracles, all three layouts with empty local
 ranks, zero operators/null preconditioners, nonfinite data and explicit iteration
 limits. The legacy `GMRES_LeftPreconditioned` class remains unchanged.
+## Device placement and block-row views
+
+`BlockMatrixStorage` owns values and block-row offsets as Runtime arrays. Its
+small immutable descriptor contains only row count and block dimension. Copies
+share these allocations; a read/write access scope retains both value and offset
+leases. `Placed(device, context)` makes a completed setup-time placement copy;
+the result does not keep a host mirror of either payload.
+
+`Read(context).ArrayView()` and `Write(context).ArrayView()` expose a borrowed
+`BlockMatrixArrayView`: whole-array descriptors for block values and offsets,
+plus the block dimension. A row is a flattened column-major square block;
+`Element(iRow, iBlock, i, j)` indexes its `(i,j)` entry. The view is usable on
+CPU/CUDA and checks no ownership or residency per entry. Host launchers validate
+residency once with `ValidateDevice`. The caller retains the access scope until
+the asynchronous operation completes, or submits the underlying arrays as
+managed Runtime operands. Merely copying the view does not retain allocations.
+
+The existing `View()` remains the CPU Eigen adapter and rejects device storage.
+`Offsets()` is an explicit host diagnostic snapshot, not a numerical-loop API.
+Device placement alone does not make the Cauchy linear solver CUDA-capable:
+queued operator submission and inverse/preconditioner preparation are separate
+integration steps.

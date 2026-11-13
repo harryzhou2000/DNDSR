@@ -3,8 +3,12 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <Eigen/LU>
 #include <optional>
+#include <condition_variable>
+#include <atomic>
+#include <chrono>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -267,6 +271,132 @@ TEST_CASE("Native linear action overlaps direct MPI with core and preserves froz
             problem.ApplySGS(b, input, forward, result);
         }
 }
+TEST_CASE("SGS mesh subpartitions freeze cross-block reads in ordinary and zero-start split sweeps")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int previous = (rank + size - 1) % size, next = (rank + 1) % size;
+    auto communication = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD);
+    const A::DofSpace space(communication, 4, 2, "SGS subpartition oracle");
+    std::vector<std::vector<DNDS::index>> send(size), receive(size);
+    send[next] = {2, 3};
+    receive[previous] = {0, 1};
+    const auto route = R::RowTransferPlan::Known(communication, 4, 2, send, receive);
+    const std::vector<std::vector<DNDS::index>> columns{{1}, {0, 2}, {1, 3, 4}, {2, 5}};
+    // Row zero is its own block; the second block contains both core and
+    // dependent rows. Nontrivial core order is [1,0], not physical row order.
+    C::LinearProblemContext problem(space, 5, columns, {1, 0}, C::DiagonalStorage::Block,
+                                    C::OffDiagonalStorage::Assembled, R::Device::Host(), {{0, 1, 4}});
+    FillMatrix(problem);
+    problem.InvertDiagonal();
+    C::EquationSchema schema{"mock-flow5", "mock-energy", "identity", {}};
+    C::EquationBlockSchema flow;
+    flow.name = "flow";
+    for (int j = 0; j < 5; ++j)
+        flow.components.push_back({"q" + std::to_string(j), "", "flow"});
+    schema.blocks.push_back(std::move(flow));
+    const bool partitioned = DNDS::OMP::DistributedThreads() > 1;
+    const std::array<DNDS::index, 4> order{1, 0, 2, 3}, position{1, 0, 2, 3};
+    const auto sameBlock = [&](DNDS::index a, DNDS::index b)
+    { return !partitioned || (a == 0) == (b == 0); };
+    for (bool zero : {false, true})
+        for (bool middle : {false, true})
+        {
+            // Independent dense-block oracle, including remote lower values
+            // for the optional exposed exchange between the two scans.
+            const auto lowerFor = [&](int owner)
+            {
+                std::array<Vector, 4> lower;
+                const int remote = (owner + size - 1) % size;
+                for (auto row : order)
+                {
+                    Vector value = RightHandSide(owner, row);
+                    for (auto column : columns[row])
+                    {
+                        Vector x = Vector::Zero();
+                        if (column >= 4)
+                        {
+                            if (!zero)
+                                x = Input(remote, column - 2);
+                        }
+                        else if (sameBlock(row, column) && position[column] < position[row])
+                            x = lower[column];
+                        else if (!zero)
+                            x = Input(owner, column);
+                        value -= OffDiagonal(row, column) * x;
+                    }
+                    lower[row] = Diagonal(row, C::DiagonalStorage::Block).fullPivLu().solve(value);
+                }
+                return lower;
+            };
+            const auto lower = lowerFor(rank), remoteLower = lowerFor(previous);
+            std::array<Vector, 4> upper;
+            for (int scan = 3; scan >= 0; --scan)
+            {
+                const auto row = order[scan];
+                Vector value = RightHandSide(rank, row);
+                for (auto column : columns[row])
+                {
+                    Vector x = Vector::Zero();
+                    if (column >= 4)
+                    {
+                        if (middle)
+                            x = remoteLower[column - 2];
+                        else if (!zero)
+                            x = Input(previous, column - 2);
+                    }
+                    else
+                        x = !sameBlock(row, column) || position[column] < position[row] ? lower[column] : upper[column];
+                    value -= OffDiagonal(row, column) * x;
+                }
+                upper[row] = Diagonal(row, C::DiagonalStorage::Block).fullPivLu().solve(value);
+            }
+            for (bool logical : {false, true})
+            {
+                // Column-major storage also exercises the logical gather path.
+                const auto layout = R::RowLayout::ColMajor(0, 5, {8, 1});
+                Field old(space, layout), rhs(space, layout), forward(space, layout), result(space, layout);
+                {
+                    auto x = old.Owned().Write(), b = rhs.Owned().Write();
+                    for (DNDS::index row = 0; row < 4; ++row)
+                        for (int j = 0; j < 5; ++j)
+                        {
+                            x.View()(row, j) = Input(rank, row)[j];
+                            b.View()(row, j) = RightHandSide(rank, row)[j];
+                        }
+                }
+                const auto bind = [&](Field &field)
+                { return R::PayloadPlan(route, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<double>()).Bind(field.Owned(), field.Ghost()); };
+                const auto run = [&](auto &b, auto &x, auto &f, auto &y)
+                {
+                    auto sweep = zero ? problem.BeginSGSZero(b, f, y, middle) : problem.BeginSGS(b, x, f, y, middle);
+                    // Post real MPI, then run only the owned-input core phase.
+                    auto exchange = bind(old).Begin();
+                    sweep.Lower(C::LinearRegion::Core);
+                    exchange.Wait();
+                    sweep.Lower(C::LinearRegion::HaloDependent);
+                    if (middle)
+                        bind(forward).Begin().Wait();
+                    sweep.Upper(C::LinearRegion::HaloDependent);
+                    sweep.Upper(C::LinearRegion::Core);
+                    sweep.Finish();
+                };
+                if (logical)
+                {
+                    auto b = C::EquationDofs::Coupled(schema, rhs), x = C::EquationDofs::Coupled(schema, old);
+                    auto f = C::EquationDofs::Coupled(schema, forward), y = C::EquationDofs::Coupled(schema, result);
+                    run(b, x, f, y);
+                }
+                else
+                    run(rhs, old, forward, result);
+                const auto actual = result.Owned().Read();
+                for (DNDS::index row = 0; row < 4; ++row)
+                    for (int j = 0; j < 5; ++j)
+                        CHECK(actual.View()(row, j) == doctest::Approx(upper[row][j]).epsilon(1e-13));
+            }
+        }
+}
 TEST_CASE("Linear matrix construction rejects invalid topology and supports empty owners")
 {
     const A::DofSpace space(2, 1);
@@ -526,6 +656,73 @@ TEST_CASE("Staged SGS retains numeric allocations and row metadata after origina
     CHECK(read.View()(0, 0) == 1.5);
     CHECK(read.View()(0, 1) == -.5);
 }
+TEST_CASE("Queued linear actions retain expired owners and reject a submitted stale inverse")
+{
+    struct Gate : R::StreamEvent::State
+    {
+        mutable std::mutex mutex;
+        mutable std::condition_variable condition;
+        std::atomic<bool> open{false};
+        bool Ready() const override { return open.load(); }
+        void Wait() const override
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            DNDS_check_throw_info(condition.wait_for(lock, std::chrono::seconds(10), [&]
+                                                     { return open.load(); }),
+                                  "queued linear test gate timed out");
+        }
+        void Signal()
+        {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                open = true;
+            }
+            condition.notify_all();
+            NotifyCompletion();
+        }
+    };
+    for (int workers : {0, 2})
+    {
+        CAPTURE(workers);
+        R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        const auto gate = std::make_shared<Gate>();
+        struct ReleaseGate
+        {
+            std::shared_ptr<Gate> gate;
+            ~ReleaseGate() { gate->Signal(); }
+        } release{gate}; // Also release on a test exception before engine teardown.
+        stream.WaitFor(R::StreamEvent(gate));
+        const A::DofSpace space(1);
+        Field output(space, 2), rejected(space, 2);
+        {
+            C::LinearProblemContext problem(space, 2, {{}}, {0}, C::DiagonalStorage::Entries);
+            Field rhs(space, 2), first(space, 2);
+            {
+                auto d = problem.Diagonal().Write(), b = rhs.Owned().Write();
+                d.View()(0, 0) = 2;
+                d.View()(0, 1) = 4;
+                b.View()(0, 0) = 3;
+                b.View()(0, 1) = -2;
+            }
+            problem.InvertDiagonal();
+            problem.SubmitJacobiZero(engine, stream, rhs, first);
+            problem.SubmitApply(engine, stream, first, output);
+            R::SubmitArrays(engine, stream, [](R::ExecutionContext, auto diagonal)
+                            { diagonal(0, 0) = 5; }, R::WriteAs<R::TableRows>(problem.Diagonal()));
+            // The producer has not executed, but its reservation invalidates
+            // the inverse now. Do not defer this check to a completed version.
+            CHECK_THROWS(problem.SubmitJacobiZero(engine, stream, rhs, rejected));
+        }
+        CHECK_FALSE(gate->Ready());
+        gate->Signal();
+        engine.Synchronize();
+        const auto read = output.Owned().Read();
+        CHECK(read.View()(0, 0) == 3);
+        CHECK(read.View()(0, 1) == -2);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

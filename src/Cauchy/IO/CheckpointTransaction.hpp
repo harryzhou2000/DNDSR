@@ -17,8 +17,6 @@ namespace DNDS::Cauchy::IO
         std::optional<EquationDofs> equationGuess;
         std::optional<EquationDofs::ReadScope> source;
         std::optional<EquationDofs::WriteScope> destination;
-        std::vector<EquationBlockArrayView<const real>> input;
-        std::vector<EquationBlockArrayView<real>> output;
         std::optional<FiniteVolume::ReconstructionRestore> reconstruction;
         bool committed = false;
         ~DomainCheckpointRead()

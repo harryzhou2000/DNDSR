@@ -284,7 +284,7 @@ TEST_CASE("CUDA face auxiliaries distinguish rotated neighbor physical boundary 
     auto entries = DeviceRows<I>({0, 1, 2}), faceIds = DeviceRows<I>({0, 1, 2}), quadratureOffsets = DeviceRows<I>({0, 1, 2, 3});
     auto selected = DeviceRows<I>({2, 0, 1}), cellOffsets = DeviceRows<I>({0, 3}), cellFaces = DeviceRows<I>({0, 1, 2}), selectedCells = DeviceRows<I>({0});
     auto area = DeviceRows<real>({1., .8, 1.2});
-    auto kinds = DeviceRows<C::BoundaryKind>({C::BoundaryKind::Interior, C::BoundaryKind::FarField, C::BoundaryKind::Interface});
+    auto kinds = DeviceRows<C::BoundaryKind>({C::BoundaryKind::Interior, C::BoundaryKind::Farfield, C::BoundaryKind::Interface});
     R::Array<real> hostGeometry(R::RowLayout::Dense(2, 8));
     {
         auto write = hostGeometry.Write();

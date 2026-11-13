@@ -4,6 +4,7 @@
 
 #include "DNDS/Core/Defines.hpp"
 #include "DNDS/Core/NumericalStatus.hpp"
+#include "DNDS/Core/Span.hpp"
 #include "Eigen/src/Core/products/Parallelizer.h"
 #include <algorithm>
 #include <exception>
@@ -99,6 +100,45 @@ namespace DNDS::OMP
             }
         }
         return result;
+    }
+
+    /** Deterministic component-sum reduction over contiguous row ranges.
+     * @pre partials is empty (serial oracle), or contains at least
+     * DistributedThreads()*sum.size() values reserved by the operator.
+     * body(row, localSum) performs only arithmetic and returns a numerical
+     * status. No allocations/atomics occur here. Each partition accumulates
+     * in increasing row order; the final merge follows partition order.
+     * OMP=1 keeps the original addition order directly in sum. On failure,
+     * all numerical outputs are unspecified and must not be published.
+     */
+    template <class Body>
+    NumericalStatus SumRows(index rows, SpanView<real> sum, SpanView<real> partials, Body &&body) noexcept
+    {
+        const index threads = DistributedThreads();
+        if (threads == 1 || partials.empty() || rows <= 1)
+        {
+            for (index iRow = 0; iRow < rows; ++iRow)
+                if (const auto status = body(iRow, sum); !status)
+                    return status;
+            return {};
+        }
+        const index partitions = std::min(rows, threads), width = sum.size();
+        DNDS_assert(partials.size() >= partitions * width);
+        const auto status = ForRowsStatus(0, partitions, [&](index part) -> NumericalStatus
+                                          {
+            SpanView<real> local{partials.data() + part * width, width};
+            for (index j = 0; j < width; ++j) local[j] = 0;
+            const index begin = part * (rows / partitions) + std::min(part, rows % partitions);
+            const index end = begin + rows / partitions + (part < rows % partitions);
+            for (index iRow = begin; iRow < end; ++iRow)
+                if (const auto failure = body(iRow, local); !failure) return failure;
+            return {}; });
+        if (!status)
+            return status;
+        for (index part = 0; part < partitions; ++part)
+            for (index j = 0; j < width; ++j)
+                sum[j] += partials[part * width + j];
+        return {};
     }
 
     /** Setup-only parallel work, allowing allocating/validating library calls.

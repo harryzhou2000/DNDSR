@@ -25,6 +25,7 @@ namespace DNDS::CFV
             int n = 0, dimension = 0;
             index boundaryPoints = 0, faces = 0;
             bool fp64TensorCore = false;
+            bool tf32TensorCore = false;
             std::optional<Algebra::DofSpace> dofs;
             std::shared_ptr<R::CommunicationContext> communication;
             std::optional<R::RowTransferPlan> halo;
@@ -44,6 +45,7 @@ namespace DNDS::CFV
             FiniteVolumeHostView metricView;
             ReconstructionBasisHostView basisView;
             ReconstructionPointBasisView pointBasisView;
+            std::optional<R::Array<real>> samplingMoments;
             std::shared_ptr<Geom::UnstructuredMeshSnapshot> mesh;
             ReconstructionPlacementData(const std::shared_ptr<const ReconstructionData> &source, R::Device placement,
                                         ReconstructionResidencyOptions requested)
@@ -275,6 +277,7 @@ namespace DNDS::CFV
         auto geometry = Metrics().AcquireRead();
         auto result = std::make_shared<Detail::ReconstructionPlacementData>(_data, device, options);
         result->fp64TensorCore = Detail::FP64TensorCoreAvailable(device);
+        result->tf32TensorCore = Detail::TF32TensorCoreAvailable(device);
         const auto &host = *_data;
         auto &view = result->view;
         view.owned = Metrics().NumCell();
@@ -340,6 +343,11 @@ namespace DNDS::CFV
                                   R::Detail::ProjectView<const real, false, R::FixedRows<3>>(radial, metric.radialMoment.Layout()),
                                   R::Detail::ProjectView<const real, false, R::FixedRows<7>>(faceMean, metric.faceMean.Layout())};
         }
+        if (options.arbitraryPointSampling)
+        {
+            result->Add("cellMoments", host.moments, context);
+            result->samplingMoments = result->realArrays.back();
+        }
         if (options.basis)
         {
             auto &pointBasis = result->pointBasisView;
@@ -357,7 +365,9 @@ namespace DNDS::CFV
             }
             if (pointBasis.cachedDerivatives < pointBasis.availableDerivatives)
             {
-                const auto moments = result->Add("cellMoments", host.moments, context);
+                const auto moments = result->samplingMoments
+                                         ? result->samplingMoments->Read(context).View()
+                                         : result->Add("cellMoments", host.moments, context);
                 pointBasis.moments = R::Detail::ProjectView<const real, false, R::TableRows>(moments, host.moments.Layout());
                 pointBasis.cells = options.metrics ? result->metricView.cells
                                                    : R::Detail::ProjectView<const real, false, R::FixedRows<8>>(result->Add("cellMetrics", metric.cell, context), metric.cell.Layout());
@@ -373,6 +383,14 @@ namespace DNDS::CFV
                     result->buffers.push_back({"mesh.allocation."+std::to_string(allocations.size()),capacity,placement}); });
         }
         return VariationalReconstructionPlan(options.retainHostPayloads ? _data : nullptr, std::move(result));
+    }
+    const R::Array<real> &VariationalReconstructionPlan::SamplingMoments() const
+    {
+        Validate();
+        if (!_device)
+            return _data->moments;
+        DNDS_check_throw_info(_device->samplingMoments, "resident arbitrary-point sampling was not requested at reconstruction placement");
+        return *_device->samplingMoments;
     }
     R::Device VariationalReconstructionPlan::Device() const
     {
@@ -457,6 +475,15 @@ namespace DNDS::CFV
     R::TransferBinding VariationalReconstructionPlan::BindHalo(FVField &field, R::TransferTransport transport, R::TransferOptions options) const
     {
         Validate();
+        if (!_device)
+        {
+            const auto &metrics = _data->metrics;
+            const auto &data = *metrics._data;
+            data.communication->LocalStage([&]
+                                           { metrics.ValidateField(field, field.Width()); });
+            return R::PayloadPlan(*data.halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>())
+                .Bind(field.Owned(), field.Ghost(), transport, std::move(options));
+        }
         _device->communication->LocalStage([&]
                                            {Validate();ValidateDeviceField(*this,field,field.Width());
             DNDS_check_throw_info(field.Space().Same(*_device->dofs),"device field belongs to another metric space"); });
@@ -497,8 +524,14 @@ namespace DNDS::CFV
     {
         Require(ReconstructionOperation::WBAP);
         Validate();
-        DNDS_check_throw_info(_device && first >= 0 && count >= 0 && count <= 64,
-                              "queued characteristic buffers require a resident plan and valid component range");
+        DNDS_check_throw_info(first >= 0 && count >= 0 && count <= 64,
+                              "queued characteristic buffers require a valid component range");
+        if (!_device)
+        {
+            auto result = BuildFaceTransform(first, count);
+            result.validation = CharacteristicValidation::Queued;
+            return result;
+        }
         FaceCharacteristicTransform result{first, count, {}, {}, _identity};
         result.validation = CharacteristicValidation::Queued;
         if (!count)
@@ -552,7 +585,9 @@ namespace DNDS::CFV
         auto pin = _device;
         auto launch = [pin, selection, kernel](R::ExecutionContext context, auto mo, auto mg, auto ro, auto rg, auto bc, auto output, auto blocks, auto status)
         {
-            if (kernel == ReconstructionDeviceKernel::FP64TensorCoreShared || kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync)
+            if (kernel == ReconstructionDeviceKernel::TF32TensorCore)
+                Detail::LaunchJacobiTF32(context, pin->view, selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
+            else if (kernel == ReconstructionDeviceKernel::FP64TensorCoreShared || kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync)
                 Detail::LaunchJacobiTensorCoreShared(context, pin->view, selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status,
                                                      kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync);
             else if (kernel == ReconstructionDeviceKernel::FP64TensorCore)
@@ -698,7 +733,8 @@ namespace DNDS::CFV
         if (!_device)
             return kernel == ReconstructionDeviceKernel::FP64;
         if (_device->view.quantized)
-            return kernel == ReconstructionDeviceKernel::FP32;
+            return kernel == ReconstructionDeviceKernel::FP32 ||
+                   (kernel == ReconstructionDeviceKernel::TF32TensorCore && _device->tf32TensorCore);
         return kernel == ReconstructionDeviceKernel::FP64 ||
                ((kernel == ReconstructionDeviceKernel::FP64TensorCore || kernel == ReconstructionDeviceKernel::FP64TensorCoreShared ||
                  kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync) &&
@@ -712,6 +748,12 @@ namespace DNDS::CFV
             DNDS_check_throw_info(false, "queued CUDA characteristic validation unavailable");
         }
         bool FP64TensorCoreAvailable(R::Device) { return false; }
+        bool TF32TensorCoreAvailable(R::Device) { return false; }
+        void LaunchJacobiTF32(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks,
+                              R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<const int>)
+        {
+            DNDS_check_throw_info(false, "CUDA TF32 reconstruction unavailable");
+        }
         void LaunchJacobiTensorCoreShared(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks, R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<const int>, bool)
         {
             DNDS_check_throw_info(false, "CUDA shared tensor-core Jacobi unavailable");

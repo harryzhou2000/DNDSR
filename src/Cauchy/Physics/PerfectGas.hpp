@@ -43,6 +43,24 @@ namespace DNDS::Cauchy
                 momentumSquared += state[1 + d] * state[1 + d];
             return (gamma - 1) * (state[4] - 0.5 * momentumSquared / state[0]);
         }
+        /// Conservative pressure derivative at a validated perfect-gas state.
+        /// The energy convention excludes turbulent kinetic energy. RANS
+        /// scalar derivatives are therefore zero and are appended by the
+        /// equation-profile producer, independently of the rho*k stress term.
+        DNDS_DEVICE_CALLABLE FlowState PressureDerivative(const FlowState &state) const noexcept
+        {
+            FlowState result{};
+            real speedSquared = 0;
+            for (int d = 0; d < 3; ++d)
+            {
+                const real velocity = state[1 + d] / state[0];
+                speedSquared += velocity * velocity;
+                result[1 + d] = -(gamma - 1) * velocity;
+            }
+            result[0] = .5 * (gamma - 1) * speedSquared;
+            result[4] = gamma - 1;
+            return result;
+        }
         /// Column-major derivative of the physical normal flux with respect to
         /// all five conservative components. Thermodynamic derivatives belong
         /// to the model, independently of numerical Riemann dissipation.

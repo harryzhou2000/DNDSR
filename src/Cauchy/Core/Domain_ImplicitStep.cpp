@@ -97,7 +97,7 @@ namespace DNDS::Cauchy
         };
         MPI::LocalStage(mpi, [&]
                         { _state.timeStepper = std::make_unique<EquationTimeStepper>(_state.trial, _steady ? "bdf1" : time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
-                                                                                     { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.variant == "U2R1" ? ODE::DITRVariant::U2R1 : ODE::DITRVariant::U2R2}); });
+                                                                                     { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.variant == "U2R1" ? ODE::DITRVariant::U2R1 : ODE::DITRVariant::U2R2}, QueuedEquationOperations(_execution.Context().ComputeStream())); });
         _execution.implicit = std::make_unique<NonlinearSolver>(
             _problem.finiteVolume, _state.trial, _state.reconstruction, _execution.workspace,
             _execution.Context(), settings,
@@ -112,18 +112,6 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_execution.implicit && _execution.workspace.get() == &workspace,
                               "implicit equation rate belongs to another workspace");
         _execution.implicit->EvaluateRate(state, rate, time);
-    }
-    void Domain::NormalizeRate(EquationDofs &rate)
-    {
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
-                        {
-            const auto geometry = _problem.finiteVolume.Metrics().AcquireRead(); const auto metrics = geometry.HostView();
-            const auto read = _state.residual.ReadOwned(); auto write = rate.WriteOwned();
-            for (index iBlock = 0; iBlock < rate.BlockNumber(); ++iBlock)
-            {
-                const auto input = read.Block(iBlock); const auto output = write.Block(iBlock);
-                CPU::DivideRowsByVolume(input.owned, output, metrics, input.ComponentNumber());
-            } });
     }
     bool Domain::RecordImplicitStage(NonlinearIterationReport report)
     {
@@ -146,17 +134,18 @@ namespace DNDS::Cauchy
                 _problem.finiteVolume.RestoreReconstructionGuess(*_state.reconstruction, *_state.reconstructionBackup,
                                                _state.limitedVRBackup
                                                    ? OptionalRef<const Runtime::Array<real>>(*_state.limitedVRBackup)
-                                                   : OptionalRef<const Runtime::Array<real>>{});
+                                                   : OptionalRef<const Runtime::Array<real>>{}, _execution.ComputeStream());
             else
             {
                 const auto &guess = _problem.finiteVolume.ReconstructionGuess(*_state.reconstruction);
                 if (!_state.reconstructionBackup) _state.reconstructionBackup.emplace(EquationDofOperations::NewVector(guess));
-                EquationDofOperations::Copy(*_state.reconstructionBackup, guess);
+                QueuedEquationOperations(_execution.ComputeStream()).Copy(*_state.reconstructionBackup, guess);
                 if (const auto history = _problem.finiteVolume.LimitedVRHistory(*_state.reconstruction))
                 {
-                    if (!_state.limitedVRBackup) _state.limitedVRBackup.emplace(history->Layout());
-                    _state.limitedVRBackup->CopyFrom(*history).Wait();
+                    if (!_state.limitedVRBackup) _state.limitedVRBackup.emplace(history->Layout(), history->GetDevice());
+                    _state.limitedVRBackup->CopyFrom(*history, _execution.ComputeStream().Context()).Wait();
                 }
+                _execution.Synchronize();
                 _state.restoreReconstruction = true;
             } });
     }
@@ -178,7 +167,7 @@ namespace DNDS::Cauchy
             _execution.coupledPreparedTrial != _state.trialEpoch.trial)
         {
             if (_problem.finiteVolume.PolynomialReconstruction())
-                _problem.finiteVolume.CopyReconstructionState(*_coupledMiddle->state, *_state.reconstruction);
+                _problem.finiteVolume.CopyReconstructionState(*_coupledMiddle->state, *_state.reconstruction, _execution.ComputeStream());
             _execution.coupledPreparedTrial = _state.trialEpoch.trial;
         }
     }
@@ -218,9 +207,7 @@ namespace DNDS::Cauchy
             std::vector<real> sum(norms.size() + 1, 0);
             MPI::LocalStage(mpi, [&]
             {
-                const auto geometry = _problem.finiteVolume.Metrics().AcquireRead(); const auto metric = geometry.HostView();
-                const auto read = _execution.coupledResidual->ReadOwned(); const auto layout = read.ComponentLayout(); const auto values = layout.View();
-                RequireNumericalSuccess(CPU::AccumulateVolumeNorm(values, metric, index(norms.size()), _implicitControls.normOrder, {sum.data(), index(sum.size())}), "AccumulateVolumeNorm");
+                sum = _execution.implicit->MeasureRateNorm(*_execution.coupledResidual, _implicitControls.normOrder);
             });
             MPI::AllreduceInPlace<MPI::Reduction::Sum>(
                 MPI::ContiguousView<real>{sum.data(), sum.size()}, mpi.comm);

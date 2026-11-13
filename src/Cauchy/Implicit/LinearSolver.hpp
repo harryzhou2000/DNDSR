@@ -29,6 +29,8 @@ namespace DNDS::Cauchy
         int subspace = 20, sgsSweeps = 1, iluFill = 0;
         /// One or two local Jacobi sweeps per exchange. Two freezes remote
         /// input values between sweeps; it is not two synchronized steps.
+        /// For GMRES/Jacobi this is the fixed local preconditioner sweep count
+        /// from zero; no preconditioner halo is needed in that mode.
         int jacobiLocalSweeps = 1;
         /// Fixed zero-started ILU defect corrections per GMRES application.
         /// More than one uses the full operator/halo between local solves.
@@ -58,7 +60,7 @@ namespace DNDS::Cauchy
         /// outlive Solve. No solver-specific worker pool is created when bound.
         std::optional<Streams> streams;
     };
-    /// Domain-local CPU linear orchestration. Owns reusable native vectors and
+    /// Domain-local shared CPU/CUDA linear orchestration. Owns reusable native vectors and
     /// persistent bindings; numerical matrices and kernels remain independent.
     /// All domain ranks construct and call Solve together with agreed controls.
     /// The caller serializes solver/operand access and releases debug views
@@ -96,10 +98,13 @@ namespace DNDS::Cauchy
         Field Solution() const;
     };
 
-    /// The same domain-local CPU solve policy on a complete logical equation
+    /// The same domain-local solve policy on a complete logical equation
     /// state. Flow/RANS/species may share an array or occupy separate fields in
     /// any supported table layout. Dense blocks couple every logical component;
-    /// no full-state repacking or implicit device fallback occurs.
+    /// no implicit device fallback occurs. CUDA currently requires one combined
+    /// AoS flow5/SA/2EQ field and Jacobi or GMRES with Jacobi/AmgX. AmgX consumes
+    /// a scalar CSR copy of the assembled owned-owned principal matrix, while
+    /// DNDS retains the full distributed operator and halo schedule.
     ///
     /// All domain ranks construct/call together. The prototype's physical
     /// grouping and schema must agree across ranks before bindHalo is invoked.

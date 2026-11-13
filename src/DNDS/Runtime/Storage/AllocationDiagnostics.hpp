@@ -28,7 +28,7 @@ namespace DNDS::Runtime
         uint64_t identity = 0;
         Device device;
         size_t bytes = 0;
-        bool externalProvider = false, streamOrderedMemory = false;
+        bool externalProvider = false, streamOrderedMemory = false, pinnedHostMemory = false;
         std::vector<std::string> names;
         std::string file, function;
         int line = 0;
@@ -37,7 +37,7 @@ namespace DNDS::Runtime
     struct AllocationSnapshot
     {
         std::vector<AllocationRecord> allocations;
-        size_t liveBytes = 0, peakBytes = 0;
+        size_t liveBytes = 0, peakBytes = 0, pinnedHostBytes = 0;
         /// Includes inactive ranges retained by pending operations. Does not
         /// claim allocator-pool reservation or physical GPU page residency.
         void Dump(std::ostream &output) const;
@@ -58,7 +58,7 @@ namespace DNDS::Runtime
     {
         /// Buffer lifecycle hooks. Activity must capture a weak owner only.
         void TrackAllocation(uint64_t identity, size_t bytes, Device device,
-                             bool external, bool streamOrdered,
+                             bool external, bool streamOrdered, bool pinnedHost,
                              std::function<AllocationActivity()> activity);
         void ForgetAllocation(uint64_t identity) noexcept;
         void NameAllocation(uint64_t identity, const std::string &name, AllocationSite site);

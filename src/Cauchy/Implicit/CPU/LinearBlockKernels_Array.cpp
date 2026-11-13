@@ -19,6 +19,14 @@ namespace DNDS::Cauchy::CPU
     void JacobiLinearRows(const LinearBlockInput &request, LinearReadRows rhs, LinearReadRows owned, LinearReadRows ghost, LinearWriteRows output, bool zeroStart)
     {
         const auto inverse = Algebra::MakeEigenRowMatrices(request.diagonal, request.components, request.fullDiagonal ? request.components : 1);
+        if (zeroStart)
+        {
+            JacobiRows<true>(Algebra::MakeEigenRowMatrices(rhs, request.components, 1),
+                             Algebra::MakeEigenRowMatrices(rhs, request.components, 1), Algebra::MakeEigenRowMatrices(rhs, request.components, 1),
+                             Algebra::MakeEigenRowMatrices(output, request.components, 1), inverse, 0,
+                             request.pattern, request.rows, request.components, request.fullDiagonal);
+            return;
+        }
         request.blocks.WithActions([&](const auto &blocks)
                                    {
             const auto invoke = [&](auto zero)
@@ -38,10 +46,10 @@ namespace DNDS::Cauchy::CPU
                 constexpr bool Zero = decltype(zero)::value;
                 if (request.components == 5)
                     ScanSGSRows<false, 5, Zero>(Algebra::MakeEigenRowMatrices(rhs, request.components, 1), Algebra::MakeEigenRowMatrices(old, request.components, 1), Algebra::MakeEigenRowMatrices(output, request.components, 1), Algebra::MakeEigenRowMatrices(output, request.components, 1), Algebra::MakeEigenRowMatrices(ghost, request.components, 1), inverse,
-                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal);
+                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal, request.sweepPartitions);
                 else
                     ScanSGSRows<false, Eigen::Dynamic, Zero>(Algebra::MakeEigenRowMatrices(rhs, request.components, 1), Algebra::MakeEigenRowMatrices(old, request.components, 1), Algebra::MakeEigenRowMatrices(output, request.components, 1), Algebra::MakeEigenRowMatrices(output, request.components, 1), Algebra::MakeEigenRowMatrices(ghost, request.components, 1), inverse,
-                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal);
+                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal, request.sweepPartitions);
             };
             if (zeroStart) invoke(std::true_type{}); else invoke(std::false_type{}); });
     }
@@ -55,10 +63,10 @@ namespace DNDS::Cauchy::CPU
                 constexpr bool Zero = decltype(zero)::value;
                 if (request.components == 5)
                     ScanSGSRows<true, 5, Zero>(Algebra::MakeEigenRowMatrices(rhs, request.components, 1), Algebra::MakeEigenRowMatrices(old, request.components, 1), Algebra::MakeEigenRowMatrices(forward, request.components, 1), Algebra::MakeEigenRowMatrices(output, request.components, 1), Algebra::MakeEigenRowMatrices(ghost, request.components, 1), inverse,
-                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal);
+                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal, request.sweepPartitions);
                 else
                     ScanSGSRows<true, Eigen::Dynamic, Zero>(Algebra::MakeEigenRowMatrices(rhs, request.components, 1), Algebra::MakeEigenRowMatrices(old, request.components, 1), Algebra::MakeEigenRowMatrices(forward, request.components, 1), Algebra::MakeEigenRowMatrices(output, request.components, 1), Algebra::MakeEigenRowMatrices(ghost, request.components, 1), inverse,
-                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal);
+                        blocks, request.pattern, request.rows, request.components, request.fullDiagonal, request.sweepPartitions);
             };
             if (zeroStart) invoke(std::true_type{}); else invoke(std::false_type{}); });
     }

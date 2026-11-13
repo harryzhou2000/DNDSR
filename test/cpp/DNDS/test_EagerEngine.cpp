@@ -13,6 +13,62 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("Array submission captures survive launch callback disposal until retirement")
+{
+    // Simulate a provider that submits immediately but destroys its Work
+    // callback before execution completion. Runtime must retain the capture
+    // through Retirement, independently of CUDA's own command ownership.
+    class DeferredRetirement : public R::StreamLauncher
+    {
+        std::vector<Retirement> pending;
+
+    public:
+        R::ExecutionContext Context() const override { return R::ExecutionContext::Host(); }
+        void Submit(Work work, R::CommandKind, Retirement retire) override
+        {
+            work(Context());
+            pending.push_back(std::move(retire));
+        }
+        void WaitFor(R::StreamEvent event) override { event.WaitHost(); }
+        R::StreamEvent Record() override
+        {
+            Drain();
+            return {};
+        }
+        void Drain() override
+        {
+            for (auto &retire : pending)
+                if (retire)
+                    retire({});
+            pending.clear();
+        }
+    };
+    for (const bool batch : {false, true})
+    {
+        R::EagerEngine engine;
+        auto launcher = std::make_shared<DeferredRetirement>();
+        const auto stream = engine.CreateStream(launcher);
+        R::Array<double> output(R::RowLayout::Dense(1, 1));
+        auto owner = std::make_shared<int>(37);
+        const std::weak_ptr<int> observed = owner;
+        if (batch)
+        {
+            std::vector<R::ArrayOperand<double, false, R::TableRows>> inputs;
+            std::vector<R::ArrayOperand<double, true, R::TableRows>> outputs{R::WriteAs<R::TableRows>(output)};
+            R::SubmitArrayBatch(engine, stream, [owner](auto, auto, auto out)
+                                { out[0](0, 0) = *owner; }, std::move(inputs), std::move(outputs));
+        }
+        else
+            R::SubmitArrays(engine, stream, [owner](auto, auto out)
+                            { out(0, 0) = *owner; }, R::WriteAs<R::TableRows>(output));
+        owner.reset();
+        CHECK_FALSE(observed.expired());
+        engine.Synchronize();
+        CHECK(observed.expired());
+        CHECK(output.Read().At(0, 0) == 37);
+    }
+}
+
 struct Gate : R::StreamEvent::State
 {
     std::atomic<bool> open{false};

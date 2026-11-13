@@ -1,6 +1,7 @@
 #include "Cauchy/IO/StateArchive.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -19,10 +20,24 @@ namespace DNDS::Cauchy
         return {{"version", 1}, {"widths", widths}, {"blocks", blocks}};
     }
     void WriteEquationArrays(const EquationDofs &state, const Serializer::SerializerBaseSSP &serializer,
-                             const std::string &prefix, const MPIInfo &mpi)
+                             const std::string &prefix, const MPIInfo &mpi, Runtime::ExecutionContext execution)
     {
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-            Runtime::WriteArray(state.PhysicalField(iField).Owned(), serializer, prefix + std::to_string(iField), mpi);
+            WriteStateArray(state.PhysicalField(iField).Owned(), serializer, prefix + std::to_string(iField), mpi, execution);
+    }
+    void WriteStateArray(const Runtime::Array<real> &source, const Serializer::SerializerBaseSSP &serializer,
+                         const std::string &name, const MPIInfo &mpi, Runtime::ExecutionContext execution)
+    {
+        std::optional<Runtime::Array<real>> host;
+        MPI::LocalStage(mpi, [&]
+                        {
+            if (source.GetDevice() != Runtime::Device::Host())
+            {
+                DNDS_check_throw_info(execution.device == source.GetDevice(), "checkpoint copy context differs from resident state");
+                host.emplace(source.To(Runtime::Device::Host(), execution));
+                host->SetName("Cauchy/checkpoint/" + name, DNDS_ALLOCATION_SITE());
+            } });
+        Runtime::WriteArray(host ? *host : source, serializer, name, mpi);
     }
     StateArchive StateArchive::Read(const Serializer::SerializerBaseSSP &serializer,
                                     const std::string &prefix, Json descriptor, const MPIInfo &mpi,
@@ -89,13 +104,28 @@ namespace DNDS::Cauchy
         }
     }
     void StateArchive::Restore(EquationDofs &destination, const Runtime::RowTransferPlan &route,
-                               const std::shared_ptr<Runtime::CommunicationContext> &context) const
+                               const std::shared_ptr<Runtime::CommunicationContext> &context, Runtime::ExecutionContext execution) const
     {
         const MPIInfo mpi(route.Communicator());
         MPI::LocalStage(mpi, [&]
                         { DNDS_check_throw_info(Compatible(destination) && fields[0].RowCount() == route.SourceRows() &&
                                                     index(destination.Space().OwnedRows()) == route.DestinationRows(),
                                                 "checkpoint equation fields or row mapping differ"); });
+        if (destination.Device() != Runtime::Device::Host())
+        {
+            std::optional<EquationDofs> host;
+            MPI::LocalStage(mpi, [&]
+                            {
+                DNDS_check_throw_info(execution.device == destination.Device(), "checkpoint upload context differs from destination");
+                host.emplace(EquationDofOperations::NewVectorOn(destination, Runtime::Device::Host()));
+                host->Fields().SetName("Cauchy/checkpoint/ingress", DNDS_ALLOCATION_SITE()); });
+            Restore(*host, route, context);
+            MPI::LocalStage(mpi, [&]
+                            {
+                for (index iField = 0; iField < destination.PhysicalFieldNumber(); ++iField)
+                    destination.PhysicalField(iField).Owned().CopyFrom(host->PhysicalField(iField).Owned(), execution).Wait(); });
+            return;
+        }
         const bool direct = storage == DescribeEquationStorage(destination);
         std::vector<Runtime::Array<real>> mapped;
         MPI::LocalStage(mpi, [&]

@@ -1315,6 +1315,48 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
         }
     }
 }
+TEST_CASE("Queued equation algebra retains temporaries and preserves logical blocks across layouts")
+{
+    Fixture fixture;
+    for (int workers : {0, 2})
+        for (int layout : {0, 1, 2})
+            for (bool split : {false, true})
+            {
+                CAPTURE(workers);
+                CAPTURE(layout);
+                CAPTURE(split);
+                auto state = fixture.Build(Schema(5), layout, split);
+                auto output = fixture.Build(Schema(5), (layout + 1) % 3, !split);
+                auto result = C::EquationDofOperations::NewVector(output);
+                Fill(state);
+                R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
+                const auto produce = engine.CreateCPUStream(), consume = engine.CreateCPUStream();
+                {
+                    auto temporary = C::EquationDofOperations::NewVector(state);
+                    C::EquationDofOperations::Copy(engine, produce, temporary, state);
+                    C::EquationDofOperations::Scale(engine, produce, temporary, 3);
+                    consume.WaitFor(produce.Record());
+                    C::EquationDofOperations::Fill(engine, consume, output, -2);
+                    C::EquationDofOperations::Axpy(engine, consume, output, 1, temporary);
+                    C::EquationDofOperations::LinearCombination(engine, consume, result, .5, output, .5, output);
+                    // No intermediate drain and no surviving caller handle to
+                    // temporary: the submitted operands retain its allocations.
+                }
+                engine.Synchronize();
+                CheckValues(state);
+                CheckValues(output, 3, -2);
+                CheckValues(result, 3, -2);
+
+                // A late-block conflict must reject before any earlier output
+                // field is modified. One representative access failure is enough.
+                if (workers == 0 && layout == 0 && !split)
+                {
+                    const auto held = output.PhysicalField(2).Owned().Read();
+                    CHECK_THROWS(C::EquationDofOperations::Copy(engine, consume, output, state));
+                }
+                CheckValues(output, 3, -2);
+            }
+}
 TEST_CASE("Equation algebra reserves every output before writing and time sources cannot be silently mutated")
 {
     Fixture fixture;

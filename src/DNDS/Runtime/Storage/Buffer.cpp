@@ -65,6 +65,40 @@ namespace DNDS::Runtime
         }
 #endif
 
+        class PinnedHostResource final : public AllocationResource
+        {
+            void *_pointer = nullptr;
+            size_t _bytes = 0;
+
+        public:
+            explicit PinnedHostResource(size_t bytes) : _bytes(bytes)
+            {
+#ifdef DNDS_USE_CUDA
+                if (bytes)
+                {
+                    CheckCUDA(cudaHostAlloc(&_pointer, bytes, cudaHostAllocPortable));
+                    std::memset(_pointer, 0, bytes);
+                }
+#else
+                DNDS_check_throw_info(false, "pinned host allocation requires CUDA");
+#endif
+            }
+            ~PinnedHostResource() override { Release(nullptr); }
+            void *Data() const noexcept override { return _pointer; }
+            size_t Bytes() const noexcept override { return _bytes; }
+            Device GetDevice() const noexcept override { return Device::Host(); }
+            bool ExternalProvider() const noexcept override { return false; }
+            bool PinnedHostMemory() const noexcept override { return true; }
+            void Release(const ExecutionContext *) noexcept override
+            {
+#ifdef DNDS_USE_CUDA
+                if (auto *pointer = std::exchange(_pointer, nullptr))
+                    if (cudaFreeHost(pointer) != cudaSuccess)
+                        std::terminate();
+#endif
+            }
+        };
+
         void Fence(ExecutionContext context)
         {
             ValidateDevice(context.device);
@@ -340,11 +374,12 @@ namespace DNDS::Runtime
             state->device = resource->GetDevice();
             state->streamOrderedMemory = resource->StreamOrderedMemory();
             const bool external = resource->ExternalProvider();
+            const bool pinnedHost = resource->PinnedHostMemory();
             state->allocation = Detail::AllocationReference(std::move(resource));
             if (AllocationDiagnostics::Enabled())
             {
                 const std::weak_ptr<BufferState> weak = state;
-                Detail::TrackAllocation(state->identity, state->bytes, state->device, external, state->streamOrderedMemory, [weak]
+                Detail::TrackAllocation(state->identity, state->bytes, state->device, external, state->streamOrderedMemory, pinnedHost, [weak]
                                         {
                     AllocationActivity result;
                     if (const auto live = weak.lock())
@@ -407,6 +442,11 @@ namespace DNDS::Runtime
     {
         ValidateDevice(device);
         return FromResource(std::make_unique<NativeResource>(bytes, device, options));
+    }
+
+    Buffer Buffer::AllocatePinnedHost(size_t bytes)
+    {
+        return FromResource(std::make_unique<PinnedHostResource>(bytes));
     }
 
     Buffer Buffer::Allocate(size_t bytes, Device device, std::shared_ptr<Allocator> allocator, AllocationOptions options)

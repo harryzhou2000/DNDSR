@@ -2,6 +2,7 @@
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/StepResult.hpp"
+#include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/State/CPU/StatePropertiesKernels.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
@@ -80,7 +81,15 @@ namespace DNDS::Cauchy
         try
         {
             DNDS_assert(_problem.admissibility);
-            return _problem.finiteVolume.Admissible(state, *_problem.admissibility);
+            int valid = 0;
+            const MPIInfo mpi(Communicator());
+            MPI::LocalStage(mpi, [&]
+                            {
+                if (!_execution.meanCheck)
+                    _execution.meanCheck.emplace(_problem.finiteVolume.Metrics().Space(), *_problem.admissibility,
+                                                 _execution.ComputeStream().Context());
+                valid = bool(_execution.meanCheck->Evaluate(_execution.Engine(), _execution.ComputeStream(), state)); });
+            return MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);
         }
         catch (...)
         {
@@ -121,21 +130,33 @@ namespace DNDS::Cauchy
             if (!_execution.timeMeanGradients)
                 _execution.timeMeanGradients.emplace(_problem.finiteVolume.BuildMeanGradients(state));
             _problem.finiteVolume.PrepareAuxValues(state, *_execution.timeAuxiliary, *_execution.timeMeanGradients,
-                                                   _execution.Engine(), _execution.ComputeStream(), _state.time,
+                                                   _execution.Engine(), _execution.ComputeStream(), _execution.CommunicationStream(), _state.time,
                                                    _execution.ChemicalWorkers(), inputs);
-            return _problem.finiteVolume.StableStep(state, *_execution.timeAuxiliary, cfl, _state.time);
         }
-        std::vector<R::TransferOperation> transfers;
-        for (const auto &halo : _execution.timeMeanHalo)
-            transfers.push_back(_execution.Engine().ChecksAccess()
-                                    ? halo.BeginChecked(_execution.ComputeStream())
-                                    : halo.BeginScheduled(_execution.ComputeStream()));
-        for (auto &transfer : transfers)
-            transfer.Wait();
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
-                        { _problem.finiteVolume.PrepareAuxValues(_state.accepted, *_execution.timeAuxiliary, _state.time,
-                                                                 _execution.ChemicalWorkers(), inputs); });
-        return _problem.finiteVolume.StableStep(_state.accepted, *_execution.timeAuxiliary, cfl, _state.time);
+        else
+        {
+            OperatorSchedule schedule(_execution.Engine(), _execution.ComputeStream(), _execution.CommunicationStream(),
+                                      _problem.finiteVolume.Settings().execution.overlap);
+            auto transfers = schedule.BeginAfterCompute(_execution.timeMeanHalo);
+            auto preparation = _problem.finiteVolume.BeginAuxValues(_state.accepted, *_execution.timeAuxiliary,
+                                                                    _state.time, _execution.ChemicalWorkers(), inputs);
+            if (schedule.RunsCoreSeparately())
+                preparation.Apply(_execution.Engine(), _execution.ComputeStream(), CFV::ReconstructionRegion::Core);
+            schedule.Await(transfers);
+            preparation.Apply(_execution.Engine(), _execution.ComputeStream(), schedule.DependentRegion());
+            schedule.Join();
+            preparation.Finish(*_execution.timeAuxiliary);
+        }
+        real local = 0;
+        MPI::LocalStage(MPIInfo(Communicator()), [&]
+                        {
+            _problem.finiteVolume.ValidateAuxValues(_state.accepted, *_execution.timeAuxiliary, _state.time);
+            DNDS_check_throw_info(_execution.timeAuxiliary->cellSpectralSum, "CFL selection requires cell spectral sums");
+            if (!_execution.timeStages)
+                _execution.timeStages.emplace(_problem.finiteVolume.Metrics(), _execution.ComputeStream().Context());
+            local = _execution.timeStages->MinimumStableStep(_execution.Engine(), _execution.ComputeStream(),
+                _execution.timeAuxiliary->cellSpectralSum->Owned(), cfl); });
+        return MPI::AllreduceValue<MPI::Reduction::Min>(local, Communicator());
     }
     void Domain::BeginTrial(real dt)
     {
@@ -149,13 +170,15 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(min == max, "Cauchy timestep differs between domain ranks");
         DNDS_check_throw_info(Admissible(_state.accepted), "accepted Cauchy mean is inadmissible");
         // Owned read scopes may coexist with a retained accepted-state reader.
-        // Drain earlier engine work, then copy every logical segment through
-        // the same synchronous CPU state adapter used by the time driver.
+        // Drain earlier engine work, then queue both copies on the same lane.
+        // Trial initialization is an explicit publication boundary before the
+        // method may take immediate reconstruction/history reservations.
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
             _execution.Synchronize();
-            EquationDofOperations::Copy(_state.trial, _state.accepted);
-            EquationDofOperations::Copy(_state.initial, _state.accepted); });
+            EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.accepted);
+            EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.initial, _state.accepted);
+            _execution.Synchronize(); });
         _lastFallbacks = 0;
         _lastAlpha = _lastBeta = 1;
         _lastAlphaCells = _lastBetaCells = 0;
@@ -170,7 +193,8 @@ namespace DNDS::Cauchy
         {
             ChemicalHalfStep(_state.accepted, _state.trial, .5 * dt);
             MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
-                            { EquationDofOperations::Copy(_state.initial, _state.trial); });
+                            { EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.initial, _state.trial);
+                              _execution.Synchronize(); });
             // Euler's physical split does not reuse multistep transport
             // history across source jumps. Accepted split history is empty.
             if (_state.timeStepper)
@@ -194,7 +218,8 @@ namespace DNDS::Cauchy
         // that allocation as a distinct source output, then copy into trial.
         ChemicalHalfStep(_state.trial, _state.initial, .5 * _state.trialDt);
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
-                        { EquationDofOperations::Copy(_state.trial, _state.initial); });
+                        { EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.initial);
+                          _execution.Synchronize(); });
         DNDS_check_throw_info(Admissible(_state.trial), "chemical source candidate is inadmissible; accepted state unchanged");
     }
     StepResult Domain::PrepareStep(real dt)
@@ -445,13 +470,10 @@ namespace DNDS::Cauchy
     void Domain::CommitReserved(EquationDofs::WriteScope &destination, EquationDofs::ReadScope &source)
     {
         // Simulation reserved every domain's destination/source and agreed
-        // readiness globally before entering this allocation-free publication.
-        for (index iBlock = 0; iBlock < _state.accepted.BlockNumber(); ++iBlock)
-        {
-            const auto input = source.Block(iBlock);
-            const auto output = destination.Block(iBlock);
-            CPU::CopyRows(input.owned, output, output.ComponentNumber());
-        }
+        // readiness globally before entering this publication. No state-field
+        // allocation occurs here; backend launch/descriptor bookkeeping may.
+        EquationDofOperations::CopyReserved(_execution.Engine(), _execution.ComputeStream(),
+                                            _state.accepted, _state.trial, destination, source);
         _state.time = _state.trialTime;
         _state.epoch = _state.trialEpoch;
         ++_state.epoch.acceptedStep;
@@ -473,12 +495,14 @@ namespace DNDS::Cauchy
         // on only the other ranks. Keep this lease through the actual copy.
         std::optional<EquationDofs::WriteScope> destination;
         std::optional<EquationDofs::ReadScope> source;
+        _execution.Synchronize();
         const auto comm = _problem.finiteVolume.Metrics().Communicator();
         MPIInfo mpi(comm);
         try
         {
             MPI::LocalStage(mpi, [&]
-                            { destination.emplace(_state.accepted.WriteOwned()); source.emplace(_state.trial.ReadOwned()); });
+                            { destination.emplace(_state.accepted.WriteOwned(_execution.ComputeStream().Context()));
+                              source.emplace(_state.trial.ReadOwned(_execution.ComputeStream().Context())); });
         }
         catch (...)
         {
@@ -490,12 +514,8 @@ namespace DNDS::Cauchy
                 destination->CancelUnmodified();
             throw;
         }
-        for (index iBlock = 0; iBlock < _state.accepted.BlockNumber(); ++iBlock)
-        {
-            const auto input = source->Block(iBlock);
-            const auto output = destination->Block(iBlock);
-            CPU::CopyRows(input.owned, output, output.ComponentNumber());
-        }
+        EquationDofOperations::CopyReserved(_execution.Engine(), _execution.ComputeStream(),
+                                            _state.accepted, _state.trial, *destination, *source);
         _state.time = time;
         _state.epoch = epoch;
         _state.trialReady = false;
@@ -507,7 +527,9 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(Admissible(_state.accepted), "accepted Cauchy mean is inadmissible");
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
-            _execution.Synchronize(); EquationDofOperations::Copy(_state.trial, _state.accepted); });
+            _execution.Synchronize();
+            EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.accepted);
+            _execution.Synchronize(); });
         _problem.finiteVolume.Execute(_state.trial, *_state.reconstruction, *_execution.workspace, _execution.Context(),
                                       FiniteVolumeEvaluation::Spatial(_state.residual, _state.time));
         _lastFallbacks = _problem.finiteVolume.LastFaceFallbacks(*_execution.workspace);
@@ -519,22 +541,14 @@ namespace DNDS::Cauchy
         const auto snapshot = CaptureStateSnapshot(true);
         EvaluateObservation(snapshot);
         std::array<real, 14> result{};
-        result[13] = std::numeric_limits<real>::max();
-        result[2] = result[3] = std::numeric_limits<real>::max();
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
                         {
-            const auto &workers = _execution.ChemicalWorkers();
-            auto evaluator = _problem.equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
-            const auto geometry = _problem.finiteVolume.Metrics().AcquireRead(); const auto metric = geometry.HostView();
-            const auto read = snapshot.Means().ReadOwned(), residual = _execution.observationState->ReadOwned();
-            const auto flow = read.Block("flow");
-            const auto layout = residual.ComponentLayout(); const auto rhs = layout.View();
-            const int independent = _problem.equation.HasMixture() ? _problem.equation.Mixture().SpeciesNumber() - 1 : 0;
-            std::optional<EquationBlockReadView> species;
-            if (independent) species.emplace(read.Block("species"));
-            const index width = snapshot.Means().ComponentNumber();
-            RequireNumericalSuccess(CPU::AccumulateStateDiagnostics(flow, species, rhs, metric, evaluator, {result.data(), index(result.size())}), "AccumulateStateDiagnostics"); });
+            if (!_execution.stateDiagnostics)
+                _execution.stateDiagnostics.emplace(_problem.finiteVolume.Metrics(), _problem.equation,
+                    _execution.ComputeStream().Context(), _execution.ChemicalWorkers());
+            result = _execution.stateDiagnostics->Evaluate(_execution.Engine(), _execution.ComputeStream(),
+                snapshot.Means(), *_execution.observationState); });
         const auto comm = _problem.finiteVolume.Metrics().Communicator();
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(
             MPI::ContiguousView<real>{result.data(), 2}, comm);
@@ -545,14 +559,19 @@ namespace DNDS::Cauchy
         // Report the volume-integrated L2 defect, matching Euler's res0
         // convention rather than a volume-averaged residual.
         result[4] = std::sqrt(result[4]);
-        const auto force = _problem.finiteVolume.LastBoundaryForce(*_execution.observationWorkspace, forceZones);
+        const auto force = _problem.finiteVolume.LastBoundaryForce(*_execution.observationWorkspace, forceZones, _execution.ComputeStream());
         for (int d = 0; d < 3; ++d)
             result[5 + d] = force[d];
         result[8] = _problem.finiteVolume.LastReconstructionIterations(*_execution.observationWorkspace);
         result[9] = _problem.finiteVolume.LastReconstructionUpdate(*_execution.observationWorkspace);
         if (!_problem.equation.HasMixture() && !_problem.equation.HasRANS() && settings.initialProfile.kind == "isentropicVortex")
         {
-            const auto error = _problem.finiteVolume.Error(snapshot.Means(), settings.initialProfile, settings.initialPrimitive, snapshot.Time());
+            MPI::LocalStage(mpi, [&]
+                            {
+                if (!_execution.flowError)
+                    _execution.flowError.emplace(_problem.finiteVolume, _execution.ComputeStream().Context()); });
+            const auto error = _execution.flowError->Evaluate(_execution.Engine(), _execution.ComputeStream(),
+                                                              snapshot.Means(), settings.initialProfile, settings.initialPrimitive, snapshot.Time());
             for (int i = 0; i < 3; ++i)
                 result[10 + i] = error[i][0];
         }
@@ -560,9 +579,13 @@ namespace DNDS::Cauchy
     }
     void Domain::WriteVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
+        PrepareVisualization(hdfDeflateLevel).Write(prefix, _problem.finiteVolume.Metrics().Communication());
+    }
+    PreparedVisualization Domain::PrepareVisualization(int hdfDeflateLevel)
+    {
         const auto snapshot = CaptureStateSnapshot(true);
         EvaluateObservation(snapshot);
-        _problem.finiteVolume.WriteVisualization(*_execution.observationInput, *_execution.observationReconstruction, *_execution.observationWorkspace, prefix, snapshot.Time(), hdfDeflateLevel, _execution.ChemicalWorkers());
+        return _problem.finiteVolume.PrepareVisualization(*_execution.observationInput, *_execution.observationReconstruction, *_execution.observationWorkspace, snapshot.Time(), hdfDeflateLevel, _execution.ChemicalWorkers());
     }
     void Domain::WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
@@ -586,10 +609,11 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         {
             _execution.Synchronize();
-            EquationDofOperations::Copy(*_execution.observationInput, _state.trial); });
+            EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), *_execution.observationInput, _state.trial);
+            _execution.Synchronize(); });
         if (_problem.finiteVolume.PolynomialReconstruction())
             _problem.finiteVolume.RestoreReconstructionGuess(*_execution.observationReconstruction,
-                                                             _problem.finiteVolume.ReconstructionGuess(*_state.reconstruction));
+                                                             _problem.finiteVolume.ReconstructionGuess(*_state.reconstruction), {}, _execution.ComputeStream());
         _problem.finiteVolume.Execute(*_execution.observationInput, *_execution.observationReconstruction,
                                       *_execution.observationWorkspace, _execution.Context(),
                                       FiniteVolumeEvaluation::Spatial(*_execution.observationState, _state.progressTime));
@@ -629,14 +653,15 @@ namespace DNDS::Cauchy
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
             _execution.Synchronize();
-            EquationDofOperations::Copy(*_execution.observationInput, snapshot.Means()); });
+            EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), *_execution.observationInput, snapshot.Means());
+            _execution.Synchronize(); });
         if (_problem.finiteVolume.PolynomialReconstruction())
         {
             DNDS_check_throw_info(snapshot.Reconstruction(),
                                   "observation snapshot lacks polynomial reconstruction");
             _problem.finiteVolume.RestoreReconstructionGuess(
                 *_execution.observationReconstruction,
-                *snapshot.Reconstruction());
+                *snapshot.Reconstruction(), {}, _execution.ComputeStream());
         }
         _problem.finiteVolume.Execute(*_execution.observationInput, *_execution.observationReconstruction,
                                       *_execution.observationWorkspace, _execution.Context(),

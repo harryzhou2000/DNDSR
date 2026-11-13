@@ -1,5 +1,6 @@
 #include "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp"
 #include "DNDS/Algebra/EigenView.hpp"
+#include "DNDS/Core/OMP.hpp"
 namespace DNDS::Cauchy::CPU
 {
     NumericalStatus InitializeEquationJacobian(const EquationJacobianPreparation &request) noexcept
@@ -11,44 +12,56 @@ namespace DNDS::Cauchy::CPU
         const index owned = request.owned, nv = snapshot.components;
         const auto rotation = snapshot.frame.NegativeSourceJacobian();
         const real rotationBound = Geom::tPoint{snapshot.frame.angularVelocity[0], snapshot.frame.angularVelocity[1], snapshot.frame.angularVelocity[2]}.norm();
-        Eigen::MatrixXd own(nv, nv);
-        for (index iFace = 0; iFace < radius.RowCount(); ++iFace)
+        const auto faceStatus = OMP::ForRowsStatus(0, radius.RowCount(), [&](index iFace) -> NumericalStatus
+                                                   {
             for (int j = 0; j < 2; ++j)
             {
                 if (!std::isfinite(radius(iFace, j)) || radius(iFace, j) < 0)
                     return NumericalStatus{NumericalError::InvalidState}.At(-1, iFace);
                 request.frozenRadius(iFace, j) = radius(iFace, j);
             }
-        for (index iCell = 0; iCell < owned; ++iCell)
+            return {}; });
+        if (!faceStatus)
+            return faceStatus;
+        const auto timeStatus = OMP::ForRowsStatus(0, owned, [&](index iCell) -> NumericalStatus
+                                                   {
             if (!std::isfinite(tau(iCell, 0)) || tau(iCell, 0) < 0)
                 return NumericalStatus{NumericalError::InvalidState}.At(iCell);
+            return {}; });
+        if (!timeStatus)
+            return timeStatus;
         // Initialize before the additive source entrance. Mean EOS work
         // can then be shared with source linearization, without retaining
         // borrowed mixture properties or adding a persistent field cache.
-        for (index iCell = 0; iCell < owned; ++iCell)
-        {
-            own.setIdentity();
-            own *= metric.GetCellVol(iCell) * (tau(iCell, 0) + request.physicalMass);
+        OMP::ForRows(0, owned, [&](index iCell)
+                     {
+            const real mass = metric.GetCellVol(iCell) * (tau(iCell, 0) + request.physicalMass);
+            // Write the strided row directly: no shared dense scratch, and no
+            // per-cell allocation when OMP partitions the independent rows.
+            if (request.fullBlock)
+                for (index j = 0; j < nv; ++j)
+                    for (index i = 0; i < nv; ++i)
+                        d(iCell, i + nv * j) = i == j ? mass : 0;
+            else
+                for (index j = 0; j < nv; ++j) d(iCell, j) = mass;
             if (snapshot.frame.moving)
             {
                 if (request.fullBlock)
                 {
                     for (int j = 0; j < 5; ++j)
                         for (int i = 0; i < 5; ++i)
-                            own(snapshot.flowFirst + i, snapshot.flowFirst + j) += request.scale * metric.GetCellVol(iCell) * rotation[i + 5 * j];
+                            d(iCell, snapshot.flowFirst + i + nv * (snapshot.flowFirst + j)) += request.scale * metric.GetCellVol(iCell) * rotation[i + 5 * j];
                 }
                 else
                     for (int i = 0; i < 5; ++i)
-                        own(snapshot.flowFirst + i, snapshot.flowFirst + i) += request.scale * metric.GetCellVol(iCell) * rotationBound;
-            }
-            for (index j = 0; j < (request.fullBlock ? nv * nv : nv); ++j)
-                d(iCell, j) = request.fullBlock ? own.data()[j] : own(j, j);
-        }
+                        d(iCell, snapshot.flowFirst + i) += request.scale * metric.GetCellVol(iCell) * rotationBound;
+            } });
         return {};
     }
     NumericalStatus CompleteEquationJacobian(const EquationJacobianPreparation &request, const BoundaryPointOperator &boundaryOperator,
-                                             PointEvaluator &evaluator, bool ownedPropertiesPrepared) noexcept
+                                             SpanView<EquationJacobianWorker> workers, bool ownedPropertiesPrepared) noexcept
     {
+        DNDS_assert(!workers.empty());
         const auto &snapshot = request.snapshot;
         const auto &blocks = request.blocks;
         const auto &linearization = request.linearization;
@@ -66,13 +79,22 @@ namespace DNDS::Cauchy::CPU
         const auto ownedTable = sixComponentShape ? Algebra::TryOwnedTable(inputValues.OwnedPart()) : std::nullopt;
         const auto ghostTable = sixComponentShape ? Algebra::TryGhostTable(inputValues.GhostPart()) : std::nullopt;
         const bool useSixComponentKernel = ownedTable && ghostTable;
-        EquationFVDetail::PointScratch point(nv), cellMean(nv);
-        Eigen::MatrixXd own(nv, nv), other(nv, nv), boundaryDerivative(nv, nv);
+        const auto rowRange = [&](index part, index begin, index end)
+        {
+            const index rows = end - begin;
+            const index first = begin + part * (rows / workers.size()) + std::min(part, rows % workers.size());
+            return std::pair<index, index>{first, first + rows / workers.size() + (part < rows % workers.size())};
+        };
         // Only O(N) scalar thermodynamic linearization data are frozen per
         // cell. Never cache a complete N*N flux matrix per cell/face.
         // A source-free/no-sampling workspace returns false: its owned EOS
         // outputs must still be initialized. Ghost means always need EOS.
-        for (index iCell = ownedPropertiesPrepared ? owned : 0; iCell < all; ++iCell)
+        const auto meanStatus = OMP::ForRowsStatus(0, workers.size(), [&](index part) -> NumericalStatus
+                                                   {
+        auto &point = workers[part].point;
+        auto &evaluator = workers[part].evaluator;
+        const auto [begin, end] = rowRange(part, ownedPropertiesPrepared ? owned : 0, all);
+        for (index iCell = begin; iCell < end; ++iCell)
         {
             EquationFVDetail::Gather(blocks, iCell, point, false);
             const bool source = request.directChemicalSource && iCell < owned && request.independent > 0;
@@ -98,6 +120,9 @@ namespace DNDS::Cauchy::CPU
                     }
                 }
         }
+        return {}; });
+        if (!meanStatus)
+            return meanStatus;
         // Prepare the independently sampled face-center exterior rows used
         // by the approximate boundary Jacobian. Interface rows are frozen
         // packet values; physical rows use the same centralized equation
@@ -106,8 +131,13 @@ namespace DNDS::Cauchy::CPU
         const EquationFVDetail::MeanLinearizationOutput boundaryLinearization{
             snapshot.flowFirst, snapshot.speciesFirst,
             request.linearization.pressureDerivative, request.linearization.pressure, std::nullopt};
-        for (index entry = 0;
-             request.linearizeBoundary && entry < request.stencil.jacobianSamples.RowCount(); ++entry)
+        const auto boundaryStatus = OMP::ForRowsStatus(0, workers.size(), [&](index part) -> NumericalStatus
+                                                       {
+        auto &point = workers[part].point;
+        auto &cellMean = workers[part].cellMean;
+        auto &evaluator = workers[part].evaluator;
+        const auto [begin, end] = rowRange(part, 0, request.linearizeBoundary ? request.stencil.jacobianSamples.RowCount() : 0);
+        for (index entry = begin; entry < end; ++entry)
         {
             const auto sample = FiniteVolumeDetail::ExpandSample(request.stencil.jacobianSamples(entry, 0), request.conditions);
             if (sample.other != UnInitIndex)
@@ -142,6 +172,9 @@ namespace DNDS::Cauchy::CPU
             if (!stored)
                 return stored.At(sample.cell, sample.point);
         }
+        return {}; });
+        if (!boundaryStatus)
+            return boundaryStatus;
         struct PreparedValues
         {
             const decltype(inputValues) &cells;
@@ -176,6 +209,16 @@ namespace DNDS::Cauchy::CPU
             const JacobianPointValue point{sample.other, sample.auxiliaryFace, UnInitIndex, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight, sample.changesFrame};
             AddFrozenEquationJacobianPoint(snapshot, point, block, inputValues);
         };
+        // EOS rows and boundary rows are complete before any partition reads
+        // them. Assembly writes independent matrix rows, with private dense
+        // boundary/diagonal scratch and unchanged per-row incidence order.
+        return OMP::ForRowsStatus(0, workers.size(), [&](index part) -> NumericalStatus
+                                  {
+        auto &own = workers[part].own;
+        auto &other = workers[part].other;
+        auto &boundaryDerivative = workers[part].boundaryDerivative;
+        auto &cellMean = workers[part].cellMean;
+        const auto [begin, end] = rowRange(part, 0, owned);
         const auto assembleFaceRow = [&](index iCell, auto &own) -> NumericalStatus
         {
             if (b)
@@ -252,7 +295,7 @@ namespace DNDS::Cauchy::CPU
         if (request.fullBlock)
         {
             const auto matrices = Algebra::MakeEigenRowMatrices(d, nv, nv);
-            for (index iCell = 0; iCell < owned; ++iCell)
+            for (index iCell = begin; iCell < end; ++iCell)
             {
                 auto block = matrices[iCell];
                 const auto status = assembleFaceRow(iCell, block);
@@ -261,7 +304,7 @@ namespace DNDS::Cauchy::CPU
             }
         }
         else
-            for (index iCell = 0; iCell < owned; ++iCell)
+            for (index iCell = begin; iCell < end; ++iCell)
             {
                 own.setZero();
                 for (index j = 0; j < nv; ++j)
@@ -272,6 +315,6 @@ namespace DNDS::Cauchy::CPU
                 for (index j = 0; j < nv; ++j)
                     d(iCell, j) = own(j, j);
             }
-        return {};
+        return {}; });
     }
 }

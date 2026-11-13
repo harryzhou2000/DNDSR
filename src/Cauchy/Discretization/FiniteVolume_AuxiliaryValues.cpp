@@ -79,6 +79,21 @@ namespace DNDS::Cauchy
                                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                                         AuxiliaryInputs inputs) const
     {
+        std::optional<AuxiliaryPreparation> preparation;
+        OperatorSchedule schedule(engine, stream, communication, _data->settings.execution.overlap);
+        preparation.emplace(QueueMeanGradientAuxValues(state, output, gradients, engine, stream, communication,
+                                                       time, std::move(workers), std::move(inputs), true));
+        Metrics().Communication()->LocalStage([&]
+                                              {
+            schedule.Join();
+            FinishMeanGradientAuxValues(state, output, gradients, *preparation); });
+    }
+    FiniteVolume::AuxiliaryPreparation FiniteVolume::QueueMeanGradientAuxValues(
+        EquationDofs &state, AuxiliaryValues &output, MeanGradients &gradients,
+        R::EagerEngine &engine, const R::ExecutionStream &stream, const R::ExecutionStream &communication,
+        real time, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+        AuxiliaryInputs inputs, bool exchangeMeans) const
+    {
         using namespace EquationFVDetail;
         const MPIInfo mpi(Metrics().Communicator());
         const bool overlap = _data->settings.execution.overlap;
@@ -86,7 +101,6 @@ namespace DNDS::Cauchy
         {
             Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
         };
-        std::shared_ptr<PointEvaluator> evaluator;
         std::optional<BoundaryInputs> boundary;
         OptionalRef<const R::Array<real>> incoming;
         // This entry preflight follows the same optional validation policy as
@@ -111,13 +125,12 @@ namespace DNDS::Cauchy
                                   "mean-gradient preparation needs an incoming interface packet");
             if (inputs.boundary)
             {
-                boundary = AliasBoundaryInputs(*inputs.boundary);
-                ValidateBoundaryInputs(*boundary, time);
+                boundary = *inputs.boundary;
+                if (inputs.deferBoundary) ValidateBoundaryLayout(*boundary);
+                else ValidateBoundaryInputs(*boundary, time);
                 incoming.Emplace(boundary->QuadratureValues().CoupledField().Owned());
                 inputs.boundary.Emplace(*boundary);
-            }
-            if (Device() == R::Device::Host())
-                evaluator = std::make_shared<PointEvaluator>(_data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true})); });
+            } });
         auto &work = *gradients._data;
         work.origin.reset();
         work.ghostsReady = false;
@@ -133,12 +146,10 @@ namespace DNDS::Cauchy
         OperatorSchedule schedule(engine, stream, communication, overlap);
         try
         {
-            auto means = schedule.Begin(work.meanHalo);
-            SubmitMeanGradientBoundary(engine, stream, state, gradients, time, evaluator, incoming);
-            // The operation owns the boundary worker until completion. Drop
-            // the controller alias so the later auxiliary operation can obtain
-            // that chemistry worker in lane order without a host drain.
-            evaluator.reset();
+            std::vector<R::TransferOperation> means;
+            if (exchangeMeans)
+                means = schedule.Begin(work.meanHalo);
+            SubmitMeanGradientBoundary(engine, stream, state, gradients, time, workers, incoming);
             if (overlap)
                 gradient(CFV::ReconstructionRegion::Core);
             schedule.Await(means);
@@ -146,23 +157,19 @@ namespace DNDS::Cauchy
             work.RecordQueued(state, time, false);
             DNDS_check_throw_info(!inputs.meanGradients, "mean gradient input is owned by this preparation call");
             inputs.meanGradients.Emplace(gradients);
+            const bool pending = inputs.deferBoundary;
+            if (pending)
+                inputs.boundary = {};
             preparation.emplace(BeginAuxValues(state, output, time, workers, inputs));
+            if (pending)
+                preparation->BindBoundary(*boundary);
             auto halos = schedule.BeginAfterCompute(work.gradientHalo);
             work.RecordQueued(state, time, true);
             if (overlap)
                 preparation->Apply(engine, stream, CFV::ReconstructionRegion::Core);
             schedule.Await(halos);
             preparation->Apply(engine, stream, schedule.DependentRegion());
-            stage([&]
-                  {
-                schedule.Join();
-                if (work.deviceBoundaryStatus)
-                {
-                    const auto status = work.deviceBoundaryStatus->result.To(R::Device::Host());
-                    RequireNumericalSuccess(status.Read().View()(0, 0), "mean-gradient boundary");
-                }
-                work.PublishQueued(state);
-                preparation->Finish(output); });
+            return std::move(*preparation);
         }
         catch (...)
         {
@@ -182,6 +189,20 @@ namespace DNDS::Cauchy
             work.queuedGhost.clear();
             throw;
         }
+    }
+    void FiniteVolume::FinishMeanGradientAuxValues(const EquationDofs &state, AuxiliaryValues &output,
+                                                   MeanGradients &gradients, AuxiliaryPreparation &preparation) const
+    {
+        DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data,
+                              "foreign mean-gradient publication");
+        auto &work = *gradients._data;
+        if (work.deviceBoundaryStatus)
+        {
+            const auto status = work.deviceBoundaryStatus->result.To(R::Device::Host());
+            RequireNumericalSuccess(status.Read().View()(0, 0), "mean-gradient boundary");
+        }
+        work.PublishQueued(state);
+        preparation.Finish(output);
     }
     real FiniteVolume::StableStep(const EquationDofs &state, const AuxiliaryValues &values, real cfl, real time) const
     {

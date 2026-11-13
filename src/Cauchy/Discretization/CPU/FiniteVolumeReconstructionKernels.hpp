@@ -18,4 +18,9 @@ namespace DNDS::Cauchy::CPU
                                                              Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> r,
                                                              std::optional<PerfectGas> gas,
                                                              std::optional<MeanThermodynamicView> thermodynamics = {}) noexcept;
+    /// Opt-in diagnostic only; preserves the host finite/L*R identity check.
+    /// The production producer and limiter do not need a numerical scan.
+    NumericalStatus ValidateFaceCharacteristicMatrices(
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::TableRows> forward,
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::TableRows> inverse) noexcept;
 }

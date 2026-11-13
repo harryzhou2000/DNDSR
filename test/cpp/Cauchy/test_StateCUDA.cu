@@ -5,6 +5,7 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
@@ -18,6 +19,33 @@ namespace R = DNDS::Runtime;
 using I = DNDS::index;
 using DNDS::real;
 static DNDS::MPIInfo mpi;
+
+TEST_CASE("Queued limiter statistics keep integer counts and deterministic minima")
+{
+    const auto device = R::Device::CUDA(0);
+    for (const I rows : {I(0), I(1025)})
+    {
+        R::Array<real> host(R::RowLayout::Dense(rows, 1));
+        {
+            auto write = host.Write();
+            for (I iRow = 0; iRow < rows; ++iRow)
+                write.View()(iRow, 0) = .5 * (iRow % 3);
+        }
+        auto beta = host.To(device);
+        const I partials = K::StateReductionScratchRows(rows);
+        R::Array<I> counts(R::RowLayout::Dense(partials, 1), device), count(R::RowLayout::Dense(1, 1), device);
+        R::Array<real> minima(R::RowLayout::Dense(partials, 1), device), minimum(R::RowLayout::Dense(1, 1), device);
+        R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        R::SubmitArrays(engine, stream, [](R::ExecutionContext context, auto beta, auto counts, auto minima, auto count, auto minimum)
+                        { K::ReduceLimiterStatistics(context, beta, counts, minima, count, minimum); }, R::ReadAs<R::TableRows>(beta), R::WriteAs<R::FixedRows<1>>(counts), R::WriteAs<R::FixedRows<1>>(minima), R::WriteAs<R::FixedRows<1>>(count), R::WriteAs<R::FixedRows<1>>(minimum));
+        engine.Synchronize();
+        const auto hostCount = count.To(R::Device::Host());
+        const auto hostMinimum = minimum.To(R::Device::Host());
+        CHECK(hostCount.Read().View()(0, 0) == (rows ? I(684) : I(0)));
+        CHECK(hostMinimum.Read().View()(0, 0) == (rows ? 0. : 1.));
+    }
+}
 
 TEST_CASE("Queued status reduction preserves earlier failures across reused producer buffers")
 {
@@ -258,23 +286,55 @@ TEST_CASE("Managed CUDA volume sources retain distributed geometry and match CPU
         }
         auto expected = C::EquationDofOperations::NewVector(state);
         auto actual = C::EquationDofOperations::NewVector(resident);
+        auto expectedLow = C::EquationDofOperations::NewVector(state);
+        auto actualLow = C::EquationDofOperations::NewVector(resident);
         DNDS::Algebra::Fill(expected.CoupledField(), .125);
         DNDS::Algebra::Fill(actual.CoupledField(), .125);
+        DNDS::Algebra::Fill(expectedLow.CoupledField(), .75);
+        DNDS::Algebra::Fill(actualLow.CoupledField(), .75);
         auto evaluator = equation.MakePointEvaluator({}, {true});
-        cpuWork->PrepareVolumeSource(state, std::ref(expected), evaluator, .4);
+        cpuWork->PrepareVolumeSource(state, std::ref(expected), evaluator, .4, std::ref(expectedLow));
         if (!polynomial)
             gpuWork->directGradients.front().Owned().CopyFrom(cpuWork->directGradients.front().Owned(), context).Wait();
         R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
         gpuWork->ResetPreparationStatus(engine, stream);
-        gpuWork->SubmitDeviceVolumeSource(engine, stream, resident, std::ref(actual), .4);
+        gpuWork->SubmitVolumeSource(engine, stream, resident, std::ref(actual), .4, {}, std::ref(actualLow));
         engine.Synchronize();
         gpuWork->CheckPreparationStatus();
-        const auto copied = actual.CoupledField().Owned().To(R::Device::Host());
-        const auto x = expected.CoupledField().Owned().Read(), y = copied.Read();
-        for (I iCell = 0; iCell < copied.RowCount(); ++iCell)
-            for (I j = 0; j < width; ++j)
-                CHECK(y.View()(iCell, j) == doctest::Approx(x.View()(iCell, j)).epsilon(3e-10).scale(1));
+        const auto compare = [&](const C::EquationDofs &reference, const C::EquationDofs &value)
+        {
+            const auto copied = value.CoupledField().Owned().To(R::Device::Host());
+            const auto x = reference.CoupledField().Owned().Read(), y = copied.Read();
+            for (I iCell = 0; iCell < copied.RowCount(); ++iCell)
+                for (I j = 0; j < width; ++j)
+                    CHECK(y.View()(iCell, j) == doctest::Approx(x.View()(iCell, j)).epsilon(3e-10).scale(1));
+        };
+        compare(expected, actual);
+        compare(expectedLow, actualLow);
+        // The same source submission retains its evaluator and declares
+        // output accesses for inline and worker CPU execution. Low-order
+        // residuals receive rotation only, exactly as the synchronous API.
+        for (const int workers : {0, 1})
+        {
+            auto queued = C::EquationDofOperations::NewVector(state);
+            auto queuedLow = C::EquationDofOperations::NewVector(state);
+            DNDS::Algebra::Fill(queued.CoupledField(), .125);
+            DNDS::Algebra::Fill(queuedLow.CoupledField(), .75);
+            auto queuedWork = cpu.BuildWorkspace(state);
+            auto binding = queuedWork->BindReconstruction(*cpuRec);
+            if (!polynomial)
+                queuedWork->directGradients.front().Owned().CopyFrom(cpuWork->directGradients.front().Owned()).Wait();
+            R::EagerEngine hostEngine(workers, std::make_shared<R::AccessTrackingContext>());
+            const auto hostStream = hostEngine.CreateCPUStream();
+            queuedWork->SubmitVolumeSource(hostEngine, hostStream, state, std::ref(queued), .4,
+                                           workers == 0 ? std::make_shared<C::PointEvaluator>(equation.MakePointEvaluator({}, {true}))
+                                                        : std::shared_ptr<C::PointEvaluator>{},
+                                           std::ref(queuedLow));
+            hostEngine.Synchronize();
+            compare(expected, queued);
+            compare(expectedLow, queuedLow);
+        }
     }
 }
 
@@ -493,7 +553,8 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
         auto cpuWork = cpu.BuildWorkspace(mean, {}, C::FiniteVolume::WorkspaceOptions(C::FiniteVolume::RHSKernelPolicy::Generic));
         auto gpuWork = gpu.BuildWorkspace(resident);
         auto cpuBinding = cpuWork->BindReconstruction(*cpuRec), gpuBinding = gpuWork->BindReconstruction(*gpuRec);
-        auto evaluator = equation.MakePointEvaluator();
+        // Match the production generic viscous RHS worker capabilities.
+        auto evaluator = equation.MakePointEvaluator({}, {true, true, true});
         if (degree == 1)
         {
             cpuWork->FillBoundary(mean, false, .3, evaluator);
@@ -504,6 +565,24 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
             cpuWork->ApplyDirectGradientPositivity(mean);
             cpu.BindHalo(cpuWork->directGradients.front()).Begin().Wait();
             cpu.BindHalo(*cpuWork->primitiveGradient).Begin().Wait();
+            for (const int workers : {0, 1})
+            {
+                auto queued = cpu.BuildWorkspace(mean);
+                queued->fields.front().gradient->Owned().CopyFrom(field.gradient->Owned()).Wait();
+                R::EagerEngine hostEngine(workers, std::make_shared<R::AccessTrackingContext>());
+                const auto hostStream = hostEngine.CreateCPUStream();
+                queued->SubmitGradientLimiter(hostEngine, hostStream, mean, true);
+                const auto pp = queued->SubmitGradientPositivity(hostEngine, hostStream, mean);
+                hostEngine.Synchronize();
+                queued->PublishGradientPositivity(pp);
+                CHECK(queued->directPPLimited == cpuWork->directPPLimited);
+                CHECK(queued->directPPMinimum == doctest::Approx(cpuWork->directPPMinimum));
+                const auto x = cpuWork->directGradients.front().Owned().Read();
+                const auto y = queued->directGradients.front().Owned().Read();
+                for (I iCell = 0; iCell < cpu.Metrics().NumCell(); ++iCell)
+                    for (I j = 0; j < cpuWork->directGradients.front().Width(); ++j)
+                        CHECK(y.View()(iCell, j) == doctest::Approx(x.View()(iCell, j)).epsilon(3e-12).scale(1));
+            }
         }
         cpuWork->ApplyRHS(mean, expected, DNDS::CFV::ReconstructionRegion::All, evaluator, .3);
         if (degree == 3)
@@ -514,7 +593,7 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
                     auto binding = queuedWork->BindReconstruction(*cpuRec);
                     auto reference = C::EquationDofOperations::NewVector(mean);
                     auto queued = C::EquationDofOperations::NewVector(mean);
-                    auto pointEvaluator = std::make_shared<C::PointEvaluator>(equation.MakePointEvaluator());
+                    auto pointEvaluator = std::make_shared<C::PointEvaluator>(equation.MakePointEvaluator({}, {true, true, true}));
                     queuedWork->ApplyRHS(mean, reference, DNDS::CFV::ReconstructionRegion::All, *pointEvaluator, .3);
                     queuedWork->diagnostics.Reset();
                     queuedWork->faceFallbacks = {};
@@ -550,6 +629,7 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
         }
         for (bool split : {true, false})
         {
+            std::shared_ptr<C::FiniteVolume::Workspace::GradientPositivitySubmission> gradientPP;
             R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
             const auto compute = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
             const auto communication = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
@@ -577,8 +657,8 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
             {
                 gpuWork->SubmitGradients(engine, compute, resident,
                                          split ? DNDS::CFV::ReconstructionRegion::HaloDependent : DNDS::CFV::ReconstructionRegion::All);
-                gpuWork->SubmitDeviceGradientLimiter(engine, compute, resident, true, DNDS::CFV::ReconstructionRegion::All);
-                gpuWork->SubmitDeviceGradientPositivity(engine, compute, resident);
+                gpuWork->SubmitGradientLimiter(engine, compute, resident, true);
+                gradientPP = gpuWork->SubmitGradientPositivity(engine, compute, resident);
                 auto gradientTransfer = gradientHalo->SubmitAfter(engine, communication, compute.Record());
                 auto primitiveTransfer = primitiveHalo->SubmitAfter(engine, communication, compute.Record());
                 if (split)
@@ -590,7 +670,12 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
                                      split ? DNDS::CFV::ReconstructionRegion::HaloDependent : DNDS::CFV::ReconstructionRegion::All, .3);
             engine.Synchronize();
             if (degree == 1)
+            {
                 gpuWork->CheckPreparationStatus();
+                gpuWork->PublishGradientPositivity(gradientPP);
+                CHECK(gpuWork->directPPLimited == cpuWork->directPPLimited);
+                CHECK(gpuWork->directPPMinimum == doctest::Approx(cpuWork->directPPMinimum).epsilon(3e-12));
+            }
             gpuWork->CheckDeviceFluxStatus();
             const auto downloaded = actual.CoupledField().Owned().To(R::Device::Host());
             const auto x = expected.CoupledField().Owned().Read(), y = downloaded.Read();
@@ -604,7 +689,7 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
 TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty partitions and first failure")
 {
     const auto device = R::Device::CUDA(0);
-    for (const std::string model : {"none", "SA", "KOmega", "KOmegaSST"})
+    for (const std::string model : {"none", "SA", "KOmegaWilcox", "KOmegaSST"})
     {
         C::EquationSettings settings;
         settings.transport = "NewtonianFourier";
@@ -615,7 +700,7 @@ TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty p
         const auto rans = equation.HasRANS() ? C::PrepareRANSStatePolicy(equation, {.1, .2}, 1e5, .01) : C::RANSStateView{};
         const C::AdmissibilityPolicy policy(equation, 1e-8, 1e-8, 0, 1e-8, rans);
         const auto bounds = policy.View();
-        for (const I rows : {I(0), I(1), I(1025)})
+        for (const I rows : {I(0), I(1), I(1025), I(32769)})
         {
             R::Array<real> mean(R::RowLayout::Dense(rows, width)), sums(R::RowLayout::Dense(rows, 1)), cells(R::RowLayout::Dense(rows + 3, 8));
             {
@@ -630,8 +715,10 @@ TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty p
                 }
             }
             auto dm = mean.To(device), ds = sums.To(device), dc = cells.To(device);
-            R::Array<K::StateReductionValue> scratch(R::RowLayout::Dense(K::StateReductionScratchRows(rows), 1), device);
             R::Array<K::StateReductionValue> valid(R::RowLayout::Dense(1, 1), device), step(valid.Layout(), device);
+            R::Array<K::StateReductionValue> hostIdentity(R::RowLayout::Dense(1, 1));
+            hostIdentity.Write().At(0, 0) = K::StableStepIdentity;
+            const auto identity = hostIdentity.To(device);
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
             const auto compare = [&]
@@ -649,11 +736,11 @@ TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty p
                     metric.cells = m.View<R::FixedRows<8>, false>();
                     expectedStep = C::CPU::MinimumStableStep(s.View<R::UniformTableRows>(), metric, 3.5);
                 }
-                R::SubmitArrays(engine, stream, [bounds](R::ExecutionContext c, auto u, auto work, auto result)
-                                { K::AdmissibleMeans(c, u, bounds, work, result); }, R::ReadAs<R::TableRows>(dm), R::WriteAs<R::FixedRows<1>>(scratch), R::WriteAs<R::FixedRows<1>>(valid));
-                // Reuse scratch on the same stream without a host wait.
-                R::SubmitArrays(engine, stream, [](R::ExecutionContext c, auto s, auto m, auto work, auto result)
-                                { K::MinimumStableStep(c, s, m, 3.5, work, result); }, R::ReadAs<R::TableRows>(ds), R::ReadAs<R::FixedRows<8>>(dc), R::WriteAs<R::FixedRows<1>>(scratch), R::WriteAs<R::FixedRows<1>>(step));
+                R::SubmitArrays(engine, stream, [bounds](R::ExecutionContext c, auto u, auto result)
+                                { K::AdmissibleMeans(c, u, bounds, result); }, R::ReadAs<R::TableRows>(dm), R::WriteAs<R::FixedRows<1>>(valid));
+                // Independent CFL atomic reduction on the same stream, no host wait.
+                R::SubmitArrays(engine, stream, [](R::ExecutionContext c, auto s, auto m, auto seed, auto result)
+                                { K::MinimumStableStep(c, s, m, 3.5, seed, result); }, R::ReadAs<R::TableRows>(ds), R::ReadAs<R::FixedRows<8>>(dc), R::ReadAs<R::FixedRows<1>>(identity), R::WriteAs<R::FixedRows<1>>(step));
                 engine.Synchronize();
                 const auto hv = valid.To(R::Device::Host()), hs = step.To(R::Device::Host());
                 const auto v = hv.Read(), s = hs.Read();
@@ -665,6 +752,14 @@ TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty p
                 else
                     CHECK(s.View()(0, 0).firstInvalid == expectedStep.status.row);
             };
+            compare();
+            // A larger next minimum must replace the preceding smaller result.
+            {
+                auto write = sums.Write();
+                for (I iCell = 0; iCell < rows; ++iCell)
+                    write.View()(iCell, 0) *= .5;
+            }
+            ds.CopyFrom(sums, stream.Context()).Wait();
             compare();
             if (rows > 1)
             {
@@ -753,15 +848,25 @@ TEST_CASE("CUDA analytic error uses the CPU oracle quadrature and fixed-tree ran
             const auto read = means.Read();
             const auto expected = C::CPU::MeasureFlowError(view, metric, {read.View<R::UniformTableRows>(), 0, 5}, profile, primitive, gas, time, frame);
             REQUIRE(bool(expected));
+            std::vector<DNDS::NumericalResult<C::CPU::FlowErrorStatistics>> cpuWorkers(
+                3, DNDS::NumericalResult<C::CPU::FlowErrorStatistics>{C::CPU::FlowErrorStatistics{}});
+            const auto partitioned = C::CPU::MeasureFlowError(view, metric, {read.View<R::UniformTableRows>(), 0, 5},
+                                                              profile, primitive, gas, time, frame, {cpuWorkers.data(), I(cpuWorkers.size())});
+            REQUIRE(bool(partitioned));
+            CHECK(partitioned.value.volume == doctest::Approx(expected.value.volume).epsilon(2e-13));
+            for (int norm = 0; norm < 3; ++norm)
+                for (int j = 0; j < 5; ++j)
+                    CHECK(partitioned.value.errors[norm][j] == doctest::Approx(expected.value.errors[norm][j]).epsilon(2e-13).scale(1));
             auto dmeans = means.To(device);
             R::Array<K::FlowErrorReduction> scratch(R::RowLayout::Dense(K::StateReductionScratchRows(rows), 1), device);
             R::Array<K::FlowErrorReduction> output(R::RowLayout::Dense(1, 1), device), repeat(output.Layout(), device);
+            R::Array<unsigned int> completed(R::RowLayout::Dense(1, 1), device);
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
             const auto submit = [&](R::Array<K::FlowErrorReduction> &result)
             {
-                R::SubmitArrays(engine, stream, [parameters = C::PrepareFlowProfile(profile), primitive, gas, frame = frame.KernelParameters(), time](R::ExecutionContext context, auto offsets, auto points, auto cells, auto means, auto scratch, auto output)
-                                { K::MeasureFlowError(context, {offsets, points, cells}, means, parameters, primitive, gas, frame, time, scratch, output); }, R::ReadAs<R::FixedRows<1>>(doffsets), R::ReadAs<R::FixedRows<4>>(dpoints), R::ReadAs<R::FixedRows<8>>(dcells), R::ReadAs<R::TableRows>(dmeans), R::WriteAs<R::FixedRows<1>>(scratch), R::WriteAs<R::FixedRows<1>>(result));
+                R::SubmitArrays(engine, stream, [parameters = C::PrepareFlowProfile(profile), primitive, gas, frame = frame.KernelParameters(), time](R::ExecutionContext context, auto offsets, auto points, auto cells, auto means, auto scratch, auto output, auto counter)
+                                { K::MeasureFlowError(context, {offsets, points, cells}, means, parameters, primitive, gas, frame, time, scratch, output, counter); }, R::ReadAs<R::FixedRows<1>>(doffsets), R::ReadAs<R::FixedRows<4>>(dpoints), R::ReadAs<R::FixedRows<8>>(dcells), R::ReadAs<R::TableRows>(dmeans), R::WriteAs<R::FixedRows<1>>(scratch), R::WriteAs<R::FixedRows<1>>(result), R::WriteAs<R::FixedRows<1>>(completed));
             };
             submit(output);
             submit(repeat); // no host visibility or scratch reallocation between submissions
@@ -779,6 +884,77 @@ TEST_CASE("CUDA analytic error uses the CPU oracle quadrature and fixed-tree ran
                     CHECK(actual.errors[norm][j] == repeated.errors[norm][j]);
                 }
         }
+    }
+}
+
+TEST_CASE("Managed characteristics feed WBAP without a host observation between operators")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 3;
+    settings.numerics.cfv.SORInstead = false;
+    settings.numerics.limiter = "WBAP";
+    settings.numerics.characteristicLimiter = true;
+    settings.numerics.characteristicDiagnostics = true;
+    settings.numerics.positivity = false;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume cpu(mesh, settings, equation);
+    auto means = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(5));
+    cpu.Initialize(means, {}, {1, .2, -.1, .03, 1});
+    cpu.BindHalo(means.CoupledField()).Begin().Wait();
+    auto seed = cpu.BuildReconstructionState(means);
+    {
+        auto write = seed->WarmValues().CoupledField().Owned().Write();
+        for (I iCell = 0; iCell < write.View().RowCount(); ++iCell)
+            for (I j = 0; j < write.View().Width(); ++j)
+                write.View()(iCell, j) = 1e-3 * (1 + (iCell + j) % 7);
+    }
+    cpu.BindHalo(seed->WarmValues().CoupledField()).Begin().Wait();
+    std::optional<R::Array<real>> expected, expectedForward;
+    for (const int backend : {0, 1, 2})
+    {
+        CAPTURE(backend);
+        const auto device = backend == 2 ? R::Device::CUDA(0) : R::Device::Host();
+        const R::ExecutionContext transfer{device, nullptr};
+        auto plan = backend == 2 ? cpu.Placed(device, transfer) : cpu;
+        auto state = C::EquationDofs::Coupled(equation.Schema(), plan.Metrics().BuildField(5));
+        state.CoupledField().Owned().CopyFrom(means.CoupledField().Owned(), transfer).Wait();
+        state.CoupledField().Ghost().CopyFrom(means.CoupledField().Ghost(), transfer).Wait();
+        auto reconstruction = plan.BuildReconstructionState(state);
+        auto &coefficients = reconstruction->WarmValues().CoupledField();
+        coefficients.Owned().CopyFrom(seed->WarmValues().CoupledField().Owned(), transfer).Wait();
+        coefficients.Ghost().CopyFrom(seed->WarmValues().CoupledField().Ghost(), transfer).Wait();
+        auto work = plan.BuildWorkspace(state);
+        R::EagerEngine engine(backend == 1 ? 1 : 0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = backend == 2 ? engine.CreateStream(std::make_shared<R::CUDALauncher>(0)) : engine.CreateCPUStream();
+        const auto record = work->SubmitCharacteristics(engine, stream, state);
+        const auto vr = plan.PolynomialReconstruction();
+        REQUIRE(vr);
+        for (int order = 3; order >= 1; --order)
+        {
+            vr->SubmitLimiterWBAP_3OrderTo(engine, stream, coefficients, *work->fields.front().reconstruction, order,
+                                           DNDS::CFV::FaceCharacteristicTransformRef(std::cref(*work->flowCharacteristic)));
+            vr->SubmitCommitReconstruction(engine, stream, coefficients, *work->fields.front().reconstruction);
+        }
+        engine.Synchronize();
+        work->PublishCharacteristics(record);
+        CHECK(work->characteristicFallbacks == 0);
+        const auto result = coefficients.Owned().To(R::Device::Host());
+        const auto forward = work->flowCharacteristic->forward.To(R::Device::Host());
+        if (!expected)
+        {
+            expected = result;
+            expectedForward = forward;
+        }
+        else
+            for (const auto pair : {std::make_pair(*expected, result), std::make_pair(*expectedForward, forward)})
+            {
+                const auto a = pair.first.Read(), b = pair.second.Read();
+                for (I iRow = 0; iRow < a.View().RowCount(); ++iRow)
+                    for (I j = 0; j < a.View().Width(); ++j)
+                        CHECK(b.View()(iRow, j) == doctest::Approx(a.View()(iRow, j)).epsilon(2e-10).scale(1));
+            }
     }
 }
 

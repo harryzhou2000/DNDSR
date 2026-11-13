@@ -162,7 +162,7 @@ namespace DNDS::Cauchy
         }
         const index components = state.ComponentNumber();
         DNDS_check_throw_info(
-            directLimiterScratch.RowCount() == 6 && directLimiterScratch.Layout().Width() == size_t(components),
+            directLimiterScratch.RowCount() == 6 * cpuGradientWorkers && directLimiterScratch.Layout().Width() == size_t(components),
             "direct-P1 limiter scratch extent differs");
         const auto stencilRead = owner->stencil.Read();
         const auto metricRead = owner->metrics.AcquireRead();

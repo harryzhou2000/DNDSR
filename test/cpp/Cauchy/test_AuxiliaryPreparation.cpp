@@ -577,7 +577,7 @@ TEST_CASE("FV uses the same queued halo dependency sequence with inline and work
     SUBCASE("fixed-count VR without a limiter") {}
     SUBCASE("fixed-count P3 VR with characteristic WBAP")
     {
-        expectedDrains = 2;
+        expectedDrains = 1; // queued characteristic producer -> WBAP -> FV return
         settings.numerics.cfv.maxOrder = 3;
         settings.numerics.cfv.intOrder = 5;
         settings.numerics.limiter = "WBAP";
@@ -585,7 +585,7 @@ TEST_CASE("FV uses the same queued halo dependency sequence with inline and work
     }
     SUBCASE("fixed-count P3 LVR with repeated neighborhood expansion")
     {
-        expectedDrains = 3; // gradient publication, compound LVR return, FV return
+        expectedDrains = 2; // compound LVR return, FV return; gradients stay queued
         settings.numerics.cfv.maxOrder = 3;
         settings.numerics.cfv.intOrder = 5;
         settings.numerics.limiter = "LVR";
@@ -627,9 +627,13 @@ TEST_CASE("FV uses the same queued halo dependency sequence with inline and work
         for (const auto &entry : launcher->trace)
             if (entry == "submit" || entry == "wait")
                 sequence.push_back(entry);
-        const auto wait = std::find(sequence.begin(), sequence.end(), "wait");
+        // A leading dependency imports a possibly queued stage producer into
+        // the transfer lane. It is distinct from the later halo dependency:
+        // require submitted work on both sides of that later boundary.
+        const auto firstSubmit = std::find(sequence.begin(), sequence.end(), "submit");
+        REQUIRE(firstSubmit != sequence.end());
+        const auto wait = std::find(firstSubmit + 1, sequence.end(), "wait");
         REQUIRE(wait != sequence.end());
-        CHECK(std::find(sequence.begin(), wait, "submit") != wait);
         CHECK(std::find(wait + 1, sequence.end(), "submit") != sequence.end());
         if (workers == 0)
         {

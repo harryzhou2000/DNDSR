@@ -245,6 +245,10 @@ namespace DNDS::CFV
             Detail::Zero(field);
         return field;
     }
+    FVField FiniteVolumePlan::BuildField(R::RowLayout prototype) const
+    {
+        return BuildField(std::move(prototype), Device());
+    }
     FVField FiniteVolumePlan::BuildField(R::RowLayout prototype, R::Device device) const
     {
         Validate();

@@ -11,6 +11,10 @@ namespace DNDS::Cauchy
         index cell = 0, face = 0, point = 0, condition = 0, interfaceRow = 0;
         int side = 0;
         Vector3 normal{}, location{};
+        /// Physical quadrature weight, including the configured axisymmetric
+        /// metric. Output consumes this prepared value without rebuilding or
+        /// downloading the complete volume/face metric publication.
+        real weight = 0;
     };
     static_assert(std::is_trivially_copyable_v<BoundaryTraceGeometry>);
 }

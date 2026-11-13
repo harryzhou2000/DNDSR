@@ -6,15 +6,27 @@ namespace DNDS::CFV
 {
     namespace R = Runtime;
     PolynomialSamplingPlan::PolynomialSamplingPlan(VariationalReconstructionPlan reconstruction,
-                                                   const R::Array<index> &cells, const R::Array<real> &points, bool cacheDerivatives)
-        : _mesh(reconstruction.Metrics()._data->mesh), _stamp(reconstruction.Metrics()._data->stamp),
-          _cellSpace(reconstruction.Metrics().Cells()), _space(reconstruction.Metrics().Space()),
+                                                   const R::Array<index> &cells, const R::Array<real> &points, bool cacheDerivatives,
+                                                   R::ExecutionContext sourceContext)
+        : PolynomialSamplingPlan(reconstruction.Metrics(), reconstruction, cells, points, cacheDerivatives, sourceContext) {}
+    PolynomialSamplingPlan::PolynomialSamplingPlan(FiniteVolumePlan metrics, VariationalReconstructionPlan reconstruction,
+                                                   const R::Array<index> &cells, const R::Array<real> &points, bool cacheDerivatives,
+                                                   R::ExecutionContext sourceContext)
+        : _mesh(metrics._data->mesh), _stamp(metrics._data->stamp),
+          _cellSpace(metrics.Cells()), _space(metrics.Space()),
           _points(R::RowLayout::Dense(0, 3)), _basis(R::RowLayout::Dense(0, 0)),
           _moments(R::RowLayout::Dense(0, 0)), _cellGeometry(R::RowLayout::Dense(0, 8)), _empty(R::RowLayout::Dense(0, 0)),
-          _dimension(reconstruction.Metrics().Dimension()), _degree(reconstruction.Settings().maxOrder),
+          _dimension(metrics.Dimension()), _degree(reconstruction.Settings().maxOrder),
           _modes(reconstruction.NRecDOF()), _cacheDerivatives(cacheDerivatives)
     {
-        auto geometry = reconstruction.Metrics().AcquireRead();
+        DNDS_check_throw_info(reconstruction.Space().Same(metrics.Space()) &&
+                                  (reconstruction.Device() == R::Device::Host() || sourceContext.device == reconstruction.Device()) &&
+                                  (metrics.Device() == R::Device::Host() || sourceContext.device == metrics.Device()),
+                              "sampling setup needs matching metric space and source context");
+        auto geometry = metrics.AcquireRead(metrics.Device() == R::Device::Host() ? R::ExecutionContext::Host() : sourceContext);
+        const auto &sourceMoments = reconstruction.SamplingMoments();
+        const auto hostMoments = sourceMoments.GetDevice() == R::Device::Host() ? sourceMoments : sourceMoments.To(R::Device::Host(), sourceContext);
+        const auto hostCells = metrics.Device() == R::Device::Host() ? metrics._data->cell : metrics._data->cell.To(R::Device::Host(), sourceContext);
         Validate();
         DNDS_check_throw_info(cells.GetDevice() == R::Device::Host() && points.GetDevice() == R::Device::Host() &&
                                   cells.Layout().Kind() == R::RowLayoutKind::Table && cells.Layout().Width() == 1 &&
@@ -31,8 +43,8 @@ namespace DNDS::CFV
         if (direct)
         {
             _points = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), 3));
-            _moments = reconstruction._data->moments;
-            _cellGeometry = reconstruction.Metrics()._data->cell;
+            _moments = hostMoments;
+            _cellGeometry = hostCells;
         }
         const auto cellRead = cells.Read();
         const auto pointRead = points.Read();
@@ -51,9 +63,11 @@ namespace DNDS::CFV
         const auto snapshot = cellWrite.View<R::FixedRows<1>>();
         const auto positions = pointWrite.View<R::FixedRows<3>>();
         const auto cached = basisWrite.View<R::TableRows>();
-        const auto momentRead = reconstruction._data->moments.Read();
+        const auto momentRead = hostMoments.Read();
         const auto moments = momentRead.View<R::TableRows>();
-        const auto geom = geometry.HostView();
+        const auto cellReadGeometry = hostCells.Read();
+        FiniteVolumeHostView geom;
+        geom.cells = cellReadGeometry.View<R::FixedRows<8>, false>();
         OMP::ForSetupRows(0, ids.RowCount(), [&](index iPoint)
                           {
             const index iCell = ids(iPoint, 0);

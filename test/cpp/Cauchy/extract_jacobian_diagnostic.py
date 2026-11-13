@@ -40,7 +40,7 @@ def extract(source):
     before("            if ((chemical || rans) && sourceWorkspace)\n",
            "            assemblyFreeze.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblySource(::DiagnosticTiming::Block::JacobianSource);\n")
-    before('            RequireNumericalSuccess(CPU::CompleteEquationJacobian(request, _data->boundaryPoint, evaluator, ownedPropertiesPrepared), "complete equation Jacobian");',
+    before('            RequireNumericalSuccess(CPU::CompleteEquationJacobian(request, _data->boundaryPoint,',
            "            assemblySource.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblyFaces(::DiagnosticTiming::Block::JacobianFaces);\n")
     restored = text

@@ -264,7 +264,7 @@ namespace DNDS::Cauchy::CheckpointMetadata
         const auto &mesh = domain.Discretization().Mesh();
         // The metric read pins the same facade publication and its CellFlux
         // groups. Borrow only while this scope prevents mesh replacement.
-        auto read = domain.Discretization().Metrics().AcquireRead();
+        auto read = domain.Discretization().Metrics().AcquireRead({domain.Discretization().Device(), nullptr});
         const auto state = mesh.CurrentNativeState();
         const auto view = state->BorrowHostView();
         std::vector<size_t> topologySizes, coordinateSizes;

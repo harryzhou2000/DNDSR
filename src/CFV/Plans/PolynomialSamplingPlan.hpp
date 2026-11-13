@@ -41,7 +41,18 @@ namespace DNDS::CFV
         /// Otherwise all derivatives may be queried; orders outside the selected
         /// cache coverage are evaluated on demand. Global cache-off stores none.
         PolynomialSamplingPlan(VariationalReconstructionPlan reconstruction,
-                               const Runtime::Array<index> &cells, const Runtime::Array<real> &points, bool cacheDerivatives = true);
+                               const Runtime::Array<index> &cells, const Runtime::Array<real> &points, bool cacheDerivatives = true,
+                               Runtime::ExecutionContext sourceContext = Runtime::ExecutionContext::Host());
+        /// Explicit metric owner permits rebuilding queries after a resident
+        /// reconstruction has released its host setup matrices. Device-only
+        /// reconstruction must request arbitraryPointSampling at placement.
+        PolynomialSamplingPlan(FiniteVolumePlan metrics, VariationalReconstructionPlan reconstruction,
+                               const Runtime::Array<index> &cells, const Runtime::Array<real> &points, bool cacheDerivatives,
+                               Runtime::ExecutionContext sourceContext);
+        /// Construction remains CPU setup. With a resident reconstruction,
+        /// sourceContext explicitly orders the temporary moments/metric download;
+        /// it never downloads matrices or solution fields. Placed() publishes
+        /// the resulting sampling cache on the desired backend afterward.
         index Size() const { return _cells.RowCount(); }
         int CachedDerivativeNumber() const { return _cachedDerivatives; }
         void Validate() const;

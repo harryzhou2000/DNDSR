@@ -73,7 +73,7 @@ namespace DNDS::Cauchy
             const auto b = rhsRead.View<R::UniformTableRows>();
             const auto old = inputRead ? inputRead->View<R::UniformTableRows>() : b;
             const CPU::LinearBlockInput request{blocksRead.View(), patternView, rows,
-                                                inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block};
+                                                inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block, pattern->sweepPartitions.HostView()};
             started = true;
             if constexpr (Upper)
                 CPU::UpperSGSRows(request, b, old, forwardValues, ghostValues, destination, !input && !middleExchange);

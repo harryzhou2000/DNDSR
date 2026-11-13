@@ -5,12 +5,16 @@
 
 namespace DNDS::Algebra
 {
-    /// Reserved CPU DoF payloads with explicit, deterministic slot selection.
+    /// Reserved backend-resident DoF payloads with deterministic slot selection.
     /// Each slot owns full owned/ghost fields. Prepare all space-specific halo
     /// bindings collectively before borrowing; borrow/return performs no MPI.
     /// Reconstruction scratch is a separate resource family.
-    /// Controller-serialized CPU facility: no concurrent Reserve/Prepare/Acquire
+    /// Controller-serialized facility: no concurrent Reserve/Prepare/Acquire
     /// or return, and no asynchronous return before numerical/transfer joins.
+    /// Reservation preserves each field's Device. Dirty acquisition only
+    /// publishes a new mutation epoch; it does not read/write device values.
+    /// ZeroOwned is synchronous convenience initialization through DNDS algebra;
+    /// hot callers normally acquire Dirty and enqueue their own producers.
     class DofScratchPool
     {
     public:
@@ -100,7 +104,7 @@ namespace DNDS::Algebra
                 return halos[iField].Begin();
             }
             /// Explicit return can reject a live use without losing the borrow.
-            /// Normal RAII return requires all CPU operators/transfers joined.
+            /// Normal RAII return requires all backend operators/transfers joined.
             void Release()
             {
                 if (!_state)
@@ -125,8 +129,8 @@ namespace DNDS::Algebra
             {
                 const auto &name = prototype.Name(i);
                 const auto &source = prototype.Block(name);
-                DNDS_check_throw_info(source.Device() == Runtime::Device::Host(), "reserved DoF scratch currently requires CPU storage");
-                DofField<real> field(source.Space(), Runtime::Array<real>(source.Owned().Layout()), Runtime::Array<real>(source.Ghost().Layout()));
+                DofField<real> field(source.Space(), Runtime::Array<real>(source.Owned().Layout(), source.Device()),
+                                     Runtime::Array<real>(source.Ghost().Layout(), source.Device()));
                 bytes += field.Owned().Storage().Bytes() + field.Ghost().Storage().Bytes();
                 fields.Add(name, std::move(field));
             }
@@ -170,7 +174,8 @@ namespace DNDS::Algebra
                 {
                     // New borrowing epoch invalidates previous freshness/cache
                     // assumptions without resetting monotone storage versions.
-                    auto write = entry.fields.Block(entry.fields.Name(i)).Owned().Write();
+                    auto &array = entry.fields.Block(entry.fields.Name(i)).Owned();
+                    auto write = array.Write(Runtime::ExecutionContext{array.GetDevice(), nullptr});
                 }
             slot.busy = true;
             _state->peak = std::max(_state->peak, ++_state->active);

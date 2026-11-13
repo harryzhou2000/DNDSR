@@ -4,6 +4,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeAuxiliaryKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/PointWorkerContexts.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Core/OMP.hpp"
 #include "DNDS/Runtime/Execution/EagerArrayBatch.hpp"
@@ -208,12 +209,8 @@ namespace DNDS::Cauchy
             // This phase enables perfect-gas OMP, including RANS. Keep the
             // existing single leased Cantera worker for the mixture path;
             // reserving a team could otherwise exhaust a bounded shared pool.
-            const index count = data->equation.HasMixture() ? 1 : OMP::DistributedThreads();
-            std::vector<CPU::AuxiliaryWorkerScratch> result;
-            result.reserve(size_t(count));
-            for (index iWorker = 0; iWorker < count; ++iWorker)
-                result.emplace_back(Evaluator(), source.ComponentNumber());
-            return result;
+            return MakeCPUPointWorkers<CPU::AuxiliaryWorkerScratch>(data->equation, workers,
+                                                                    {true, true, false}, source.ComponentNumber());
         }
         void RefreshDerived(bool ghost)
         {

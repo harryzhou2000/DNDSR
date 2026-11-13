@@ -1,6 +1,7 @@
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Physics/PointWorkerContexts.hpp"
 #include "DNDS/Runtime/Execution/EagerArrayBatch.hpp"
 
 namespace DNDS::Cauchy
@@ -96,7 +97,6 @@ namespace DNDS::Cauchy
             SubmitDeviceRHS(engine, stream, state, output, region, time, auxiliary, incoming);
             return {};
         }
-        DNDS_check_throw_info(fixedFlowRHS || evaluator, "generic CPU RHS needs a retained point evaluator");
         DNDS_check_throw_info(!fixedFlowRHS || (state.PhysicalFieldNumber() == 1 && output.PhysicalFieldNumber() == 1 &&
                                                 state.ComponentNumber() == 5 && output.ComponentNumber() == 5),
                               "queued fixed-flow leaf requires one flow5 physical field");
@@ -115,6 +115,8 @@ namespace DNDS::Cauchy
             std::optional<WallDistanceRead> walls;
             std::optional<RHSOperator> fixed;
             std::shared_ptr<PointEvaluator> evaluator;
+            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
+            Physics::Thermodynamics::MixturePropertyRequest properties;
             ReadEquation means;
             WriteEquation result;
             std::optional<ReadEquation> coefficients, viscousCoefficients;
@@ -137,6 +139,9 @@ namespace DNDS::Cauchy
         };
         auto pin = std::make_shared<Inputs>(owner, thermal, logicalFirst, vectorStarts, std::move(evaluator), state, output);
         pin->fixed = fixedFlowRHS;
+        pin->workers = workers;
+        const bool viscous = !meanOnly && owner->equation.Viscous();
+        pin->properties = {viscous || owner->equation.HasRANS(), viscous, viscous, chemical, false};
         pin->flowFirst = flowFirst;
         pin->speciesFirst = speciesFirst;
         pin->ransFirst = ransFirst;
@@ -269,6 +274,7 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(!writes[i].storage->Values().Overlaps(writes[j].storage->Values()), "queued RHS outputs overlap");
         auto result = std::make_shared<RHSSubmission>();
         result->region = region;
+        const auto timing = BeginQueuedPhase(engine, stream, RHSPhase);
         R::SubmitArrayBatch(engine, stream, [pin, result, region, time](R::ExecutionContext, auto inputs, auto outputs)
                             {
             if (pin->fixed)
@@ -304,6 +310,7 @@ namespace DNDS::Cauchy
             }
             else
             {
+                auto evaluator = pin->evaluator;
                 const auto means = pin->means.View(inputs);
                 const auto destination = pin->result.View(outputs);
                 const EquationViewLayout<const real> owned(pin->means.shape, means), remote(pin->means.shape, means, true);
@@ -374,13 +381,23 @@ namespace DNDS::Cauchy
                 request.preparedPressureMinimum = pin->pressureMinimum.owned >= 0;
                 request.produceLow = bool(pin->lowResult);
                 request.time = time;
-                const auto evaluated = CPU::EvaluateEquationFlux(request, pin->owner->equation, pin->owner->boundaryPoint,
-                                                                  pin->owner->flux, *pin->evaluator, owned.Descriptor(), remote.Descriptor(),
-                                                                  output.Descriptor(), lowLayout ? lowLayout->Descriptor() : output.Descriptor(), region);
+                std::vector<CPU::EquationRHSWorkerScratch> workers;
+                if (!evaluator)
+                    workers = MakeCPUPointWorkers<CPU::EquationRHSWorkerScratch>(pin->owner->equation, pin->workers,
+                        pin->properties, request.width, request.species, request.produceLow);
+                const auto evaluated = evaluator
+                    ? CPU::EvaluateEquationFlux(request, pin->owner->equation, pin->owner->boundaryPoint,
+                        pin->owner->flux, *evaluator, owned.Descriptor(), remote.Descriptor(),
+                        output.Descriptor(), lowLayout ? lowLayout->Descriptor() : output.Descriptor(), region)
+                    : CPU::EvaluateEquationFlux(request, pin->owner->equation, pin->owner->boundaryPoint,
+                        pin->owner->flux, SpanView<CPU::EquationRHSWorkerScratch>{workers.data(), index(workers.size())},
+                        owned.Descriptor(), remote.Descriptor(), output.Descriptor(),
+                        lowLayout ? lowLayout->Descriptor() : output.Descriptor(), region);
                 RequireNumericalSuccess(evaluated.status, "queued equation RHS");
                 result->faceFallbacks = evaluated.value;
             }
             result->completed.store(true, std::memory_order_release); }, std::move(reads), std::move(writes));
+        EndQueuedPhase(engine, stream, timing);
         return result;
     }
 

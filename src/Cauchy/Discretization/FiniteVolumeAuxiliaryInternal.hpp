@@ -99,9 +99,12 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(queuedSource, "mean gradient segment is not pending");
             CheckQueued(state, fields, owner.lock(), queuedTime, true);
             for (index iField = 0; iField < index(fields.size()); ++iField)
+            {
+                const auto &field = fields[iField];
                 for (const auto *array : {&state.PhysicalField(iField).Owned(), &state.PhysicalField(iField).Ghost(),
-                                          &fields[iField].Owned(), &fields[iField].Ghost()})
+                                          &field.Owned(), &field.Ghost()})
                     DNDS_check_throw_info(array->Storage().IsIdle(), "mean gradient publication requires a completed segment");
+            }
             origin.emplace(state.NumericAlias());
             time = queuedTime;
             sourceGhost.clear();

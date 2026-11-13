@@ -1,12 +1,16 @@
 #pragma once
 
 #include "Cauchy/Core/DomainExecutionContext.hpp"
+#include "Cauchy/Core/TimeStageOperators.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Implicit/NonlinearSolve.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
+#include "Cauchy/State/MeanStateCheck.hpp"
+#include "Cauchy/State/StateDiagnostics.hpp"
+#include "Cauchy/Discretization/FlowErrorOperator.hpp"
 
 #include <array>
 #include <limits>
@@ -104,6 +108,12 @@ namespace DNDS::Cauchy
         std::optional<EquationDofs> observationInput, observationState;
         std::unique_ptr<NonlinearSolver> implicit;
         std::unique_ptr<PolynomialMultigrid> multigrid;
+        /// Lazy backend reductions/explicit arithmetic; unused blend and CFL
+        /// scratch families remain unallocated for the selected time policy.
+        mutable std::optional<TimeStageOperators> timeStages;
+        mutable std::optional<MeanStateCheck> meanCheck;
+        mutable std::optional<StateDiagnostics> stateDiagnostics;
+        mutable std::optional<FlowErrorOperator> flowError;
         mutable std::optional<AuxiliaryValues> timeAuxiliary;
         mutable std::optional<MeanGradients> timeMeanGradients;
         mutable std::vector<Runtime::TransferBinding> timeMeanHalo;
@@ -119,7 +129,10 @@ namespace DNDS::Cauchy
         std::unique_ptr<NonlinearSolveSetup> nonlinearSetup;
         DomainExecutionContext context;
 
-        DomainExecution(const DomainProblem &problem, DomainState &state,
+        /// Construction-only placement happens after host setup/initialization
+        /// and before workspace binding. Thereafter problem/state bindings are
+        /// stable; no numerical-loop migration or host fallback is permitted.
+        DomainExecution(DomainProblem &problem, DomainState &state,
                         const ExecutionSettings &settings,
                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers);
 
