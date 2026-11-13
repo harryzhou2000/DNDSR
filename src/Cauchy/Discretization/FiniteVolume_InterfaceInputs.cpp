@@ -227,10 +227,16 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::ValidateBoundaryInputs(const BoundaryInputs &input, real time) const
     {
-        ValidateBoundaryLayout(input);
         const auto read = input._quadrature.ReadOwned();
         const auto faceRead = input._faceCenters.ReadOwned();
+        ValidateBoundaryPublication(input, time);
+    }
+    void FiniteVolume::ValidateBoundaryPublication(const BoundaryInputs &input, real time) const
+    {
+        ValidateBoundaryLayout(input);
         // Active writers have not advanced their generations yet.
+        // The immediate wrapper or queued declared operands must establish
+        // read access; this function checks provenance, never readiness.
         DNDS_check_throw_info(input._publication && !input._updating && input._publication->time == time &&
                                   Current(input._quadrature, input._publication->versions,
                                           input._publication->shapes) &&

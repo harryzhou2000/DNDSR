@@ -3,77 +3,17 @@
 #include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
-#include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeAuxiliaryInternal.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "Cauchy/Discretization/CUDA/FiniteVolumeStateKernels.hpp"
 
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
     using AuxiliaryDetail::EquationAuxiliaryArrays;
-    void FiniteVolume::FillMeanGradientBoundary(
-        const EquationDofs &state, MeanGradients &gradients,
-        PointEvaluator &evaluator, real time,
-        RHSScalarView incoming) const
-    {
-        DNDS_check_throw_info(gradients._data,
-                              "mean gradient workspace is uninitialized");
-        const auto read = state.ReadOwned();
-        std::vector<EquationBlockReadView> means;
-        std::vector<R::Array<real>::WriteLease> writes;
-        std::vector<EquationBlockArrayView<real>> outputs;
-        std::vector<index> offsets;
-        for (auto &array : gradients._data->boundary)
-            writes.push_back(array.Write());
-        index first = 0, ransFirst = -1;
-        for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-        {
-            means.push_back(read.Block(iBlock));
-            offsets.push_back(first);
-            if (state.Schema().blocks[size_t(iBlock)].name == "rans")
-                ransFirst = first;
-            const auto location = state.LocateBlock(iBlock);
-            outputs.push_back({writes[size_t(location.physicalField)]
-                                   .View<R::UniformTableRows>(),
-                               location.firstComponent, location.componentNumber});
-            first += location.componentNumber;
-        }
-        const R::MetadataBuffer<EquationBlockReadView> meanMetadata(means);
-        const R::MetadataBuffer<EquationBlockArrayView<real>> outputMetadata(outputs);
-        const R::MetadataBuffer<index> logicalOffsets(offsets);
-        const auto geometry = _data->boundaryTraceGeometry.Read();
-        const auto pointRows = _data->gradientBoundaryRows.Read();
-        const auto *model = _data->equation.HasRANS()
-                                ? &_data->equation.RANS()
-                                : nullptr;
-        std::optional<WallDistanceRead> walls;
-        if (model && model->ComponentNumber() == 2)
-            walls.emplace(_data->wallDistance->AcquireRead());
-        CPU::BoundaryTraceRequest request;
-        request.points = geometry.View<R::FixedRows<1>>();
-        request.pointRows = pointRows.View<R::FixedRows<1>>();
-        request.usePointRows = true;
-        request.repairRANS = false;
-        request.means = meanMetadata.HostView();
-        request.output = outputMetadata.HostView();
-        request.logicalFirst = logicalOffsets.HostView();
-        request.componentNumber = state.ComponentNumber();
-        request.ransFirst = ransFirst;
-        request.rans = model ? RANSStateView{model->Kind(), model->ComponentNumber()}
-                             : RANSStateView{};
-        request.wallDistance = walls ? walls->HostView() : WallDistanceView{};
-        request.frame = _data->motion.At(time);
-        request.time = time;
-        request.incoming = incoming;
-        RequireNumericalSuccess(CPU::FillBoundaryTraces(
-                                    request, {_data->boundaryConditions.data(), index(_data->boundaryConditions.size())},
-                                    _data->boundaryPoint, evaluator),
-                                "FillBoundaryTraces");
-    }
     MeanGradients FiniteVolume::BuildMeanGradients(EquationDofs &state) const
     {
         MeanGradients result;
@@ -99,7 +39,23 @@ namespace DNDS::Cauchy
                 }
                 work.execution.push_back(_data->gradient.BuildWorkspace(field.Width(), work.vectors.back()));
             }
-            work.fields = result.fields; });
+            work.fields = result.fields;
+            if (Device().space == R::MemorySpace::CUDA)
+            {
+#ifdef DNDS_USE_CUDA
+                const index rows = _data->gradientBoundaryRows.RowCount();
+                work.deviceBoundaryStatus.emplace(MeanGradients::Data::DeviceBoundaryStatus{
+                    R::Array<NumericalStatus>(R::RowLayout::Dense(rows, 1), Device()),
+                    R::Array<NumericalStatus>(R::RowLayout::Dense(CUDA::StateReductionScratchRows(rows), 1), Device()),
+                    R::Array<NumericalStatus>(R::RowLayout::Dense(1, 1), Device()),
+                    R::Array<NumericalStatus>(R::RowLayout::Dense(0, 1), Device())});
+                work.deviceBoundaryStatus->rows.SetName("Cauchy/meanGradientBoundaryStatus", DNDS_ALLOCATION_SITE());
+                work.deviceBoundaryStatus->partial.SetName("Cauchy/meanGradientBoundaryStatusPartials", DNDS_ALLOCATION_SITE());
+                work.deviceBoundaryStatus->result.SetName("Cauchy/meanGradientBoundaryStatusResult", DNDS_ALLOCATION_SITE());
+#else
+                DNDS_check_throw_info(false, "CUDA mean gradients are not built");
+#endif
+            } });
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
         {
             result._data->meanHalo.push_back(BindHalo(state.PhysicalField(iField)));
@@ -130,16 +86,18 @@ namespace DNDS::Cauchy
         {
             Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
         };
-        std::optional<PointEvaluator> evaluator;
+        std::shared_ptr<PointEvaluator> evaluator;
         std::optional<BoundaryInputs> boundary;
-        std::optional<R::Array<real>::ReadLease> boundaryRead;
-        RHSScalarView incoming;
+        OptionalRef<const R::Array<real>> incoming;
         // This entry preflight follows the same optional validation policy as
         // the later rank-local stages. Halo launches keep their own contract;
         // unchecked failures must reach the application's fail-fast boundary.
         stage([&]
               {
-            DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data && stream.Context().device == R::Device::Host(), "foreign mean gradient workspace or non-CPU stream");
+            DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data &&
+                                      engine.Owns(stream) && engine.Owns(communication) &&
+                                      stream.Context().device == Device() && communication.Context().device == Device(),
+                                  "foreign mean gradient workspace or execution streams");
             gradients._data->binding.Check(state);
             state.RequireSchema(_data->equation.Schema());
             DNDS_check_throw_info(gradients.fields.size() == gradients._data->fields.size(), "mean gradient fields replaced");
@@ -155,24 +113,19 @@ namespace DNDS::Cauchy
             {
                 boundary = AliasBoundaryInputs(*inputs.boundary);
                 ValidateBoundaryInputs(*boundary, time);
-                boundaryRead.emplace(
-                    boundary->QuadratureValues().CoupledField().Owned().Read());
-                incoming = boundaryRead->View<R::UniformTableRows>();
+                incoming.Emplace(boundary->QuadratureValues().CoupledField().Owned());
                 inputs.boundary.Emplace(*boundary);
             }
-            evaluator.emplace(_data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true})); });
+            if (Device() == R::Device::Host())
+                evaluator = std::make_shared<PointEvaluator>(_data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true})); });
         auto &work = *gradients._data;
         work.origin.reset();
         work.ghostsReady = false;
-        const auto fillBoundary = [&]
-        {
-            FillMeanGradientBoundary(state, gradients, *evaluator, time,
-                                     incoming);
-        };
         const auto gradient = [&](CFV::ReconstructionRegion region)
         {
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                _data->gradient.Evaluate(state.PhysicalField(iField), work.boundary[iField], gradients.fields[iField], work.vectors[iField], region);
+                _data->gradient.Evaluate(engine, stream, state.PhysicalField(iField), work.boundary[iField],
+                                         gradients.fields[iField], work.execution[iField], region);
         };
         std::optional<AuxiliaryPreparation> preparation;
         // These closures and the retained preparation must outlive exceptional
@@ -181,46 +134,35 @@ namespace DNDS::Cauchy
         try
         {
             auto means = schedule.Begin(work.meanHalo);
-            schedule.Submit([&]
-                            {
-                fillBoundary();
-                if (overlap) gradient(CFV::ReconstructionRegion::Core); });
-            schedule.Await(means);
-            schedule.Submit([&]
-                            { gradient(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All); });
-            schedule.Submit([&]
-                            {
-                work.origin.emplace(state.NumericAlias()); work.time = time;
-                work.sourceGhost.clear(); work.ownedVersion.clear(); work.ghostVersion.clear(); work.ownedShape.clear(); work.ghostShape.clear();
-                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                {
-                    const auto &field = gradients.fields[iField];
-                    work.sourceGhost.push_back(state.PhysicalField(iField).Ghost().Version());
-                    work.ownedVersion.push_back(field.Owned().Version()); work.ownedShape.push_back(field.Owned().ShapeVersion());
-                    work.ghostShape.push_back(field.Ghost().ShapeVersion());
-                }
-                // Transfer worker ownership and publish provenance in lane
-                // order. No controller read of these values is needed here.
-                evaluator.reset();
-                DNDS_check_throw_info(!inputs.meanGradients, "mean gradient input is owned by this preparation call");
-                inputs.meanGradients.Emplace(gradients);
-                preparation.emplace(BeginAuxValues(state, output, time, workers, inputs)); });
-            auto halos = schedule.BeginAfterCompute(work.gradientHalo);
+            SubmitMeanGradientBoundary(engine, stream, state, gradients, time, evaluator, incoming);
+            // The operation owns the boundary worker until completion. Drop
+            // the controller alias so the later auxiliary operation can obtain
+            // that chemistry worker in lane order without a host drain.
+            evaluator.reset();
             if (overlap)
-                schedule.Submit([&]
-                                { preparation->Apply(CFV::ReconstructionRegion::Core); });
+                gradient(CFV::ReconstructionRegion::Core);
+            schedule.Await(means);
+            gradient(schedule.DependentRegion());
+            work.RecordQueued(state, time, false);
+            DNDS_check_throw_info(!inputs.meanGradients, "mean gradient input is owned by this preparation call");
+            inputs.meanGradients.Emplace(gradients);
+            preparation.emplace(BeginAuxValues(state, output, time, workers, inputs));
+            auto halos = schedule.BeginAfterCompute(work.gradientHalo);
+            work.RecordQueued(state, time, true);
+            if (overlap)
+                preparation->Apply(engine, stream, CFV::ReconstructionRegion::Core);
             schedule.Await(halos);
-            schedule.Submit([&]
-                            {
-                // Record the received generation after the stream dependency,
-                // not while the controller is still submitting the halo wait.
-                for (const auto &field : gradients.fields)
-                    work.ghostVersion.push_back(field.Ghost().Version());
-                work.ghostsReady = true;
-                preparation->Apply(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
-                preparation->Finish(output); });
+            preparation->Apply(engine, stream, schedule.DependentRegion());
             stage([&]
-                  { schedule.Join(); });
+                  {
+                schedule.Join();
+                if (work.deviceBoundaryStatus)
+                {
+                    const auto status = work.deviceBoundaryStatus->result.To(R::Device::Host());
+                    RequireNumericalSuccess(status.Read().View()(0, 0), "mean-gradient boundary");
+                }
+                work.PublishQueued(state);
+                preparation->Finish(output); });
         }
         catch (...)
         {
@@ -235,6 +177,9 @@ namespace DNDS::Cauchy
             }
             work.origin.reset();
             work.ghostsReady = false;
+            work.queuedSource.reset();
+            work.queuedOwned.clear();
+            work.queuedGhost.clear();
             throw;
         }
     }

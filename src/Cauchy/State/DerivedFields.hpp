@@ -7,6 +7,12 @@
 #include <initializer_list>
 #include <optional>
 
+namespace DNDS::Runtime
+{
+    class EagerEngine;
+    class ExecutionStream;
+}
+
 namespace DNDS::Cauchy
 {
     class EquationSystem;
@@ -45,7 +51,8 @@ namespace DNDS::Cauchy
     ///
     /// Serialize controller publication/refresh calls. Current() is a snapshot
     /// query, not access permission; ReadCurrent retains source and output read
-    /// leases. Refresh is synchronous CPU work, also callable on a CPU worker.
+    /// leases. Refresh has immediate and queued CPU entries; the latter uses
+    /// declared Array operands and publishes after same-stream retirement.
     /// Point providers must perform no MPI or stencil work; prepared local
     /// inputs and an exclusive worker context are required by mixture providers.
     class DerivedFields
@@ -55,6 +62,9 @@ namespace DNDS::Cauchy
         friend bool RefreshDerivedFields(const EquationDofs &, const EquationSystem &, DerivedFields &, bool);
         friend bool RefreshDerivedFields(const EquationDofs &, const EquationSystem &, DerivedFields &,
                                          Physics::Chemistry::ChemicalWorkerPool::Lease, bool);
+        friend void RefreshDerivedFields(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                         const EquationDofs &, const EquationSystem &, DerivedFields &,
+                                         std::optional<Physics::Chemistry::ChemicalWorkerPool>, bool);
 
     public:
         DerivedFields(Algebra::DofSpace space, DerivedRequest request, bool ghost = false);
@@ -122,5 +132,17 @@ namespace DNDS::Cauchy
     /// bundle remains unpublished. Retain/move the lease with CPU worker work.
     bool RefreshDerivedFields(const EquationDofs &state, const EquationSystem &equation,
                               DerivedFields &output, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
+                              bool onlyIfStale = false);
+    /// Queued CPU counterpart using the same point kernel. All source/value
+    /// arrays are scheduled operands; the worker evaluator is acquired only
+    /// during execution. Publication follows write retirement on the same
+    /// stream, so later queued consumers can validate it without a host drain.
+    /// The caller orders prior source producers and subsequent cache consumers.
+    /// Failed allocations must be replaced, as for immediate refresh. ReadWrite
+    /// declares the optional old-temperature guess; invalid data is never used
+    /// as a guess. A queued cache hit may still advance its write generation.
+    void RefreshDerivedFields(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                              const EquationDofs &, const EquationSystem &, DerivedFields &,
+                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = {},
                               bool onlyIfStale = false);
 }

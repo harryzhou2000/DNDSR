@@ -264,6 +264,85 @@ TEST_CASE("Auxiliary core completes during a real mean halo write and full publi
         }
     }
 }
+TEST_CASE("Queued CPU auxiliary accepts pending means and feeds consumers before publication")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    C::DomainSettings settings;
+    settings.equation.transport = "NewtonianFourier";
+    settings.equation.viscosity = .03;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto state = fv.Metrics().BuildField(5);
+    Initialize(fv, state, equation);
+    auto logical = Bind(fv, state);
+    auto halo = fv.Metrics().BindHalo(state);
+    halo.Begin().Wait();
+    struct Gate final : R::StreamEvent::State
+    {
+        std::promise<void> promise;
+        std::shared_future<void> future = promise.get_future().share();
+        bool Ready() const override { return future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }
+        void Wait() const override { future.wait(); }
+        void Signal()
+        {
+            promise.set_value();
+            NotifyCompletion();
+        }
+    };
+    for (const bool derived : {false, true})
+        for (const int workers : {0, 2})
+        {
+            C::AuxiliaryRequest request{true, true, true, true, true, true, true};
+            if (derived)
+                request.derived = {C::DerivedQuantity::Temperature};
+            auto reference = fv.BuildAuxiliaryValues(request), output = fv.BuildAuxiliaryValues(request);
+            fv.PrepareAuxValues(logical, reference, .25);
+            const auto expected = Save(reference);
+            R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
+            const auto compute = engine.CreateCPUStream(), communication = engine.CreateCPUStream();
+            const auto gate = std::make_shared<Gate>();
+            struct Unblock
+            {
+                std::shared_ptr<Gate> gate;
+                ~Unblock()
+                {
+                    if (!gate->Ready())
+                        gate->Signal();
+                }
+            } unblock{gate};
+            compute.WaitFor(R::StreamEvent(gate));
+            R::SubmitArrays(engine, compute, [](R::ExecutionContext, auto values)
+                            {
+                for (DNDS::index iRow = 0; iRow < values.RowCount(); ++iRow)
+                    for (DNDS::index j = 0; j < values.Width(); ++j) values(iRow, j) += 0.; }, R::ReadWriteAs<R::TableRows>(state.Owned()));
+            // Begin must accept the scheduled producer. It retains handles,
+            // not an immediate source read or output writer.
+            auto preparation = fv.BeginAuxValues(logical, output, .25);
+            CHECK_THROWS(state.Owned().Read());
+            gate->Signal();
+            auto transfer = halo.SubmitAfter(engine, communication, compute.Record());
+            preparation.Apply(engine, compute, DNDS::CFV::ReconstructionRegion::Core);
+            transfer.EnqueueWait(compute);
+            preparation.Apply(engine, compute, DNDS::CFV::ReconstructionRegion::HaloDependent);
+            R::Array<double> observed(output.cellSpectralSum->Owned().Layout());
+            R::SubmitArrays(engine, compute, [](R::ExecutionContext, auto input, auto output)
+                            {
+                for (DNDS::index iRow = 0; iRow < output.RowCount(); ++iRow) output(iRow, 0) = input(iRow, 0); }, R::ReadAs<R::TableRows>(output.cellSpectralSum->Owned()), R::WriteAs<R::TableRows>(observed));
+            engine.Synchronize();
+            preparation.Finish(output);
+            fv.ValidateAuxValues(logical, output, .25);
+            Compare(expected, output);
+            const auto sums = observed.Read();
+            for (DNDS::index iRow = 0; iRow < observed.RowCount(); ++iRow)
+                CHECK(sums.View()(iRow, 0) == expected[4][iRow]);
+            if (derived)
+            {
+                CHECK(output.derivedOwned->Current(logical, equation));
+                CHECK(output.derivedGhost->Current(logical, equation));
+            }
+        }
+}
+
 TEST_CASE("High-order logical auxiliary maxima match the full pointwise flow path")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);

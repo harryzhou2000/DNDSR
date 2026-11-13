@@ -92,7 +92,7 @@ namespace DNDS::Cauchy
                 gradients = *input.meanGradients;
                 DNDS_check_throw_info(gradients->_data && gradients->fields.size() == 1,
                                       "CUDA auxiliary gradient publication must contain one combined field");
-                gradients->_data->Check(source, gradients->fields, data, time, false);
+                gradients->_data->CheckQueued(source, gradients->fields, data, time, false);
                 data->metrics.ValidateField(gradients->fields.front(), source.ComponentNumber() * data->metrics.Dimension());
             }
             if (input.boundary)
@@ -275,7 +275,7 @@ namespace DNDS::Cauchy
         {
             DNDS_check_throw_info(s.phase == 1, "auxiliary dependent phase requires the core submission");
             if (s.gradients)
-                s.gradients->_data->Check(s.source, s.gradients->fields, s.data, s.time, true);
+                s.gradients->_data->CheckQueued(s.source, s.gradients->fields, s.data, s.time, true);
             s.PinInput(true);
             s.Submit(engine, stream, true, true, s.data->stencil.auxiliaryDependentFaces, s.data->stencil.dependentCells);
             s.ReduceStatus(engine, stream);

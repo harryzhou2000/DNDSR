@@ -278,6 +278,82 @@ TEST_CASE("Managed CUDA volume sources retain distributed geometry and match CPU
     }
 }
 
+TEST_CASE("SST mean-gradient auxiliary schedule is shared by inline worker and CUDA execution")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 3);
+    mesh->BuildNodeWallDist([](auto zone)
+                            { return zone == 7; });
+    for (const bool overlap : {false, true})
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.execution.overlap = overlap;
+        settings.numerics.reconstruction = "constant";
+        settings.numerics.limiter = "none";
+        settings.numerics.positivity = false;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .003;
+        settings.equation.rans.model = "KOmegaSST";
+        settings.equation.rans.viscosityReference = .01;
+        settings.boundaries["7"].kind = "extrapolate";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume cpu(mesh, settings, equation);
+        const auto device = R::Device::CUDA(0);
+        const auto context = R::ExecutionContext::CUDA(0);
+        auto gpu = cpu.Placed(device, context);
+        auto means = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(7));
+        {
+            const auto geometry = cpu.Metrics().AcquireRead();
+            const auto metric = geometry.HostView();
+            auto write = means.CoupledField().Owned().Write();
+            const auto values = write.View<R::TableRows>();
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+            {
+                const auto x = metric.GetCellCent(iCell);
+                const auto flow = equation.Gas().Conservative({1.1, .2 + .03 * x[1], -.1, .02, 1.2});
+                for (int j = 0; j < 5; ++j)
+                    values(iCell, j) = flow[j];
+                values(iCell, 5) = .02 + .001 * x[0];
+                values(iCell, 6) = 20 + .1 * x[1];
+            }
+        }
+        auto resident = C::EquationDofs::Coupled(equation.Schema(), gpu.Metrics().BuildField(7));
+        resident.CoupledField().Owned().CopyFrom(means.CoupledField().Owned(), context).Wait();
+        C::AuxiliaryRequest request;
+        request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
+        auto reference = cpu.BuildAuxiliaryValues(request);
+        for (const int backend : {0, 1, 2})
+        {
+            auto &plan = backend == 2 ? gpu : cpu;
+            auto &state = backend == 2 ? resident : means;
+            auto gradient = plan.BuildMeanGradients(state);
+            auto result = plan.BuildAuxiliaryValues(request);
+            R::EagerEngine engine(backend == 1 ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+            const auto compute = backend == 2 ? engine.CreateStream(std::make_shared<R::CUDALauncher>(0)) : engine.CreateCPUStream();
+            const auto communication = backend == 2 ? engine.CreateStream(std::make_shared<R::CUDALauncher>(0)) : engine.CreateCPUStream();
+            plan.PrepareAuxValues(state, result, gradient, engine, compute, communication, .3, {}, {});
+            plan.ValidateAuxValues(state, result, .3);
+            if (backend == 0)
+                reference = result;
+            else
+            {
+                const auto compare = [](const auto &expected, const auto &actual)
+                {
+                    const auto host = actual.To(R::Device::Host());
+                    const auto x = expected.Read(), y = host.Read();
+                    for (I iRow = 0; iRow < expected.RowCount(); ++iRow)
+                        for (I j = 0; j < expected.Layout().Width(); ++j)
+                            CHECK(y.View()(iRow, j) == doctest::Approx(x.View()(iRow, j)).epsilon(4e-11).scale(1));
+                };
+                compare(*reference.meanThermodynamics, *result.meanThermodynamics);
+                compare(*reference.faceSpectralRadius, *result.faceSpectralRadius);
+                compare(reference.cellSpectralSum->Owned(), result.cellSpectralSum->Owned());
+            }
+        }
+    }
+}
+
 TEST_CASE("Queued auxiliary operator matches CPU on a distributed periodic mesh with optional outputs")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);

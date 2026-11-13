@@ -3,6 +3,7 @@
 #include "Cauchy/State/CPU/StatePropertiesKernels.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
+#include "DNDS/Runtime/Execution/EagerArrayBatch.hpp"
 #include <algorithm>
 #include <mutex>
 
@@ -180,6 +181,73 @@ namespace DNDS::Cauchy
         return DerivedPointValues{thermo.temperature, thermo.pressure, thermo.soundSpeed, point.transport.viscosity,
                                   point.transport.conductivity, thermo.cp, thermo.cv, thermo.gasConstant, point.diffusionBound,
                                   (state[4] + thermo.pressure) / state[0], thermo.gasConstant / thermo.cv};
+    }
+
+    void RefreshDerivedFields(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                              const EquationDofs &state, const EquationSystem &equation, DerivedFields &output,
+                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, bool onlyIfStale)
+    {
+        DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
+                              "queued derived refresh requires its CPU execution stream");
+        auto data = output._data;
+        data->Validate(state, equation);
+        if (!output.Enabled())
+            return;
+        DNDS_check_throw_info(equation.HasMixture() == bool(workers), "queued derived refresh requires the matching chemistry pool");
+        const auto source = state.NumericAlias();
+        const auto flow = source.LocateBlock("flow");
+        const auto species = equation.HasMixture() ? std::optional<EquationBlockLocation>(source.LocateBlock("species"))
+                                                   : std::optional<EquationBlockLocation>{};
+        std::vector<R::ArrayOperand<real, false, R::UniformTableRows>> inputs;
+        for (index iField = 0; iField < source.PhysicalFieldNumber(); ++iField)
+        {
+            const auto &field = source.PhysicalField(iField);
+            const auto &array = data->ghost ? field.Ghost() : field.Owned();
+            DNDS_check_throw_info(!array.Storage().Overlaps(data->values.Storage()), "derived output aliases its source");
+            inputs.push_back(R::ReadAs<R::UniformTableRows>(array));
+        }
+        struct Publication
+        {
+            std::optional<DerivedFields::Data::Origin> origin;
+        };
+        const auto publication = std::make_shared<Publication>();
+        R::SubmitArrayBatch(engine, stream, [data, source, equation, workers, onlyIfStale, flow, species, publication](R::ExecutionContext, auto inputs, auto outputs)
+                            {
+                const bool current = onlyIfStale && data->Current(source, equation);
+                if (!current)
+                {
+                    const bool diffusion = data->request.Has(DerivedQuantity::DiffusionBound);
+                    const bool transport = diffusion || data->request.Has(DerivedQuantity::MolecularViscosity) ||
+                                           data->request.Has(DerivedQuantity::ThermalConductivity);
+                    auto evaluator = equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
+                                                                  {transport, diffusion, false});
+                    const bool guess = data->request.Has(DerivedQuantity::Temperature) && data->CompatibleTemperature(equation);
+                    {
+                        std::lock_guard<std::mutex> lock(data->mutex);
+                        data->origin.reset();
+                    }
+                    const EquationBlockArrayView<const real> flowView{inputs[flow.physicalField], flow.firstComponent, flow.componentNumber};
+                    EquationBlockArrayView<const real> speciesView;
+                    if (species) speciesView = {inputs[species->physicalField], species->firstComponent, species->componentNumber};
+                    RequireNumericalSuccess(CPU::RefreshDerivedRows(flowView, speciesView, outputs[0], data->columns, guess, evaluator),
+                                            "queued RefreshDerivedRows");
+                }
+                DerivedFields::Data::Origin origin{{}, equation.PropertyKey(), 0, data->values.ShapeVersion()};
+                for (index iField = 0; iField < source.PhysicalFieldNumber(); ++iField)
+                {
+                    const auto &field = source.PhysicalField(iField);
+                    const auto &array = data->ghost ? field.Ghost() : field.Owned();
+                    origin.sources.push_back({array.SharedStorage(), array.Version(), array.ShapeVersion()});
+                }
+                publication->origin = std::move(origin); }, std::move(inputs), std::vector<R::ArrayOperand<real, true, R::UniformTableRows>>{R::ReadWriteAs<R::UniformTableRows>(data->values)});
+        // Metadata publication follows the Array operation's CPU retirement.
+        // No field read/write lease, MPI or host wait occurs in this command.
+        engine.Submit(stream, [data, publication](R::ExecutionContext)
+                      {
+            DNDS_check_throw_info(publication->origin && data->values.IsValid(), "derived refresh did not complete successfully");
+            publication->origin->outputVersion = data->values.Version();
+            std::lock_guard<std::mutex> lock(data->mutex);
+            data->origin = std::move(publication->origin); });
     }
 
     bool RefreshDerivedFields(const EquationDofs &state, const EquationSystem &equation,

@@ -471,12 +471,15 @@ namespace DNDS::Cauchy
             /// Owned means and the prepared MPI-local, interface-independent
             /// auxiliary face/cell subsets. Requires deferBoundary at setup.
             void ApplyInterfaceIndependent();
-            /// Rank-local publication after the packet completion event. The
-            /// scope retains packet reads until Finish; no MPI is performed.
+            /// Bind a known packet before submitting boundary-consuming work.
+            /// Synchronous execution acquires packet reads; queued execution
+            /// retains handles and validates publication after caller ordering.
+            /// This is not a promise for a packet whose publication is still
+            /// unknown on the controller. No MPI or hidden wait is performed.
             void BindBoundary(const BoundaryInputs &input);
             void Apply(CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
-            /// Enqueue the same core/dependent protocol. CUDA uses retained
-            /// Array operands and leaves status/results on device; no wait,
+            /// Enqueue the same core/dependent protocol. Both CPU and CUDA use
+            /// retained Array operands; CUDA leaves status/results on device. No wait,
             /// transfer or MPI is hidden here. Finish is called only after the
             /// caller's segment drain, before externally publishing the bundle.
             void Apply(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
@@ -490,6 +493,9 @@ namespace DNDS::Cauchy
         /// even an empty rank uses the same outer schedule. Boundary producers
         /// match Workspace. Two-equation closures require a current
         /// explicit mean-gradient publication; neither overload exchanges data.
+        /// Begin retains handles/immutable geometry only. Mutable access is
+        /// acquired by the first Apply: immediate for the synchronous overload,
+        /// scheduled for the engine overload. Do not mix these execution modes.
         AuxiliaryPreparation BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
                                             std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
                                             AuxiliaryInputs inputs = {}) const;
@@ -500,13 +506,16 @@ namespace DNDS::Cauchy
         /// returned workspace is tied to these physical allocations and row
         /// spaces; rebuild after rebinding/redistributing the equation state.
         MeanGradients BuildMeanGradients(EquationDofs &state) const;
-        /// Collective CPU orchestration: mean halo + gradient core, dependent
+        /// Collective backend-neutral orchestration: mean halo + gradient core, dependent
         /// gradients, then gradient halo + auxiliary core, and auxiliary rest.
         /// Uses persistent scratch and explicit workers. No VR coefficients are
-        /// read or changed. Inline/worker and overlap/unsplit share the kernels.
+        /// read or changed. CPU inline/worker and CUDA use this same submission
+        /// order; kernel dispatch stays in the boundary/CFV/auxiliary operators.
         /// Release conflicting views first. All ranks enter with the same
         /// physical grouping; no simultaneous use of shared workspace copies.
-        /// Returns with CPU-visible outputs. Mutating state or gradients makes
+        /// Returns with completed outputs (resident on their selected backend).
+        /// Issued mutation epochs validate in-segment gradient provenance;
+        /// publication waits for the final join. Mutating state or gradients makes
         /// a retained auxiliary publication stale and validation rejects it.
         void PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, MeanGradients &gradients,
                               Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0,
@@ -676,6 +685,11 @@ namespace DNDS::Cauchy
             BoundaryInputs &input, real time, StateEpoch epoch = {},
             std::vector<BoundaryInterfaceSource> sources = {}) const;
         void ValidateBoundaryInputs(const BoundaryInputs &input, real time) const;
+        /// Metadata/provenance check only: grants no payload access/readiness.
+        /// Queued operators call this after the packet event under declared
+        /// quadrature and face-center Array reads. Synchronous callers should
+        /// use ValidateBoundaryInputs, which acquires immediate read scopes.
+        void ValidateBoundaryPublication(const BoundaryInputs &input, real time) const;
         /// Share a packet with another FV level only after proving identical
         /// boundary point order/geometry. No interpolation or payload copy.
         BoundaryInputs AliasBoundaryInputs(const BoundaryInputs &input) const;
@@ -814,14 +828,13 @@ namespace DNDS::Cauchy
         /// leaf input.
         std::optional<BoundaryInputs> PreparedBoundaryInputs(const AuxiliaryValues &values) const;
         std::optional<BoundaryInputs> PreparedBoundaryInputs(const Workspace &workspace) const;
-        /// CPU implementation leaf for the reconstruction-independent mean
-        /// gradient boundary trace. The public operator owns validation,
-        /// worker lifetime, scheduling and halo order. This wrapper acquires
-        /// array access and passes frozen operands to the free boundary kernel.
-        void FillMeanGradientBoundary(
-            const EquationDofs &state, MeanGradients &gradients,
-            PointEvaluator &evaluator, real time,
-            RHSScalarView incoming) const;
+        /// Reconstruction-independent trace producer. Retains immutable
+        /// geometry and physics while reserving mutable payloads at submission;
+        /// numerical CPU/CUDA dispatch does not alter the enclosing schedule.
+        void SubmitMeanGradientBoundary(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                        const EquationDofs &, MeanGradients &, real time,
+                                        std::shared_ptr<PointEvaluator>,
+                                        OptionalRef<const Runtime::Array<real>> incoming = {}) const;
         /// Established fixed perfect-gas Roe leaf selected by the equation
         /// Jacobian resolver. It is not a second public state API.
         void PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,

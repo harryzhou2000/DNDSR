@@ -541,3 +541,36 @@ together to scheduled operands, while sharing the existing pure auxiliary
 kernels. A partial output-only change or a new inter-operator drain is not the
 intended completion of the common schedule.
 
+### B mean-gradient/auxiliary schedule migration (source-only)
+
+The two-equation preparation entry now submits one sequence on every backend:
+mean exchange, boundary production, CFV core/dependent gradients, gradient
+exchange, auxiliary core/dependent work, final join and publication. Dispatch
+is confined to the boundary, CFV and auxiliary operators. The retired immediate
+mean-gradient boundary wrapper has no remaining call sites.
+
+Mean-gradient provenance has an issued-epoch form for consumers within that
+ordered segment and a completed-version form for ordinary callers. Recording
+an epoch grants no access or readiness; the Runtime reservations/events remain
+mandatory. The completed publication is created only after the join and device
+boundary-status check. A focused SST test source exercises this same entry on
+CPU inline, CPU worker and CUDA with overlap on/off and real halo transfers.
+CPU auxiliary payload/derived-field migration is part of this source batch;
+these changes remain unbuilt/unrun until the grouped B gate.
+
+CPU `AuxiliaryPreparation` now selects immediate or queued access at its first
+`Apply`; `Begin` retains handles and immutable geometry only. Both modes share
+request construction and numerical kernels. Queued derived refresh reserves
+its fields and publishes metadata after CPU retirement on the same lane;
+chemistry workers are acquired during execution. Queued cache hits may still
+advance conservative write generations. Failed allocations retain Runtime's
+existing replacement requirement, with no new solver exception recovery.
+
+Boundary provenance checks are separate from immediate access acquisition.
+A queued consumer must still receive a known packet publication before being
+submitted. The existing deferred synchronous path is preserved. Wiring a
+controller submission ahead of an as-yet-unknown interface publication requires
+a stable packet/publication dependency handle; the current callback alone does
+not provide that. This remains an `EvaluateImpl` integration item, not a reason
+to add a hidden host drain or duplicate a backend-specific solver loop.
+

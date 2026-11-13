@@ -80,6 +80,7 @@ set(CPPS
     Discretization/CPU/FiniteVolumeRHSKernels_Equation.cpp
     Discretization/CPU/FiniteVolumeSourceKernels.cpp
     Discretization/FiniteVolume_AuxiliaryValues.cpp
+    Discretization/FiniteVolume_MeanGradientQueued.cpp
     Discretization/FiniteVolume_LimitedVR.cpp
     Discretization/FiniteVolume_LimitedVRExecution.cpp
     Discretization/FiniteVolume_PrepareAuxValues.cpp
