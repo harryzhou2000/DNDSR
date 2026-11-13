@@ -1,0 +1,101 @@
+#include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/LimitedVRInternal.hpp"
+#include "Cauchy/Discretization/PerfectGasKernelPoint.hpp"
+
+namespace DNDS::Cauchy
+{
+    FiniteVolume FiniteVolume::Placed(Runtime::Device device, Runtime::ExecutionContext context) const
+    {
+        namespace R = Runtime;
+        DNDS_check_throw_info(_data && context.device == device,
+                              "spatial placement needs a live plan and matching context");
+        Metrics().Validate();
+        if (device == Device())
+            return *this;
+        DNDS_check_throw_info(Device() == R::Device::Host() && device.space == R::MemorySpace::CUDA,
+                              "spatial placement starts from CPU setup and supports CUDA only");
+        // Keep the source generation pinned while publishing all its caches.
+        // A sequence of individual generation checks would leave gaps between
+        // independent placements in which a mesh edit could otherwise enter.
+        const auto geometry = Metrics().AcquireRead();
+#ifndef DNDS_USE_CUDA
+        DNDS_check_throw_info(false, "CUDA spatial placement is unavailable in this build");
+#endif
+        // Resolve physics and every physical boundary before allocating any
+        // resident publication. This is not a permissive capability fallback.
+        const auto physics = PerfectGasSpatialParameters::FromEquation(_data->equation, Metrics().Dimension());
+        physics.Validate(5 + physics.rans.ComponentNumber());
+        std::vector<PerfectGasBoundaryParameters> conditions;
+        conditions.reserve(_data->boundaryConditions.size());
+        for (const auto &condition : _data->boundaryConditions)
+        {
+            if (condition.kind == BoundaryKind::Interior || condition.kind == BoundaryKind::Interface)
+            {
+                // These entries have no prescribed thermodynamic state. The
+                // face kernel takes its neighboring mean or interface packet.
+                PerfectGasBoundaryParameters parameters;
+                parameters.kind = condition.kind;
+                conditions.push_back(parameters);
+            }
+            else
+                conditions.push_back(condition.PerfectGasKernelParameters());
+        }
+        // Copy the semantic facade, then replace numerical owners. No second
+        // backend-specific public plan/workspace class is introduced. This
+        // source plan stays usable. Runtime topology/control metadata remain
+        // host-owned; replaced numerical payloads do not retain CPU duplicates.
+        auto placed = std::make_shared<Data>(*_data);
+        placed->metrics = _data->metrics.Placed(device, context);
+        placed->gradient = _data->gradient.Placed(placed->metrics, context);
+        if (_data->reconstruction)
+        {
+            CFV::ReconstructionResidencyOptions options;
+            options.retainHostPayloads = false;
+            options.basis = true;
+            options.basisDerivativeOrder = 1;
+            placed->reconstruction = _data->reconstruction->Place(device, context, options);
+        }
+        placed->stencil = _data->stencil.Placed(device, context);
+        const auto moveField = [&](const auto &source, const char *name)
+        {
+            auto target = source.To(device, context);
+            target.SetName(std::string("Cauchy/") + name, DNDS_ALLOCATION_SITE());
+            return target;
+        };
+        placed->boundaryTraceGeometry = moveField(_data->boundaryTraceGeometry, "boundaryTraceGeometry");
+        placed->gradientBoundaryRows = moveField(_data->gradientBoundaryRows, "gradientBoundaryRows");
+        placed->ransCellLength = moveField(_data->ransCellLength, "ransCellLength");
+        placed->deviceBoundaryConditions = R::MetadataBuffer<PerfectGasBoundaryParameters>(conditions).CopyTo(device, context);
+        placed->deviceBoundaryConditions.SetDiagnosticName("Cauchy/boundaryConditions", DNDS_ALLOCATION_SITE());
+        if (_data->wallDistance)
+            placed->wallDistance = _data->wallDistance->Placed(device, context);
+        if (_data->positivitySamples)
+            placed->positivitySamples = _data->positivitySamples->Placed(device, context);
+        if (_data->sourceQuadrature)
+        {
+            auto source = std::make_shared<Detail::SourceQuadrature>(*_data->sourceQuadrature);
+            source->offsets = moveField(source->offsets, "sourceOffsets");
+            source->weights = moveField(source->weights, "sourceWeights");
+            if (source->sampling)
+                source->sampling = source->sampling->Placed(device, context);
+            if (source->jacobianSampling)
+                source->jacobianSampling = source->jacobianSampling->Placed(device, context);
+            placed->sourceQuadrature = std::move(source);
+        }
+        if (_data->limitedVRGeometry)
+        {
+            auto limited = std::make_shared<LimitedVRGeometry>(*_data->limitedVRGeometry);
+            limited->gradient = _data->limitedVRGeometry->gradient.Placed(placed->metrics, context);
+            limited->gates = _data->limitedVRGeometry->gates.Placed(placed->metrics, context);
+            limited->faces = moveField(_data->limitedVRGeometry->faces, "lvrFaces");
+            limited->cellFaceOffsets = moveField(_data->limitedVRGeometry->cellFaceOffsets, "lvrCellFaceOffsets");
+            limited->cellFaces = moveField(_data->limitedVRGeometry->cellFaces, "lvrCellFaces");
+            if (_data->limitedVRGeometry->sampling)
+                limited->sampling = _data->limitedVRGeometry->sampling->Placed(device, context);
+            placed->limitedVRGeometry = std::move(limited);
+        }
+        placed->settings.execution.device = "cuda";
+        placed->settings.execution.deviceOrdinal = device.ordinal;
+        return FiniteVolume(std::move(placed));
+    }
+}

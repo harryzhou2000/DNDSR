@@ -466,6 +466,9 @@ namespace DNDS::Cauchy
             publishIndices(build.auxiliaryCellOffsets, data->stencil.auxiliaryCellOffsets);
             publishIndices(build.auxiliaryCellFaces, data->stencil.auxiliaryCellFaces);
             publishIndices(build.positivityOffsets, data->stencil.positivityOffsets);
+            for (index iCell = 0; iCell + 1 < index(build.positivityOffsets.size()); ++iCell)
+                data->maximumPositivityPoints = std::max(data->maximumPositivityPoints,
+                                                         build.positivityOffsets[iCell + 1] - build.positivityOffsets[iCell]);
             publishIndices(build.boundaryEntries, data->stencil.boundaryEntries);
             publishIndices(data->partition.Core(), data->stencil.coreCells);
             publishIndices(data->partition.HaloDependent(), data->stencil.dependentCells);
@@ -500,6 +503,7 @@ namespace DNDS::Cauchy
         data->boundaryLayout->faces = publishBoundary(build.boundaryFaces);
         if (limitedVR)
             data->limitedVRGeometry = std::make_shared<LimitedVRGeometry>(*data);
+        data->BuildSourceQuadrature();
         _data = std::move(data);
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }

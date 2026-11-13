@@ -2,7 +2,6 @@
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
-#include "Geom/Quadratures/Quadrature.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -27,7 +26,8 @@ namespace DNDS::Cauchy
             Field field;
             field.vectorStarts = vectors;
             field.boundaryValues = R::Array<real>(R::RowLayout::Dense(
-                data.stencil.boundaryEntries.RowCount(), index(physical.Width())));
+                                                      data.stencil.boundaryEntries.RowCount(), index(physical.Width())),
+                                                  data.metrics.Device());
             if (data.reconstruction)
             {
                 field.reconstruction.emplace(data.reconstruction->BuildWorkspace(
@@ -60,58 +60,26 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::Workspace::BuildSourceSampling(const EquationDofs &state)
     {
-        if (!owner->equation.HasRANS() && (!chemical || owner->equation.Mixture().SpeciesNumber() == 1))
+        if (!owner->sourceQuadrature)
             return;
-        auto read = owner->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        const auto mesh = read.HostView();
-        const int order = owner->settings.numerics.RHSIntegrationOrder();
-        std::vector<index> offsetValues(size_t(owner->metrics.NumCell()) + 1, 0);
-        for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
-        {
-            const Geom::Elem::Quadrature quadrature(mesh.GetCellElement(iCell), order);
-            offsetValues[iCell + 1] = offsetValues[iCell] + quadrature.GetNumPoints();
-        }
-        const auto count = offsetValues.back();
-        R::Array<index> cells(R::RowLayout::Dense(count, 1));
-        R::Array<real> points(R::RowLayout::Dense(count, 3));
-        sourceWeights = R::Array<real>(R::RowLayout::Dense(count, 1));
-        const auto geometry = owner->metrics.AcquireRead();
-        const auto metric = geometry.HostView();
-        {
-            auto cellWrite = cells.Write();
-            auto pointWrite = points.Write(), weightWrite = sourceWeights.Write();
-            const auto c = cellWrite.View<R::FixedRows<1>>();
-            const auto p = pointWrite.View<R::FixedRows<3>>();
-            const auto w = weightWrite.View<R::FixedRows<1>>();
-            for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
-            {
-                Geom::tSmallCoords coords;
-                mesh.GetCoordsOnCell(iCell, coords);
-                const auto element = mesh.GetCellElement(iCell);
-                const Geom::Elem::Quadrature quadrature(element, order);
-                for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
-                {
-                    const index iPoint = offsetValues[iCell] + iQ;
-                    const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
-                    const auto point = Geom::Elem::PPhysicsCoordD01Nj(coords, shape);
-                    c(iPoint, 0) = iCell;
-                    for (int d = 0; d < 3; ++d)
-                        p(iPoint, d) = point[d];
-                    w(iPoint, 0) = order == 1 ? metric.GetCellVol(iCell) : Geom::Elem::CellJacobianDet(mesh.Dimension(), coords, shape) * quadrature.GetWeight(iQ);
-                }
-            }
-        }
-        if (owner->reconstruction)
-            sourceSampling.emplace(*owner->reconstruction, cells, points, owner->equation.HasRANS());
-        sourceValuesAreMeans = owner->settings.numerics.reconstruction != "variational" && count == owner->metrics.NumCell();
-        for (index iCell = 0; sourceValuesAreMeans && iCell < owner->metrics.NumCell(); ++iCell)
-            sourceValuesAreMeans = offsetValues[iCell] == iCell && offsetValues[iCell + 1] == iCell + 1;
+        // Geometry is frozen once by the plan before placement; workspaces
+        // share it and own only mutable values/gradients. No host mesh access
+        // or reconstruction setup is required for a CUDA workspace.
+        const auto &prepared = *owner->sourceQuadrature;
+        sourceOffsets = prepared.offsets;
+        sourceWeights = prepared.weights;
+        sourceSampling = prepared.sampling;
+        sourceJacobianSampling = prepared.jacobianSampling;
+        sourceValuesAreMeans = prepared.valuesAreMeans;
+        const index count = sourceWeights.RowCount();
+        const auto device = owner->metrics.Device();
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
         {
             // Keep source sampling scratch independent of any particular
             // mean allocation so serialized stage states can reuse it.
             sourceValues.emplace_back(FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), count,
-                                                                      index(state.PhysicalField(iField).Width())));
+                                                                      index(state.PhysicalField(iField).Width())),
+                                      device);
             if (owner->equation.HasRANS())
             {
                 sourceGradients.emplace_back();
@@ -119,39 +87,19 @@ namespace DNDS::Cauchy
                 // field directly; polynomial/multi-point paths own samples.
                 if (!sourceValuesAreMeans)
                     for (int d = 0; d < owner->metrics.Dimension(); ++d)
-                        sourceGradients.back()[d] = R::Array<real>(sourceValues.back().Layout());
+                        sourceGradients.back()[d] = R::Array<real>(sourceValues.back().Layout(), device);
             }
         }
         if (owner->equation.HasRANS())
         {
             const index owned = owner->metrics.NumCell();
-            R::Array<index> centerCells(R::RowLayout::Dense(owned, 1));
-            R::Array<real> centers(R::RowLayout::Dense(owned, 3));
-            {
-                auto cellWrite = centerCells.Write();
-                auto pointWrite = centers.Write();
-                for (index iCell = 0; iCell < owned; ++iCell)
-                {
-                    cellWrite.View()(iCell, 0) = iCell;
-                    const auto center = metric.GetCellCent(iCell);
-                    for (int d = 0; d < 3; ++d)
-                        pointWrite.View()(iCell, d) = center[d];
-                }
-            }
-            if (owner->reconstruction)
-                sourceJacobianSampling.emplace(*owner->reconstruction, centerCells, centers);
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
                 sourceJacobianGradients.emplace_back();
                 for (int d = 0; d < owner->metrics.Dimension(); ++d)
-                    sourceJacobianGradients.back()[d] = R::Array<real>(FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owned, state.PhysicalField(iField).Width()));
+                    sourceJacobianGradients.back()[d] = R::Array<real>(FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owned, state.PhysicalField(iField).Width()), device);
             }
         }
-        sourceOffsets = R::Array<index>(R::RowLayout::Dense(offsetValues.size(), 1));
-        auto offsetWrite = sourceOffsets.Write();
-        const auto offsets = offsetWrite.View<R::FixedRows<1>>();
-        for (index iRow = 0; iRow < index(offsetValues.size()); ++iRow)
-            offsets(iRow, 0) = offsetValues[iRow];
     }
     EquationDofs FiniteVolume::Workspace::BindBoundary(const EquationDofs &state, const std::vector<Field> &fields, index rows)
     {
@@ -159,7 +107,7 @@ namespace DNDS::Cauchy
         Algebra::DofBundle bundle(space);
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             bundle.Add(state.Fields().Name(iField), CFV::FVField(space, fields[iField].boundaryValues,
-                                                                 R::Array<real>(R::RowLayout::Dense(0, state.PhysicalField(iField).Width()))));
+                                                                 R::Array<real>(R::RowLayout::Dense(0, state.PhysicalField(iField).Width()), state.Device())));
         return FiniteVolumeDetail::BindFieldSchema(state, std::move(bundle), 1);
     }
     FiniteVolume::Workspace::Workspace(std::shared_ptr<const Data> data, EquationDofs &state,
@@ -172,8 +120,8 @@ namespace DNDS::Cauchy
                   pool ? pool->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}),
           diagnostics(owner->forceZones),
           workers(std::move(pool)),
-          boundaryMomentumFlux(R::RowLayout::Dense(owner->stencil.boundaryEntries.RowCount(), 3)),
-          faceFlux(R::RowLayout::Dense(owner->stencil.stencilFaces.RowCount(), state.ComponentNumber())),
+          boundaryMomentumFlux(R::RowLayout::Dense(owner->stencil.boundaryEntries.RowCount(), 3), owner->metrics.Device()),
+          faceFlux(R::RowLayout::Dense(owner->stencil.stencilFaces.RowCount(), state.ComponentNumber()), owner->metrics.Device()),
           chemical(owner->settings.equation.source == "chemical")
     {
         index first = 0;
@@ -221,7 +169,7 @@ namespace DNDS::Cauchy
                 state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1)
             {
                 lowOrderResidual.emplace(EquationDofOperations::NewVector(state));
-                lowOrderFaceFlux.emplace(R::RowLayout::Dense(owner->stencil.stencilFaces.RowCount(), state.ComponentNumber()));
+                lowOrderFaceFlux.emplace(R::RowLayout::Dense(owner->stencil.stencilFaces.RowCount(), state.ComponentNumber()), owner->metrics.Device());
             }
         }
         if (!meanOnly && owner->limitedVRGeometry)
@@ -239,18 +187,13 @@ namespace DNDS::Cauchy
                                 owner->settings.numerics.limiter == "WBAP");
         if (nativeDirectGradient)
         {
-            directLimiterScratch = R::Array<real>(R::RowLayout::Dense(6, componentNumber));
-            if (owner->settings.numerics.positivity)
+            // These are CPU row-local temporaries. CUDA leaves use local
+            // fixed-width values and per-cell result/status arrays instead.
+            if (owner->metrics.Device() == R::Device::Host())
             {
-                const auto stencilRead = owner->stencil.Read();
-                const auto stencil = stencilRead.View();
-                index maximumPoints = 0;
-                for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
-                    maximumPoints = std::max(
-                        maximumPoints,
-                        stencil.positivityOffsets(iCell + 1, 0) -
-                            stencil.positivityOffsets(iCell, 0));
-                directPPSamples = R::Array<real>(R::RowLayout::Dense(maximumPoints, componentNumber));
+                directLimiterScratch = R::Array<real>(R::RowLayout::Dense(6, componentNumber));
+                if (owner->settings.numerics.positivity)
+                    directPPSamples = R::Array<real>(R::RowLayout::Dense(owner->maximumPositivityPoints, componentNumber));
             }
         }
         if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || limitedVR) && owner->settings.numerics.characteristicLimiter)
@@ -259,9 +202,13 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(flow.componentNumber == 5, "characteristic limiter requires one five-component flow block");
             flowCharacteristicField = flow.physicalField;
             if (nativeDirectGradient)
-                gradientFlowCharacteristic.emplace(owner->gradient.BuildFaceTransform(flow.firstComponent, 5));
+                gradientFlowCharacteristic.emplace(owner->metrics.Device() == R::Device::Host()
+                                                       ? owner->gradient.BuildFaceTransform(flow.firstComponent, 5)
+                                                       : owner->gradient.BuildQueuedFaceTransform(flow.firstComponent, 5));
             else if (owner->reconstruction)
-                flowCharacteristic.emplace(owner->reconstruction->BuildFaceTransform(flow.firstComponent, 5));
+                flowCharacteristic.emplace(owner->metrics.Device() == R::Device::Host()
+                                               ? owner->reconstruction->BuildFaceTransform(flow.firstComponent, 5)
+                                               : owner->reconstruction->BuildQueuedFaceTransform(flow.firstComponent, 5));
         }
         if (owner->settings.numerics.reconstruction != "variational")
         {
@@ -282,7 +229,8 @@ namespace DNDS::Cauchy
                         directGradients.push_back(owner->metrics.BuildField(
                             FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(),
                                                             owner->metrics.NumCell(),
-                                                            state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
+                                                            state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
+                            owner->metrics.Device()));
                         if (owner->settings.numerics.limiter == "WBAP")
                             directGradientInputHalo.push_back(owner->BindHalo(
                                 *fields[iField].gradient, "cauchy-direct-gradient-input"));
@@ -304,12 +252,14 @@ namespace DNDS::Cauchy
                 else
                     directGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
-                                                        state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
+                                                        state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
+                        owner->metrics.Device()));
                 if (!meanOnly && owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "polynomial" &&
                     !owner->settings.numerics.viscousLimited && !nativeDirectGradient)
                     directViscousGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
-                                                        state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
+                                                        state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
+                        owner->metrics.Device()));
             }
         }
         if (!meanOnly && owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "primitive")

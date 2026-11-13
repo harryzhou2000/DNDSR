@@ -3,6 +3,8 @@
 #include "Cauchy/Discretization/CUDA/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "CartesianFixture.hpp"
@@ -15,6 +17,45 @@ namespace R = DNDS::Runtime;
 using I = DNDS::index;
 using DNDS::real;
 static DNDS::MPIInfo mpi;
+
+TEST_CASE("Spatial placement retains metric identity and allocates VR boundary values without host staging")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 3);
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    for (const std::string family : {"constant", "gradient", "variational"})
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.numerics.reconstruction = family;
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.SORInstead = false;
+        settings.numerics.positivity = false;
+        settings.numerics.limiter = "none";
+        settings.boundaries["7"].kind = "extrapolate";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        std::optional<C::FiniteVolume> host{std::in_place, mesh, settings, equation};
+        auto resident = host->Placed(device, context);
+        CHECK(resident.Metrics().Space().Same(host->Metrics().Space()));
+        CHECK(resident.Device() == device);
+        CHECK(bool(resident.PolynomialReconstruction()) == (family == "variational"));
+        host.reset();
+        auto metric = resident.Metrics().AcquireRead(context);
+        metric.View().ValidateDevice(device);
+        if (const auto reconstruction = resident.PolynomialReconstruction())
+        {
+            CHECK_FALSE(reconstruction->RetainsHostPayloads());
+            auto boundary = reconstruction->BuildBoundaryValues(5);
+            CHECK(boundary.values.GetDevice() == device);
+            CHECK(boundary.values.RowCount() == reconstruction->NumBoundaryQuadrature());
+            CHECK(boundary.values.Layout().Width() == 5);
+            auto coefficients = reconstruction->BuildCoefficients(5);
+            // Native synchronous algebra dispatches to the array's device.
+            DNDS::Algebra::Fill(coefficients, 0.);
+            CHECK(DNDS::Algebra::DotLocal(coefficients, coefficients) == 0);
+        }
+    }
+}
 
 TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty partitions and first failure")
 {

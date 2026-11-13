@@ -509,8 +509,9 @@ namespace DNDS::CFV
                                                                ReconstructionCapabilities capabilities = {});
         /// Return the same public CFV plan placed on one backend. CUDA setup is
         /// synchronous; hot submissions are stream ordered. Set
-        /// retainHostPayloads=false only after preparing mutable host operands;
-        /// the returned frozen placement then rejects host-only setup queries.
+        /// retainHostPayloads=false after preparing host geometry queries;
+        /// the returned frozen placement can allocate device boundary/workspace
+        /// operands directly, but rejects host-only geometry setup queries.
         /// No device-specific plan or workspace type is exposed to callers.
         VariationalReconstructionPlan Place(Runtime::Device, Runtime::ExecutionContext,
                                             ReconstructionResidencyOptions = {}) const;

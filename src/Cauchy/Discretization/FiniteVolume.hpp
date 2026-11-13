@@ -158,6 +158,7 @@ namespace DNDS::Cauchy
         struct JacobianData;
         struct PositivityWorkspace;
         std::shared_ptr<const Data> _data;
+        explicit FiniteVolume(std::shared_ptr<const Data> data) : _data(std::move(data)) {}
         void ValidateBoundaryLayout(const BoundaryInputs &input) const;
 
     public:
@@ -584,6 +585,14 @@ namespace DNDS::Cauchy
                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
                              std::optional<JacobianContext> context = std::nullopt) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
+        /// Explicit synchronous setup placement of immutable spatial inputs.
+        /// The returned handle uses the same FV API/row spaces; numerical
+        /// kernels are still selected by each operator. Does not move means,
+        /// reconstruction state or scratch, and does not enable an unavailable
+        /// solver capability. Drop the source handle to release CPU numerical
+        /// caches. Reference mesh/configuration and host setup metadata remain.
+        FiniteVolume Placed(Runtime::Device device, Runtime::ExecutionContext context) const;
+        Runtime::Device Device() const { return Metrics().Device(); }
         bool SharesPlan(const FiniteVolume &other) const { return _data && _data == other._data; }
         const CFV::FiniteVolumePlan &Metrics() const;
         /// Bind through the metric space with this domain's explicit MPI

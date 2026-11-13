@@ -62,7 +62,7 @@ namespace R = DNDS::Runtime;
 auto communication = std::make_shared<R::CommunicationContext>(mpi.comm);
 A::DofSpace space(communication, localCells, ghostCells);
 A::DofField<double, 7> x(space, 7, 10), residual(space);
-A::Fill(x, 0.);                  // immediate CPU convenience
+A::Fill(x, 0.);                  // synchronous convenience on x's device
 R::EagerEngine engine(2);
 auto stream = engine.CreateCPUStream();
 A::Fill(engine, stream, residual, 1.);
@@ -79,9 +79,10 @@ types, placement and shared distribution are validated at the boundary. Exact
 aliases with the same layout are supported, including all operands sharing one
 field; partial overlapping output/input ranges are rejected. Imported storage
 must obey Runtime's import-once/controller rules. No implicit device transfer is
-performed. Immediate convenience overloads use the same inline CPU engine and
-reject CUDA fields; CUDA work uses an explicit engine and CUDA stream. Immediate
-convenience is a serialized caller boundary: every accessed owned allocation must
+performed. Immediate convenience overloads resolve the field's device, using an
+inline CPU stream or an owned CUDA stream, and drain it before returning. Hot
+paths should use an explicit engine/stream to avoid repeated stream creation and
+synchronization. Immediate convenience is a serialized caller boundary: every accessed owned allocation must
 be idle, including no active leases or pending scheduled accesses. Complete the
 producer prefix before using it. Global immediate checks participate in collective
 error agreement; one rank's pending access cannot strand its peers.

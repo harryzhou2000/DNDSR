@@ -12,6 +12,7 @@
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Boundary/PerfectGasBoundary.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "DNDS/Runtime/Communication/CommunicationWorker.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
@@ -96,6 +97,16 @@ namespace DNDS::Cauchy
 {
     namespace Detail
     {
+        /// Immutable volume-source quadrature. Prepared once with the spatial
+        /// plan, shared by workspaces, and explicitly placed with that plan.
+        /// No mean values, reconstruction coefficients or worker state live here.
+        struct SourceQuadrature
+        {
+            Runtime::Array<index> offsets{Runtime::RowLayout::Dense(0, 1)};
+            Runtime::Array<real> weights{Runtime::RowLayout::Dense(0, 1)};
+            std::optional<CFV::PolynomialSamplingPlan> sampling, jacobianSampling;
+            bool valuesAreMeans = false;
+        };
         struct BoundaryPointLayout
         {
             std::weak_ptr<Geom::UnstructuredMesh> mesh;
@@ -138,6 +149,10 @@ namespace DNDS::Cauchy
         Runtime::Array<BoundaryTraceGeometry> boundaryTraceGeometry;
         Runtime::Array<index> gradientBoundaryRows;
         std::vector<BoundaryCondition> boundaryConditions;
+        /// Small immutable backend metadata. Numeric boundary kernels consume
+        /// these resolved records, never the host condition owners/callbacks.
+        /// Empty on the CPU plan; CUDA placement resolves and uploads it once.
+        Runtime::MetadataBuffer<PerfectGasBoundaryParameters> deviceBoundaryConditions;
         /// Domain-wide coupling participation. Every rank uses this to retain
         /// the collective interface publication protocol, including ranks
         /// with no locally owned interface quadrature.
@@ -150,6 +165,9 @@ namespace DNDS::Cauchy
         // across the regions may occur in both; each region remains callable
         // independently, without a hidden prior-core publication contract.
         std::optional<CFV::PolynomialSamplingPlan> positivitySamples;
+        /// Setup extent for CPU row-local PP scratch; no device readback is
+        /// needed when constructing a placed workspace.
+        index maximumPositivityPoints = 0;
         std::shared_ptr<const LimitedVRGeometry> limitedVRGeometry;
         /// Cell-center displacements for direct-P1 trace/volume PP checks.
         /// Shares positivityOffsets with polynomial sampling but owns no basis.
@@ -159,6 +177,9 @@ namespace DNDS::Cauchy
         std::optional<AdmissibilityPolicy> defaultAdmissibility;
         std::optional<WallDistanceSamples> wallDistance;
         Runtime::Array<real> ransCellLength;
+        std::shared_ptr<const Detail::SourceQuadrature> sourceQuadrature;
+        /// CPU-only immutable preparation; called before a spatial placement.
+        void BuildSourceQuadrature();
         Runtime::TransferBinding BindHalo(CFV::FVField &field, const char *channel = "cauchy-field") const
         {
             return metrics.BindHalo(field, HaloTransferOptions(channel));

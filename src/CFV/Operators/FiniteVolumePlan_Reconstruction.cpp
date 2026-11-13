@@ -229,10 +229,8 @@ namespace DNDS::CFV
     ReconstructionBoundaryValues VariationalReconstructionPlan::BuildBoundaryValues(index components) const
     {
         Validate();
-        DNDS_check_throw_info(!_device,
-                              "build mutable boundary values on the host plan, then place them on the selected backend");
         DNDS_check_throw_info(components > 0, "boundary value component count must be positive");
-        return {R::Array<real>(R::RowLayout::Dense(NumBoundaryQuadrature(), components)), _identity};
+        return {R::Array<real>(R::RowLayout::Dense(NumBoundaryQuadrature(), components), Device()), _identity};
     }
     index VariationalReconstructionPlan::NumBoundaryQuadrature() const
     {

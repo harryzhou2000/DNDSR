@@ -78,7 +78,23 @@ TEST_CASE_TEMPLATE("Native CUDA algebra retains float/double fields, joins strea
                 }
             }
             CHECK(A::DotLocal(engine, consumer, varied, varied).Get() == doctest::Approx(expectedSquares));
-            CHECK_THROWS(A::Scale(y, T(2))); // Immediate overload is CPU-only.
+            engine.Synchronize();
+            // Idle synchronous calls resolve storage placement too. They
+            // finish before returning, while explicit stream overloads retain
+            // their queueing contract. Neither touches ghosts or row padding.
+            A::Scale(y, T(2));
+            CHECK(A::DotLocal(y, y) == doctest::Approx(double(rows * width) * 576));
+            const auto immediateSums = A::ComponentSumLocal(y);
+            for (double value : immediateSums)
+                CHECK(value == double(rows) * 24);
+            A::Fill(y, T(3));
+            const auto immediateMin = A::ComponentMinLocal(y);
+            const auto immediateMax = A::ComponentMaxLocal(y);
+            for (DNDS::index j = 0; j < DNDS::index(width); ++j)
+            {
+                CHECK(immediateMin[j] == (rows ? 3 : std::numeric_limits<double>::infinity()));
+                CHECK(immediateMax[j] == (rows ? 3 : -std::numeric_limits<double>::infinity()));
+            }
             auto cpu = engine.CreateCPUStream();
             CHECK_THROWS(A::Fill(engine, cpu, y, T(1)));
         }

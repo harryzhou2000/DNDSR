@@ -346,9 +346,10 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
         state.RequireSchema(_data->equation.Schema());
         DNDS_check_throw_info(state.Space().Same(Metrics().Space()) &&
+                                  state.Device() == Device() &&
                                   state.ComponentNumber() == work.componentNumber &&
                                   state.PhysicalFieldNumber() == work.physicalFieldNumber,
-                              "equation workspace schema or row space differs");
+                              "equation workspace schema, row space or device differs");
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             DNDS_check_throw_info(state.PhysicalField(iField).Width() == work.fields[iField].boundaryValues.Layout().Width(),
                                   "equation workspace physical field width differs");

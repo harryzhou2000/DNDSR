@@ -411,3 +411,25 @@ pending. Dynamic characteristic production, LVR, state/reduction leaves,
 workspace integration, remaining OMP and optional quantized CFV matrices are
 still part of batch B; no CUDA solver acceptance is claimed.
 
+### B placement integration checkpoint (source-only)
+
+`FiniteVolume_Placement.cpp` explicitly places immutable spatial publications
+while retaining one source geometry generation. Host mesh/control metadata
+remain, but replaced numerical buffers do not retain CPU duplicates.
+`FiniteVolumeInternal_SourceQuadrature.cpp` prepares source quadrature once;
+workspaces share immutable offsets, weights and samplers instead of rebuilding
+host geometry. Its independent filling loops use the existing setup OpenMP
+policy after serial shape-cache preparation. Mutable source/gradient, boundary,
+face-flux and polynomial-PP operands allocate on the plan's device. CPU row-local
+direct-gradient scratch is not allocated for a device plan.
+
+Placed CFV plans now allocate boundary values without a staging copy. Native
+synchronous DOF algebra selects the field device and drains its owned stream;
+queued hot paths retain caller streams. Neither API silently transfers fields.
+Focused source tests cover P0/P1/P3 placement and native CUDA convenience calls.
+**No B build/test has run yet.** Remaining spatial work includes complete
+workspace initialization, queued operator dispatch, production error-profile
+sampling, and quantized MMA evaluation. Characteristics, LVR, state/error
+reductions and the FP32 SIMT baseline have source implementations, but are not
+yet qualified as a complete solver path. C/D remain pending.
+

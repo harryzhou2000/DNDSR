@@ -90,7 +90,8 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage([&]
                                               {
             state.RequireSchema(_data->equation.Schema());
-            DNDS_check_throw_info(state.Space().Same(Metrics().Space()), "reconstruction state belongs to another row space");
+            DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == Device(),
+                                  "reconstruction state belongs to another row space or device");
             result = std::make_shared<ReconstructionState>(_data, state); });
         return result;
     }
@@ -120,7 +121,8 @@ namespace DNDS::Cauchy
                                               {
             state.RequireSchema(_data->equation.Schema());
             _data->equation.ResolveKernelProfile(state.Device());
-            DNDS_check_throw_info(state.Space().Same(Metrics().Space()), "equation FV state belongs to another row space");
+            DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == Device(),
+                                  "equation FV state belongs to another row space or device");
             DNDS_check_throw_info(options.rhsKernel != RHSKernelPolicy::FixedFlow5 || flow5Profile,
                                   "fixed flow5 RHS kernel requires one perfect-gas flow5 physical field");
             DNDS_check_throw_info((n.reconstruction == "constant" || n.reconstruction == "gradient" || n.reconstruction == "variational") &&

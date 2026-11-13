@@ -59,8 +59,8 @@ namespace DNDS::Cauchy
               policy(owner->equation, owner->settings.numerics.densityFloor, owner->settings.numerics.temperatureFloor,
                      owner->settings.numerics.sensibleEnergyFloor, owner->settings.numerics.pressureFloor,
                      workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}),
-              degree(R::RowLayout::Dense(owner->metrics.NumCell(), 1)),
-              beta(degree.Layout()), recoveryScale(degree.Layout()), recover(degree.Layout())
+              degree(R::RowLayout::Dense(owner->metrics.NumCell(), 1), owner->metrics.Device()),
+              beta(degree.Layout(), owner->metrics.Device()), recoveryScale(degree.Layout(), owner->metrics.Device()), recover(degree.Layout(), owner->metrics.Device())
         {
             DNDS_check_throw_info(owner->positivitySamples, "equation PP sampling geometry is unavailable");
             if (owner->equation.HasRANS())
@@ -76,12 +76,12 @@ namespace DNDS::Cauchy
                 DNDS_assert(ransFirst >= 0);
             }
             for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
-                higherValues.emplace_back(FiniteVolumeDetail::FieldLayout(input.PhysicalField(iField).Owned().Layout(), owner->positivitySamples->Size(), index(input.PhysicalField(iField).Width())));
+                higherValues.emplace_back(FiniteVolumeDetail::FieldLayout(input.PhysicalField(iField).Owned().Layout(), owner->positivitySamples->Size(), index(input.PhysicalField(iField).Width())), owner->metrics.Device());
             if (!owner->settings.numerics.positivityCompressToMean)
             {
                 reference.emplace(EquationDofOperations::NewVector(coefficients));
                 for (const auto &array : higherValues)
-                    baseValues.emplace_back(array.Layout());
+                    baseValues.emplace_back(array.Layout(), owner->metrics.Device());
             }
         }
         void Sample(const EquationDofs &input, const EquationDofs &coefficients, std::vector<R::Array<real>> &values) const

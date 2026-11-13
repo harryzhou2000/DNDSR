@@ -2,6 +2,7 @@
 
 #include "DNDS/Algebra/DofField.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Core/OMP.hpp"
 #include <cmath>
 #include <array>
@@ -137,13 +138,28 @@ namespace DNDS::Algebra
                                       "algebra partial overlap is unsupported");
         }
         template <class F>
-        void Immediate(F &&run)
+        void Immediate(Runtime::Device device, F &&run)
         {
             Runtime::EagerEngine engine;
-            const auto stream = engine.CreateCPUStream();
+            // Synchronous convenience calls still dispatch by storage. They
+            // require idle fields and drain before returning; hot queued calls
+            // keep using the caller's engine/stream instead of creating one.
+            const auto stream = [&]
+            {
+                if (device == Runtime::Device::Host())
+                    return engine.CreateCPUStream();
+#ifdef DNDS_USE_CUDA
+                if (device.space == Runtime::MemorySpace::CUDA)
+                    return engine.CreateStream(std::make_shared<Runtime::CUDALauncher>(device.ordinal));
+#endif
+                DNDS_check_throw_info(false, "immediate DOF algebra backend is unavailable");
+                return Runtime::ExecutionStream{};
+            }();
             run(engine, stream);
             engine.Synchronize();
         }
+        template <class F>
+        void Immediate(F &&run) { Immediate(Runtime::Device::Host(), std::forward<F>(run)); }
         template <class Field>
         void RequireIdle(const Field &field)
         {
@@ -242,14 +258,14 @@ namespace DNDS::Algebra
     void Fill(DofField<T, N> &out, T value)
     {
         Detail::RequireIdle(out);
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(out.Device(), [&](auto &e, const auto &s)
                           { Fill(e, s, out, value); });
     }
     template <class T, size_t N>
     void Scale(DofField<T, N> &out, T value)
     {
         Detail::RequireIdle(out);
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(out.Device(), [&](auto &e, const auto &s)
                           { Scale(e, s, out, value); });
     }
     template <class T, size_t A, size_t B>
@@ -257,7 +273,7 @@ namespace DNDS::Algebra
     {
         Detail::RequireIdle(out);
         Detail::RequireIdle(in);
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(out.Device(), [&](auto &e, const auto &s)
                           { Copy(e, s, out, in); });
     }
     template <class T, size_t A, size_t B>
@@ -265,7 +281,7 @@ namespace DNDS::Algebra
     {
         Detail::RequireIdle(out);
         Detail::RequireIdle(in);
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(out.Device(), [&](auto &e, const auto &s)
                           { Axpy(e, s, out, alpha, in); });
     }
     template <class T, size_t A, size_t B, size_t C>
@@ -274,7 +290,7 @@ namespace DNDS::Algebra
         Detail::RequireIdle(out);
         Detail::RequireIdle(x);
         Detail::RequireIdle(y);
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(out.Device(), [&](auto &e, const auto &s)
                           { LinearCombination(e, s, out, a, x, b, y); });
     }
 
@@ -317,7 +333,7 @@ namespace DNDS::Algebra
         Detail::RequireIdle(x);
         Detail::RequireIdle(y);
         double value = 0;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = DotLocal(e, s, x, y).Get(); });
         return value;
     }
@@ -328,7 +344,7 @@ namespace DNDS::Algebra
     {
         Detail::RequireIdle(x);
         std::vector<double> value;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = ComponentSumLocal(e, s, x).Get(); });
         return value;
     }
@@ -337,7 +353,7 @@ namespace DNDS::Algebra
     {
         Detail::RequireIdle(x);
         std::vector<double> value;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = ComponentMinLocal(e, s, x).Get(); });
         return value;
     }
@@ -346,7 +362,7 @@ namespace DNDS::Algebra
     {
         Detail::RequireIdle(x);
         std::vector<double> value;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = ComponentMaxLocal(e, s, x).Get(); });
         return value;
     }
@@ -390,7 +406,7 @@ namespace DNDS::Algebra
     double DotGlobal(const DofField<T, A> &x, const DofField<T, B> &y)
     {
         double value = 0;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = DotGlobal(e, s, x, y, true); });
         return value;
     }
@@ -398,7 +414,7 @@ namespace DNDS::Algebra
     double NormGlobal(const DofField<T, N> &x)
     {
         double value = 0;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = NormGlobal(e, s, x, true); });
         return value;
     }
@@ -406,7 +422,7 @@ namespace DNDS::Algebra
     std::vector<double> ComponentSumGlobal(const DofField<T, N> &x)
     {
         std::vector<double> value;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = ComponentSumGlobal(e, s, x, true); });
         return value;
     }
@@ -414,7 +430,7 @@ namespace DNDS::Algebra
     std::vector<double> ComponentMinGlobal(const DofField<T, N> &x)
     {
         std::vector<double> value;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = ComponentMinGlobal(e, s, x, true); });
         return value;
     }
@@ -422,7 +438,7 @@ namespace DNDS::Algebra
     std::vector<double> ComponentMaxGlobal(const DofField<T, N> &x)
     {
         std::vector<double> value;
-        Detail::Immediate([&](auto &e, const auto &s)
+        Detail::Immediate(x.Device(), [&](auto &e, const auto &s)
                           { value = ComponentMaxGlobal(e, s, x, true); });
         return value;
     }
