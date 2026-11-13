@@ -306,8 +306,14 @@ namespace DNDS::CFV
         if (host.capabilities.wbap)
             view.secondary = result->Add("secondary", *host.secondary, context);
 #undef DNDS_REC_ADD
-        view.rotation = result->Add("neighborRotation", host.neighborRotation, context);
-        view.rotationActive = result->Add("neighborRotationActive", host.neighborRotationActive, context);
+        // Every sweep/limiter kernel checks the publication-wide rotated flag
+        // before reading either table. Translational/nonperiodic meshes need
+        // neither identity matrices nor per-entry activity flags on device.
+        if (view.rotated)
+        {
+            view.rotation = result->Add("neighborRotation", host.neighborRotation, context);
+            view.rotationActive = result->Add("neighborRotationActive", host.neighborRotationActive, context);
+        }
         for (bool core : {true, false})
         {
             const auto &list = core ? host.workPartition->Core() : host.workPartition->HaloDependent();

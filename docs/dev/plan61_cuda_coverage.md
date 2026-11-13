@@ -60,6 +60,38 @@ Colocated/dislocated CUDA interface UTs exercise the repeated numerical path.
 Current Cauchy configuration selects MPI-direct. Runtime NCCL availability
 alone does not make Cauchy's interface refresh stream-native or capturable.
 
+### Host-transfer audit
+
+The configured numerical update keeps the mean, reconstruction, RHS, Jacobian
+and Krylov fields on device. Source-visible downloads fall into these classes:
+
+| Site | Data crossing to host | Lifetime / purpose |
+| --- | --- | --- |
+| `FiniteVolumeDeviceJacobian.cpp` constructor | Immutable Jacobian samples, offsets and face areas | Once per workspace, to construct symbolic geometry; no solution values or repeated CPU Jacobian assembly |
+| `FiniteVolume_{AuxiliaryQueued,RHSQueued,BoundaryQueued}.cpp` | One numerical-status record | Explicit completed-segment reporting; not a field fallback |
+| `NonlinearOperators_Internal.hpp`, `TimeStageOperators.cpp` | Fixed-size norm/PP/acceptance summaries | Host stopping/retry decisions after completion |
+| `PolynomialMultigridOperations.cpp` | One frozen-component check result | Verification after the device comparison kernel |
+| `StateDiagnostics.cpp`, `BoundaryForceReduction.cpp` | Reduced statistics / integrated forces | Host recording; point physics and integration run on device |
+| `DomainStateSnapshot.cpp` | Owned state/history and optional reconstruction | Explicit output snapshot, outside numerical evaluation |
+| Runtime direct MPI | Provider-dependent host or device transport | Readiness/completion bridge; host staging inside MPI is not a CPU numerical fallback |
+
+CUDA-only Nsight records for the 20-update cylinder pilots support this
+distinction: large transfers occur once during first-use setup; repeated
+host/device copies are halo-sized or small control summaries. Those traces
+include setup/output and do not attribute MPI internals or prove all possible
+configurations. Raw traces and compact summaries are retained in the Phase D
+experiment. Cauchy's queued phase timer currently measures CPU lanes only;
+its zero device entries must not be interpreted as zero GPU work.
+
+Device reconstruction placement also omits periodic rotation matrices and
+activity flags when the publication has no rotational periodic entries. The
+same publication-wide flag already guards every consuming sweep/limiter
+kernel. Rotational meshes retain their tables; this does not change arithmetic.
+The Phase D correction passes three CUDA CTest entries (including two GPUs)
+and eight installed-Python cases. A matched 20-update FP64 cylinder replay
+has bitwise-identical means and coefficients, with 644,298 bytes removed from
+the warm device working set. Evidence: `workspace/plan61-validation/D/rotation-storage-*`.
+
 ## Focused evidence and limits
 
 The compact Phase C report lives in the plan repository at
