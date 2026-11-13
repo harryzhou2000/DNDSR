@@ -1,0 +1,162 @@
+#pragma once
+
+#include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
+
+namespace DNDS::Cauchy::CUDA::Detail
+{
+    template <int Components>
+    DNDS_DEVICE_CALLABLE void MeanPoint(const RHSFields &fields, index iCell, PerfectGasKernelPoint<Components> &point) noexcept
+    {
+        for (int j = 0; j < Components; ++j)
+        {
+            point.values[j] = fields.mean(iCell, j);
+            point.gradients[j] = {};
+        }
+    }
+    /// The sample's other center is already a periodic coordinate image in
+    /// the anchor frame. Undo only the vector map, then add the native center.
+    DNDS_DEVICE_CALLABLE inline Vector3 ParentPoint(const RHSGeometry &geometry, const FiniteVolumeDetail::SampleRecord &sample, bool other) noexcept
+    {
+        if (!other)
+            return sample.ownPoint;
+        Vector3 result{}, delta{};
+        for (int d = 0; d < 3; ++d)
+            delta[d] = sample.ownPoint[d] - sample.otherPoint[d];
+        for (int d = 0; d < 3; ++d)
+        {
+            if (sample.changesFrame)
+                for (int k = 0; k < 3; ++k)
+                    result[d] += sample.rotation[k + 3 * d] * delta[k];
+            else
+                result[d] = delta[d];
+            result[d] += geometry.cells(sample.other, 1 + d);
+        }
+        return result;
+    }
+    template <int Components>
+    DNDS_DEVICE_CALLABLE void ReconstructPoint(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
+                                               const RHSKernelControls &controls, const RHSFields &fields,
+                                               const FiniteVolumeDetail::SampleRecord &sample, bool other,
+                                               PerfectGasKernelPoint<Components> &point, index &fallbacks) noexcept
+    {
+        const index iCell = other ? sample.other : sample.cell;
+        MeanPoint(fields, iCell, point);
+        const int dimension = controls.dimension;
+        if (!controls.firstOrder && (!controls.direct || controls.linear))
+        {
+            const auto position = ParentPoint(geometry, sample, other);
+            const auto &viscous = controls.distinctViscous && !controls.primitiveGradient ? fields.viscousData : fields.reconstruction;
+            if (controls.direct)
+            {
+                for (int j = 0; j < Components; ++j)
+                    for (int d = 0; d < dimension; ++d)
+                    {
+                        point.values[j] += fields.reconstruction(iCell, j * dimension + d) * (position[d] - geometry.cells(iCell, 4 + d));
+                        if (controls.viscous && !controls.primitiveGradient)
+                            point.gradients[j][d] = viscous(iCell, j * dimension + d);
+                    }
+            }
+            else
+            {
+                real basis[4][19];
+                const int derivatives = controls.viscous && !controls.primitiveGradient ? dimension + 1 : 1;
+                for (int d = 0; d < derivatives; ++d)
+                    for (int mode = 0; mode < controls.modes; ++mode)
+                        basis[d][mode] = geometry.basis.Evaluate(iCell, sample.point, other ? 1 - sample.side : sample.side, position, d, mode);
+                for (int j = 0; j < Components; ++j)
+                    for (int mode = 0; mode < controls.modes; ++mode)
+                    {
+                        point.values[j] += fields.reconstruction(iCell, j * controls.modes + mode) * basis[0][mode];
+                        for (int d = 1; d < derivatives; ++d)
+                            point.gradients[j][d - 1] += viscous(iCell, j * controls.modes + mode) * basis[d][mode];
+                    }
+            }
+        }
+        if constexpr (Components > 5)
+        {
+            std::array<real, Components - 5> mean;
+            for (int j = 0; j < Components - 5; ++j)
+                mean[j] = fields.mean(iCell, 5 + j);
+            RANSReconstructionView{parameters.physics.rans.kind, Components - 5}.RepairPoint(mean, SpanView<real>{point.values.data() + 5, Components - 5});
+        }
+        if (controls.primitiveGradient)
+            for (int j = 0; j < 5; ++j)
+                for (int d = 0; d < dimension; ++d)
+                    point.gradients[j][d] = fields.viscousData(iCell, j * dimension + d);
+        // PP POLICY: temporary point fallback only. Raw coefficient/gradient
+        // arrays are unchanged. Perfect gas has no composition to project.
+        if ((controls.positivity || controls.faceFallback) &&
+            !(controls.positivity ? parameters.thermal.ClippedReferenceAdmissible(point.values) : parameters.thermal.Admissible(point.values)))
+        {
+            ++fallbacks;
+            MeanPoint(fields, iCell, point);
+        }
+        if (other && sample.changesFrame)
+            point.Rotate(sample.rotation);
+    }
+    DNDS_DEVICE_CALLABLE inline NumericalResult<Riemann::AcousticState> Acoustic(const PerfectGas &gas, const FlowState &flow) noexcept
+    {
+        const auto point = TryPerfectGasPoint(gas, flow, false);
+        if (!point)
+            return point.status;
+        return Riemann::AcousticState{{flow, point.value.thermo.pressure}, point.value.thermo.soundSpeed};
+    }
+    template <int Components>
+    DNDS_DEVICE_CALLABLE NumericalResult<Riemann::AcousticState> PointAcoustic(const RHSKernelParameters &parameters,
+                                                                               const RHSKernelControls &controls, const RHSFields &fields,
+                                                                               const FiniteVolumeDetail::SampleRecord &sample, bool other,
+                                                                               PerfectGasKernelPoint<Components> &point, index &fallbacks) noexcept
+    {
+        auto result = Acoustic(parameters.physics.gas, point.Flow());
+        if (!result && (controls.positivity || controls.faceFallback) && Physics::AllowsMeanFallback(result.status))
+        {
+            ++fallbacks;
+            MeanPoint(fields, other ? sample.other : sample.cell, point);
+            // The fallback mean lives in its own cell axes; restore the same
+            // anchor frame as the successful reconstructed point, even for a
+            // periodic self-neighbor with an identical local cell index.
+            if (other && sample.changesFrame)
+                point.Rotate(sample.rotation);
+            result = Acoustic(parameters.physics.gas, point.Flow());
+        }
+        return result;
+    }
+    DNDS_DEVICE_CALLABLE inline NumericalResult<FlowState> BoundaryFlow(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
+                                                                        const RHSFields &fields, const FiniteVolumeDetail::SampleRecord &sample,
+                                                                        const FlowState &inside, bool exterior) noexcept
+    {
+        const auto &condition = geometry.conditions(sample.condition, 0);
+        if (condition.kind == BoundaryKind::Interface)
+        {
+            if (!fields.hasIncoming || sample.boundaryPoint < 0 || sample.boundaryPoint >= fields.incoming.RowCount())
+                return NumericalStatus{NumericalError::InvalidInput, 2};
+            FlowState result;
+            for (int j = 0; j < 5; ++j)
+                result[j] = fields.incoming(sample.boundaryPoint, j);
+            return result;
+        }
+        return TryPerfectGasBoundaryValue(condition, parameters.physics.gas, inside, sample.normal, sample.ownPoint,
+                                          parameters.time, parameters.frame, exterior);
+    }
+    template <int Components>
+    DNDS_DEVICE_CALLABLE NumericalStatus ExteriorPoint(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
+                                                       const RHSFields &fields, const FiniteVolumeDetail::SampleRecord &sample,
+                                                       PerfectGasKernelPoint<Components> &point) noexcept
+    {
+        const auto &condition = geometry.conditions(sample.condition, 0);
+        if (condition.kind == BoundaryKind::Interface)
+        {
+            if (!fields.hasIncoming || sample.boundaryPoint < 0 || sample.boundaryPoint >= fields.incoming.RowCount())
+                return {NumericalError::InvalidInput, 2};
+            for (int j = 0; j < Components; ++j)
+                point.values[j] = fields.incoming(sample.boundaryPoint, j);
+            return {};
+        }
+        std::array<real, Components> mean;
+        for (int j = 0; j < Components; ++j)
+            mean[j] = fields.mean(sample.cell, j);
+        return TryPerfectGasBoundaryState<Components>(condition, parameters.physics.gas, parameters.physics.rans.kind, point.values, mean,
+                                                      geometry.hasWall ? geometry.wallMean(sample.cell, 0) : 0, sample.normal, sample.ownPoint, parameters.time, parameters.frame, true);
+    }
+}

@@ -243,3 +243,30 @@ fallback, isothermal wall and total-condition inlet, plus interface packets.
 These additions remain unbuilt. Production workspace placement/dispatch and
 the remaining RHS, PP, LVR and characteristic producers are still open in B.
 
+### Face RHS and cell-gather source additions (unvalidated)
+
+`Discretization/CUDA/FiniteVolumeRHSKernels.*` now provides specialized 5/6/7
+component face integration followed by a separate canonical cell gather.
+Physical/interface states, optional mean acoustics and stencil inputs, all
+Riemann selections, conservative or primitive viscous gradients, RANS transport,
+wall forces, periodic component/gradient rotation and flow5 low flux outputs
+have explicit operands. Per-face numerical status and fallback counts avoid
+hot-loop atomics. Core calls can receive no ghost views.
+
+The large immutable geometry descriptor is published once into device storage;
+the enclosing operator must retain its nested geometry/cache scopes and the
+publication until completion. Whole-array residency and launch-argument budgets
+are checked by host wrappers. No launch allocates, stages field payloads or
+performs communication. Production operator integration is still pending.
+
+The test source compares actual CUDA face/gather launchers with the generic CPU
+RHS on a two-owned/one-ghost incidence fixture, including periodic rotation,
+two-point faces, wall/interface rows, separate viscous coefficients, P0/direct
+gradients/P3 cached/P3 direct basis, and flow5/SA/Wilcox/SST. This is numerical
+kernel coverage, not a mesh-builder or end-to-end solver test. It has not run.
+The optimized CPU flow5 route has separate viscosity conventions (notably its
+interface diffusion and unlimited viscous point values); generic CPU OMP=1 is
+the agreed Plan61 oracle. Do not infer equivalence of those other conventions
+from this fixture. Group B remains source-only and the full CUDA capability
+remains disabled.
+

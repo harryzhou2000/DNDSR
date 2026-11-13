@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Physics/PerfectGasPoint.hpp"
+#include "Cauchy/Physics/PerfectGasViscousFlux.hpp"
 #include "Physics/RANS/PointKernels.hpp"
 
 namespace DNDS::Cauchy
@@ -14,7 +15,7 @@ namespace DNDS::Cauchy
         PerfectGas gas;
         Physics::RANS::PointParameters rans;
         int dimension = 3;
-        bool viscous = false;
+        bool viscous = false, useQCR = false;
         /// Resolve physics once on the controller. Mixture or unsupported RANS
         /// profiles fail explicitly before any device publication or launch.
         static PerfectGasSpatialParameters FromEquation(const EquationSystem &equation, int dimension);
@@ -115,6 +116,39 @@ namespace DNDS::Cauchy
                                                  (p.transport.conductivity + transport.value.conductivity) / (values[0] * p.thermo.cv)));
             }
             return std::array<real, 3>{properties.value.thermo.pressure, properties.value.thermo.soundSpeed, bound};
+        }
+        /// Face point already includes the viscous jump/gradient correction.
+        /// No scalar repair occurs here: wall-reflected gradients are deliberate.
+        DNDS_DEVICE_CALLABLE NumericalResult<std::array<real, Components>> Diffusion(
+            const PerfectGasSpatialParameters &parameters, const Vector3 &normal, real wallDistance, bool adiabatic) const noexcept
+        {
+            const auto properties = TryPerfectGasPoint(parameters.gas, Flow(), true);
+            if (!properties)
+                return properties.status;
+            std::array<real, Components> result{};
+            real turbulentViscosity = 0, turbulentConductivity = 0;
+            if constexpr (Components > 5)
+            {
+                const auto point = RANSPoint(properties.value, wallDistance);
+                const auto transport = Physics::RANS::TryTransport(parameters.rans, point);
+                if (!transport)
+                    return transport.status;
+                turbulentViscosity = transport.value.viscosity;
+                turbulentConductivity = transport.value.conductivity;
+                const auto flux = Physics::RANS::TryDiffusionFlux(parameters.rans, point, Eigen::Vector3d{normal[0], normal[1], normal[2]}, turbulentViscosity);
+                if (!flux)
+                    return flux.status;
+                for (int j = 0; j < Components - 5; ++j)
+                    result[5 + j] = flux.value[j];
+            }
+            FlowGradient gradient;
+            for (int j = 0; j < 5; ++j)
+                gradient[j] = gradients[j];
+            const auto flux = PreparePerfectGasViscousFlux(Flow(), gradient, properties.value, normal,
+                                                           turbulentViscosity, turbulentConductivity, adiabatic, parameters.useQCR);
+            for (int j = 0; j < 5; ++j)
+                result[j] = flux[j];
+            return result;
         }
     };
 }

@@ -11,7 +11,10 @@ namespace DNDS::Cauchy
         result.dimension = dimension;
         result.viscous = equation.Viscous();
         if (equation.HasRANS())
+        {
             result.rans = equation.RANS().KernelParameters();
+            result.useQCR = equation.RANS().Settings().useQCR;
+        }
         result.Validate(5 + result.rans.ComponentNumber());
         return result;
     }
