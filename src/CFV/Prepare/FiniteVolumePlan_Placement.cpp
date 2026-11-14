@@ -45,7 +45,8 @@ namespace DNDS::CFV
             FiniteVolumeHostView metricView;
             ReconstructionBasisHostView basisView;
             ReconstructionPointBasisView pointBasisView;
-            std::optional<R::Array<real>> samplingMoments;
+            std::optional<R::Array<real>> samplingMoments, samplingCellGeometry;
+            std::optional<R::Array<real>> samplingFaceBasis;
             std::shared_ptr<Geom::UnstructuredMeshSnapshot> mesh;
             ReconstructionPlacementData(const std::shared_ptr<const ReconstructionData> &source, R::Device placement,
                                         ReconstructionResidencyOptions requested)
@@ -338,7 +339,8 @@ namespace DNDS::CFV
         result->faces = metric.faceOffsets.RowCount() - 1;
         if (options.metrics)
         {
-            const auto cell = result->Add("cellMetrics", metric.cell, context);
+            const auto cell = result->Add("quadrature/cellGeometry", metric.cell, context);
+            result->samplingCellGeometry = result->realArrays.back();
             const auto offsets = result->Add("faceOffsets", metric.faceOffsets, context);
             const auto quadrature = result->Add("faceQuadrature", metric.faceQuadrature, context);
             const auto radial = result->Add("radialMoment", metric.radialMoment, context);
@@ -351,8 +353,13 @@ namespace DNDS::CFV
         }
         if (options.arbitraryPointSampling)
         {
-            result->Add("cellMoments", host.moments, context);
+            result->Add("quadrature/cellMoments", host.moments, context);
             result->samplingMoments = result->realArrays.back();
+            if (!result->samplingCellGeometry)
+            {
+                result->Add("quadrature/cellGeometry", metric.cell, context);
+                result->samplingCellGeometry = result->realArrays.back();
+            }
         }
         if (options.basis)
         {
@@ -363,7 +370,8 @@ namespace DNDS::CFV
             pointBasis.cachedDerivatives = Settings().cacheDiffBase ? host.cachedDerivatives : 0;
             if (pointBasis.cachedDerivatives)
             {
-                const auto basis = result->Add("faceBasis", host.faceBasis, context);
+                const auto basis = result->Add("quadrature/face/basis", host.faceBasis, context);
+                result->samplingFaceBasis = result->realArrays.back();
                 pointBasis.cached = R::Detail::ProjectView<const real, false, R::TableRows>(basis, host.faceBasis.Layout());
                 const auto offsets = options.metrics ? result->metricView.faceOffsets
                                                      : R::Detail::ProjectView<const index, false, R::FixedRows<1>>(result->Add("faceOffsets", metric.faceOffsets, context), metric.faceOffsets.Layout());
@@ -371,12 +379,22 @@ namespace DNDS::CFV
             }
             if (pointBasis.cachedDerivatives < pointBasis.availableDerivatives)
             {
-                const auto moments = result->samplingMoments
-                                         ? result->samplingMoments->Read(context).View()
-                                         : result->Add("cellMoments", host.moments, context);
-                pointBasis.moments = R::Detail::ProjectView<const real, false, R::TableRows>(moments, host.moments.Layout());
-                pointBasis.cells = options.metrics ? result->metricView.cells
-                                                   : R::Detail::ProjectView<const real, false, R::FixedRows<8>>(result->Add("cellMetrics", metric.cell, context), metric.cell.Layout());
+                if (!result->samplingMoments)
+                {
+                    result->Add("quadrature/cellMoments", host.moments, context);
+                    result->samplingMoments = result->realArrays.back();
+                }
+                if (!result->samplingCellGeometry)
+                {
+                    result->Add("quadrature/cellGeometry", metric.cell, context);
+                    result->samplingCellGeometry = result->realArrays.back();
+                }
+                // Add retains immutable read leases with this publication;
+                // these handles also seed the PP/source placement memo.
+                const auto moments = result->samplingMoments->Read(context);
+                const auto cells = result->samplingCellGeometry->Read(context);
+                pointBasis.moments = moments.View<R::TableRows, false>();
+                pointBasis.cells = cells.View<R::FixedRows<8>, false>();
             }
         }
         if (options.mesh)
@@ -390,13 +408,32 @@ namespace DNDS::CFV
         }
         return VariationalReconstructionPlan(options.retainHostPayloads ? _data : nullptr, std::move(result));
     }
+    const R::Array<real> &VariationalReconstructionPlan::SamplingFaceBasis() const
+    {
+        Validate();
+        if (!_device)
+            return _data->faceBasis;
+        if (!_device->settings.cacheDiffBase)
+            return _device->empty;
+        DNDS_check_throw_info(_device->samplingFaceBasis, "resident face sampling basis was not requested at reconstruction placement");
+        return *_device->samplingFaceBasis;
+    }
     const R::Array<real> &VariationalReconstructionPlan::SamplingMoments() const
     {
         Validate();
         if (!_device)
             return _data->moments;
-        DNDS_check_throw_info(_device->samplingMoments, "resident arbitrary-point sampling was not requested at reconstruction placement");
+        DNDS_check_throw_info(_device->samplingMoments, "resident moments require direct-basis or arbitrary-point sampling placement");
         return *_device->samplingMoments;
+    }
+    const R::Array<real> &VariationalReconstructionPlan::SamplingCellGeometry() const
+    {
+        Validate();
+        if (!_device)
+            return _data->metrics._data->cell;
+        DNDS_check_throw_info(_device->samplingCellGeometry,
+                              "resident cell geometry requires direct-basis, metric or arbitrary-point sampling placement");
+        return *_device->samplingCellGeometry;
     }
     R::Device VariationalReconstructionPlan::Device() const
     {

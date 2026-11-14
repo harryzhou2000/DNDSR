@@ -16,9 +16,23 @@ namespace DNDS::CFV::CPU
         const index cell = input.mesh.FaceCells(face)[side];
         const auto position = Detail::FacePointInCell(
             input.mesh, face, side, input.geometry.GetFacePoint(point));
-        polynomial.Reconstruction(
-            scratch, position, input.geometry.GetCellCent(cell),
-            input.geometry.cells(cell, 7), input.moments[cell], derivativeOrder);
+        const auto center = input.geometry.GetCellCent(cell);
+        const auto prepared = Math::TaylorPointEvaluation::FromPoint(
+            {position[0], position[1], position[2]}, {center[0], center[1], center[2]},
+            input.geometry.cells(cell, 7));
+        const auto parameters = polynomial.KernelParameters();
+        scratch.resize(rows, input.modes);
+        for (int mode = 0; mode < input.modes; ++mode)
+            for (int derivative = 0; derivative < rows; ++derivative)
+            {
+                if (input.cached.data && derivative < input.cachedDerivatives)
+                    scratch(derivative, mode) = input.cached(2 * point + side, mode * input.cachedDerivatives + derivative);
+                else
+                {
+                    const real value = parameters.Derivative(derivative, mode + 1, prepared);
+                    scratch(derivative, mode) = derivative == 0 ? value - input.moments(cell, mode + 1) : value;
+                }
+            }
         return {scratch.data(), int(scratch.rows()), input.modes,
                 int(scratch.rows())};
     }

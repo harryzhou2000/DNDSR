@@ -356,6 +356,7 @@ namespace DNDS::Runtime
             .def_readonly("file", &AllocationRecord::file)
             .def_readonly("function", &AllocationRecord::function)
             .def_readonly("line", &AllocationRecord::line)
+            .def_readonly("creation_stack", &AllocationRecord::creationStack)
             .def_readonly("activity", &AllocationRecord::activity);
         py::class_<AllocationSnapshot>(m, "AllocationSnapshot")
             .def_readonly("allocations", &AllocationSnapshot::allocations)
@@ -363,6 +364,8 @@ namespace DNDS::Runtime
             .def_readonly("peak_bytes", &AllocationSnapshot::peakBytes);
         m.def("enable_allocation_diagnostics", &AllocationDiagnostics::Enable, py::arg("enabled") = true,
               "Enable before allocation/setup. Registry stores no payload owner; disabling clears only diagnostics.");
+        m.def("capture_allocation_stacks", &AllocationDiagnostics::CaptureStacks, py::arg("enabled") = true,
+              "Opt-in creation provenance for subsequent tracked allocations; diagnostic setup overhead, not numerical timing.");
         m.def("allocation_snapshot", &AllocationDiagnostics::Snapshot,
               "Process-local allocation capacities/activity; does not synchronize devices or enter MPI.");
         py::class_<ExecutionContext>(m, "ExecutionContext")

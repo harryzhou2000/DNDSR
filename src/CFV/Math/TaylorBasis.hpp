@@ -4,6 +4,54 @@
 
 namespace DNDS::CFV::Math
 {
+    /// Point-local arithmetic shared by all Taylor modes, derivatives and field
+    /// components. Stores only x, x^2, x^3 in each normalized coordinate and
+    /// scale^{-1..-3}: twelve scalars, with no allocation or geometry owner.
+    /// Prepare once per physical point after validating a positive cell scale.
+    struct TaylorPointEvaluation
+    {
+        std::array<std::array<real, 3>, 3> coordinatePowers{};
+        std::array<real, 3> inverseScalePowers{};
+
+        DNDS_DEVICE_CALLABLE static TaylorPointEvaluation FromNormalized(
+            const std::array<real, 3> &x, real scale) noexcept
+        {
+            return FromNormalizedWithInverseScale(x, 1 / scale);
+        }
+        /// Internal common constructor; callers that already normalized the
+        /// point supply the same inverse scale without a second division.
+        DNDS_DEVICE_CALLABLE static TaylorPointEvaluation FromNormalizedWithInverseScale(
+            const std::array<real, 3> &x, real inverseScale) noexcept
+        {
+            TaylorPointEvaluation result;
+            for (int d = 0; d < 3; ++d)
+            {
+                result.coordinatePowers[d][0] = x[d];
+                result.coordinatePowers[d][1] = x[d] * x[d];
+                result.coordinatePowers[d][2] = result.coordinatePowers[d][1] * x[d];
+            }
+            result.inverseScalePowers = {inverseScale, inverseScale * inverseScale,
+                                         inverseScale * inverseScale * inverseScale};
+            return result;
+        }
+        DNDS_DEVICE_CALLABLE static TaylorPointEvaluation FromPoint(
+            const std::array<real, 3> &point, const std::array<real, 3> &center, real scale) noexcept
+        {
+            std::array<real, 3> x{};
+            const real inverseScale = 1 / scale;
+            for (int d = 0; d < 3; ++d)
+                x[d] = (point[d] - center[d]) * inverseScale;
+            return FromNormalizedWithInverseScale(x, inverseScale);
+        }
+        DNDS_DEVICE_CALLABLE real CoordinatePower(int direction, int exponent) const noexcept
+        {
+            return exponent == 0 ? 1 : coordinatePowers[direction][exponent - 1];
+        }
+        DNDS_DEVICE_CALLABLE real DerivativeScale(int order) const noexcept
+        {
+            return order == 0 ? 1 : inverseScalePowers[order - 1];
+        }
+    };
     /// Value-only polynomial ordering for device evaluation. Prepared from the
     /// canonical Geom tables, rather than duplicating their 2D/3D mode order.
     /// Coordinates are dimensionless (point-center)/scale; physical derivative
@@ -20,7 +68,9 @@ namespace DNDS::CFV::Math
                                    : exponent == 2   ? x * x
                                                      : x * x * x;
         }
-        DNDS_DEVICE_CALLABLE real Derivative(int derivative, int mode, const std::array<real, 3> &x, real scale) const
+        /// Evaluate a physical derivative with point-local powers already
+        /// prepared. Canonical mode and derivative ordinals include constants.
+        DNDS_DEVICE_CALLABLE real Derivative(int derivative, int mode, const TaylorPointEvaluation &point) const noexcept
         {
             const auto &alpha = orders[mode], &beta = orders[derivative];
             int factor = 1;
@@ -31,9 +81,15 @@ namespace DNDS::CFV::Math
                 for (int k = 0; k < beta[d]; ++k)
                     factor *= alpha[d] - k;
             }
-            const real numerator = factor * Power(x[0], alpha[0] - beta[0]) *
-                                   Power(x[1], alpha[1] - beta[1]) * Power(x[2], alpha[2] - beta[2]);
-            return numerator / (Power(scale, beta[0]) * Power(scale, beta[1]) * Power(scale, beta[2]));
+            const real numerator = factor * point.CoordinatePower(0, alpha[0] - beta[0]) *
+                                   point.CoordinatePower(1, alpha[1] - beta[1]) * point.CoordinatePower(2, alpha[2] - beta[2]);
+            return numerator * point.DerivativeScale(beta[0] + beta[1] + beta[2]);
+        }
+        /// Scalar convenience API. Hot loops should prepare once and use the
+        /// context overload instead of rebuilding powers for every mode.
+        DNDS_DEVICE_CALLABLE real Derivative(int derivative, int mode, const std::array<real, 3> &x, real scale) const noexcept
+        {
+            return Derivative(derivative, mode, TaylorPointEvaluation::FromNormalized(x, scale));
         }
     };
     /// Central definition of polynomial/derivative ordering and Cartesian frame

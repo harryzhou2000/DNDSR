@@ -63,7 +63,7 @@ namespace DNDS::Cauchy
                                   unlimited.PhysicalFieldNumber() == flux.PhysicalFieldNumber(),
                               "polynomial PP field grouping differs");
         const bool cuda = device != R::Device::Host();
-        const index cells = data.owner->metrics.NumCell(), points = data.owner->positivitySamples->Size();
+        const index cells = data.owner->metrics.NumCell(), points = data.owner->quadrature.positivity->Size();
         CPU::PolynomialPositivityRequest base;
         base.bounds = data.policy.View();
         base.rans = data.rans;

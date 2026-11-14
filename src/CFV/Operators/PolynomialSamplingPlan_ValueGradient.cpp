@@ -36,7 +36,7 @@ namespace DNDS::CFV
                 continue;
             any = true;
             const auto &output = *arrays[iOutput];
-            DNDS_check_throw_info(iOutput == 0 || (_cacheDerivatives && iOutput <= dimension),
+            DNDS_check_throw_info(iOutput == 0 || (iOutput <= _maximumDerivative && iOutput <= dimension),
                                   "polynomial gradient output is outside the permitted directions");
             DNDS_check_throw_info(output.GetDevice() == R::Device::Host() && !output.Layout().IsVariable() &&
                                       output.RowCount() == Size() && output.Layout().Width() == components,
@@ -55,7 +55,7 @@ namespace DNDS::CFV
                      coefficients.Owned().Layout().Kind() == R::RowLayoutKind::Table;
         for (const auto *output : arrays)
             table &= !output || output->Layout().Kind() == R::RowLayoutKind::Table;
-        if (_needsGhost || dimension != 2 || components != 6 || modes != 9 || _cachedDerivatives != 3 ||
+        if (_basisRows.RowCount() || _outputRows.RowCount() || _needsGhost || dimension != 2 || components != 6 || modes != 9 || _cachedDerivatives != 3 ||
             !arrays[1] || !arrays[2] || !table)
         {
             for (int iOutput = 0; iOutput < 4; ++iOutput)

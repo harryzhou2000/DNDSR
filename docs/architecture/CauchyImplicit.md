@@ -1460,7 +1460,9 @@ uses a common beta and the cell mean reference. Setting
 basis to find an admissible reference, discarding failed higher orders as in
 Euler. `positivityBetaPower=1` gives beta squared; the safety/cutoff apply only
 when limiting is necessary. A good polynomial remains bitwise unchanged.
-`positivityVolumePoints` defaults true. The resulting stored coefficients are
+Interior PP samples always use the RHS/source integration rule, including
+when volumetric sources are inactive. There is no separate PP quadrature
+control or extra maximum-order grid. The resulting stored coefficients are
 sampled again and checked against the strict density/thermal constraints.
 
 These synchronous CPU projections allocate their scratch once in the FV

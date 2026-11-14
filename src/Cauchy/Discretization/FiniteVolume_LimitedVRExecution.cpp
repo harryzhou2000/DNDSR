@@ -115,7 +115,7 @@ namespace DNDS::Cauchy
         // Reuse the Euler common-beta mathematics on a mean-based O2 target,
         // independently of the final high-order PP policy. No alternate limiter
         // or mean clipping is introduced. All PP samples belong to owned cells.
-        data.positivitySamples->Evaluate(engine, stream, mean, targetCoefficients, sampledPP);
+        data.quadrature.positivity->Evaluate(engine, stream, mean, targetCoefficients, sampledPP);
         auto &ownedStatus = cuda ? device->ownedStatus : emptyStatus;
         R::SubmitArrays(engine, stream, [bounds, power = controls.positivityBetaPower, cutoff = controls.positivityBetaCutoff](R::ExecutionContext context, auto means, auto points, auto coefficients, auto offsets, auto status)
                         {

@@ -13,7 +13,7 @@ namespace DNDS::CFV
         }
         namespace R = Runtime;
         const index components = mean.Width(), modes = _modes;
-        if (_needsGhost || _cachedDerivatives != 1 || (components != 5 && components != 6 && components != 7) ||
+        if (_basisRows.RowCount() || _outputRows.RowCount() || _needsGhost || _cachedDerivatives != 1 || (components != 5 && components != 6 && components != 7) ||
             (modes != 2 && modes != 9) || mean.Owned().Layout().Kind() != R::RowLayoutKind::Table ||
             coefficients.Owned().Layout().Kind() != R::RowLayoutKind::Table || output.Layout().Kind() != R::RowLayoutKind::Table)
         {

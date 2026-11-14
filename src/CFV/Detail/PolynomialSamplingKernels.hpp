@@ -23,12 +23,15 @@ namespace DNDS::CFV::Detail
                                           SamplingFixedOutput<6> values, SamplingFixedOutput<6> dx, SamplingFixedOutput<6> dy, bool includeValues);
 
     /// Explicit numerical I/O; retained access and backend dispatch stay above.
-    /// Cached basis is [point, mode*cachedDerivatives+derivative]. Direct inputs
+    /// Cached basis is [basisRows[point], mode*cachedDerivatives+derivative];
+    /// empty basisRows means identity. outputRows similarly selects unique
+    /// output destinations, preserving unrelated rows in a combined PP buffer.
+    /// Direct inputs
     /// have zero rows when all allowed derivatives are cached. Modes omit the
     /// constant polynomial; moments include it at column zero.
     struct PolynomialSamplingView
     {
-        SamplingIndices cells;
+        SamplingIndices cells, basisRows, outputRows;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> points;
         SamplingTable basis, moments;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<8>> geometry;
@@ -36,7 +39,7 @@ namespace DNDS::CFV::Detail
         int cachedDerivatives = 0;
         void ValidateDevice(Runtime::Device device) const
         {
-            Runtime::ValidateViewDevices(device, cells, points, basis, moments, geometry);
+            Runtime::ValidateViewDevices(device, cells, basisRows, outputRows, points, basis, moments, geometry);
         }
     };
     /// Independent CPU point rows, with bounded thread-local basis scratch.

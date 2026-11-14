@@ -75,7 +75,7 @@ namespace DNDS::Cauchy
                                   "Segment reconstruction PP is a flow5 compatibility policy");
             request.segmentBounds = data.owner->FixedFlowThermalBounds();
         }
-        const index points = data.owner->positivitySamples->Size();
+        const index points = data.owner->quadrature.positivity->Size();
         RequireNumericalSuccess(CPU::ValidateReconstructionMeans(request), "ValidateReconstructionMeans");
         data.Sample(input, flux, data.higherValues);
         bool allGood;

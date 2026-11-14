@@ -19,9 +19,10 @@ namespace DNDS::Cauchy
 {
     namespace R = Runtime;
     using namespace EquationFVDetail;
-    // Entry validation is structural. Access reservations belong to the actual
-    // queued operators/transfers: an immediate read/write probe here would
-    // incorrectly reject a valid pending producer on the same compute lane.
+    // Entry validation must allow ordered pending producers. Access reservations
+    // belong to queued operators/transfers; immediate read/write probes would
+    // incorrectly reject valid work on the same compute lane. A non-mutating
+    // reservation preflight may reject external immediate leases before MPI.
     void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction,
                                             Workspace &work, AuxiliaryValues &auxiliary,
                                             Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const
@@ -344,6 +345,14 @@ namespace DNDS::Cauchy
                     EquationDofOperations::RequireDistinct(reconstruction.WarmValues(), output);
                     EquationDofOperations::RequireDistinct(reconstruction.FinalizedValues(), output);
                 }
+                // Reject an external output reader on every checked rank before
+                // posting any halo or mutating an earlier physical field. Late
+                // RHS reservation alone is insufficient: a UT/library caller
+                // could catch on one rank while peers enter the final reduction.
+                // This is a dry run, not an immediate write lease or GPU fence.
+                for (index iField = 0; iField < output.PhysicalFieldNumber(); ++iField)
+                    output.PhysicalField(iField).Owned().Storage().ValidateReservation(
+                        R::AccessMode::Write, Device(), engine.ChecksAccess());
             }
             DNDS_check_throw_info(!HasInterfaces() || work.incoming || dependency,
                                   "FV evaluation needs a ready interface packet");

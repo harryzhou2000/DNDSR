@@ -39,7 +39,7 @@ namespace DNDS::Cauchy
               degree(R::RowLayout::Dense(owner->metrics.NumCell(), 1), owner->metrics.Device()),
               beta(degree.Layout(), owner->metrics.Device()), recoveryScale(degree.Layout(), owner->metrics.Device()), recover(degree.Layout(), owner->metrics.Device())
         {
-            DNDS_check_throw_info(owner->positivitySamples, "equation PP sampling geometry is unavailable");
+            DNDS_check_throw_info(owner->quadrature.positivity, "equation PP sampling geometry is unavailable");
             if (owner->equation.HasRANS())
             {
                 rans = ResolveRANSReconstructionPolicy(owner->equation);
@@ -53,7 +53,14 @@ namespace DNDS::Cauchy
                 DNDS_assert(ransFirst >= 0);
             }
             for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
-                higherValues.emplace_back(FiniteVolumeDetail::FieldLayout(input.PhysicalField(iField).Owned().Layout(), owner->positivitySamples->Size(), index(input.PhysicalField(iField).Width())), owner->metrics.Device());
+            {
+                higherValues.emplace_back(FiniteVolumeDetail::FieldLayout(input.PhysicalField(iField).Owned().Layout(), owner->quadrature.positivity->Size(), index(input.PhysicalField(iField).Width())), owner->metrics.Device());
+                higherValues.back().SetName("Cauchy/positivity/sampledValues/" + std::to_string(iField), DNDS_ALLOCATION_SITE());
+            }
+            degree.SetName("Cauchy/positivity/degree", DNDS_ALLOCATION_SITE());
+            beta.SetName("Cauchy/positivity/beta", DNDS_ALLOCATION_SITE());
+            recoveryScale.SetName("Cauchy/positivity/recoveryScale", DNDS_ALLOCATION_SITE());
+            recover.SetName("Cauchy/positivity/recover", DNDS_ALLOCATION_SITE());
             if (!owner->settings.numerics.positivityCompressToMean)
             {
                 reference.emplace(EquationDofOperations::NewVector(coefficients));
@@ -64,13 +71,13 @@ namespace DNDS::Cauchy
         void Sample(const EquationDofs &input, const EquationDofs &coefficients, std::vector<R::Array<real>> &values) const
         {
             for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
-                owner->positivitySamples->EvaluateValues(input.PhysicalField(iField), coefficients.PhysicalField(iField), values[iField]);
+                owner->quadrature.positivity->EvaluateValues(input.PhysicalField(iField), coefficients.PhysicalField(iField), values[iField]);
         }
         void Sample(R::EagerEngine &engine, const R::ExecutionStream &stream,
                     const EquationDofs &input, const EquationDofs &coefficients, std::vector<R::Array<real>> &values) const
         {
             for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
-                owner->positivitySamples->Evaluate(engine, stream, input.PhysicalField(iField), coefficients.PhysicalField(iField), values[iField]);
+                owner->quadrature.positivity->Evaluate(engine, stream, input.PhysicalField(iField), coefficients.PhysicalField(iField), values[iField]);
         }
     };
 }

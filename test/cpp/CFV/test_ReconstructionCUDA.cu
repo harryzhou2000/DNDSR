@@ -283,6 +283,106 @@ __global__ void PointBasisProbe(C::ReconstructionPointBasisView basis,
                 output(iRow, derivative * modes + mode) = basis.Evaluate(query.cell, query.point, query.side, query.position, derivative, mode);
     }
 }
+TEST_CASE("Shared quadrature CUDA placement reuses face allocation and retains queued scatter inputs")
+{
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    auto mesh = CFVTest::Sector(mpi);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, 3);
+    C::ReconstructionSettings settings;
+    settings.maxOrder = 3;
+    settings.intOrder = 3;
+    settings.SORInstead = false;
+    settings.cacheDiffBase = false;
+    auto directPlan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+    const I modes = directPlan.NRecDOF();
+    auto mean = metrics.BuildField(5), coefficients = metrics.BuildField(5 * modes);
+    Fill(mean, .7);
+    Fill(coefficients, .03);
+    std::vector<std::array<I, 2>> queries;
+    std::vector<G::tPoint> positions;
+    {
+        auto scope = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
+        const auto topology = scope.HostView();
+        auto read = metrics.AcquireRead();
+        const auto geometry = read.HostView();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        {
+            const auto faces = topology.CellFaces(iCell);
+            for (I slot = 0; slot < faces.size(); ++slot)
+            {
+                const I iFace = faces[slot], iPoint = geometry.FaceQuadratureBegin(iFace);
+                const int side = topology.CellIsFaceBack(iCell, iFace, DNDS::rowsize(slot)) ? 0 : 1;
+                queries.push_back({iCell, 2 * iPoint + side});
+                positions.push_back(C::Detail::FacePointInCell(topology, iFace, side, geometry.GetFacePoint(iPoint)));
+            }
+        }
+    }
+    const I count = I(queries.size());
+    R::Array<I> cells(R::RowLayout::Dense(count, 1)), rows(R::RowLayout::Dense(count, 1)), scatter(R::RowLayout::Dense(count, 1));
+    R::Array<double> points(R::RowLayout::Dense(count, 3)), expected(R::RowLayout::Dense(count, 5));
+    R::Array<double> initial(R::RowLayout::Dense(2 * count + 1, 5));
+    {
+        auto c = cells.Write(), r = rows.Write(), s = scatter.Write();
+        auto p = points.Write(), output = initial.Write();
+        for (I iPoint = 0; iPoint < count; ++iPoint)
+        {
+            c.View()(iPoint, 0) = queries[iPoint][0];
+            r.View()(iPoint, 0) = queries[iPoint][1];
+            s.View()(iPoint, 0) = 2 * (count - 1 - iPoint) + 1;
+            for (int d = 0; d < 3; ++d)
+                p.View()(iPoint, d) = positions[iPoint][d];
+        }
+        for (I iRow = 0; iRow < initial.RowCount(); ++iRow)
+            for (int j = 0; j < 5; ++j)
+                output.View()(iRow, j) = -123;
+    }
+    C::PolynomialSamplingPlan direct(directPlan, cells, points);
+    auto deviceMean = metrics.BuildField(R::RowLayout::Dense(0, 5), device);
+    auto deviceCoefficients = metrics.BuildField(R::RowLayout::Dense(0, 5 * modes), device);
+    deviceMean.Owned().CopyFrom(mean.Owned(), context).Wait();
+    deviceCoefficients.Owned().CopyFrom(coefficients.Owned(), context).Wait();
+    for (bool cache : {false, true})
+    {
+        settings.cacheDiffBase = cache;
+        settings.cacheDiffBaseOrder = 1;
+        auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        C::ReconstructionResidencyOptions options;
+        options.basis = true;
+        options.retainHostPayloads = false;
+        auto residentPlan = plan.Place(device, context, options);
+        for (int derivative : {0, 1, 3})
+        {
+            direct.Evaluate(mean, coefficients, expected, derivative);
+            auto result = initial.To(device, context);
+            R::EagerEngine engine;
+            const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            {
+                C::SamplingPlacementMemo memo(device, context);
+                if (cache)
+                    memo.Seed(plan.SamplingFaceBasis(), residentPlan.SamplingFaceBasis());
+                auto shared = C::PolynomialSamplingPlan::FromSharedBasis(metrics, plan, cells, points,
+                                                                         plan.SamplingFaceBasis(), rows, cache ? 3 : 0, true);
+                auto segment = shared.WithOutputRows(scatter, initial.RowCount()).Placed(memo);
+                if (cache)
+                    CHECK(segment.BasisStorage().Identity() == residentPlan.SamplingFaceBasis().Identity());
+                else
+                    CHECK(segment.BasisStorage().RowCount() == 0);
+                segment.Evaluate(engine, stream, deviceMean, deviceCoefficients, result, derivative);
+            } // Neither the placement memo nor local sampler owns queued lifetime.
+            engine.Close();
+            auto hostResult = result.To(R::Device::Host());
+            auto output = hostResult.Read(), reference = expected.Read();
+            for (I iRow = 0; iRow < initial.RowCount(); ++iRow)
+                for (int j = 0; j < 5; ++j)
+                {
+                    const double wanted = iRow % 2 ? reference.View()(count - 1 - iRow / 2, j) : -123;
+                    CHECK(output.View()(iRow, j) == doctest::Approx(wanted).epsilon(2e-11).scale(1));
+                }
+        }
+    }
+}
+
 TEST_CASE("Resident face basis supports direct and partial caches without unrelated metric payloads")
 {
     const auto device = R::Device::CUDA(0);
@@ -341,8 +441,8 @@ TEST_CASE("Resident face basis supports direct and partial caches without unrela
             CHECK(buffer.name != "faceQuadrature");
             CHECK(buffer.name != "radialMoment");
             CHECK(buffer.name != "faceMean");
-            moments |= buffer.name == "cellMoments";
-            cellGeometry |= buffer.name == "cellMetrics";
+            moments |= buffer.name == "quadrature/cellMoments";
+            cellGeometry |= buffer.name == "quadrature/cellGeometry";
         }
         CHECK(moments == (cacheOrder < 1));
         CHECK(cellGeometry == (cacheOrder < 1));

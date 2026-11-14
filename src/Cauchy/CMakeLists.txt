@@ -53,6 +53,7 @@ set(CPPS
     Discretization/FiniteVolume.cpp
     Discretization/FiniteVolume_Placement.cpp
     Discretization/FiniteVolumeInternal_SourceQuadrature.cpp
+    Discretization/FiniteVolumeInternal_PositivityQuadrature.cpp
     Discretization/FiniteVolumeViews.cpp
     Discretization/FiniteVolume_RHSOperator.cpp
     Discretization/FiniteVolume_RHS.cpp

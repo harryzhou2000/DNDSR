@@ -362,6 +362,26 @@ namespace DNDS::Runtime
 
     namespace
     {
+        // Caller holds state.mutex. Keep dry-run preflight and real reservation
+        // admission identical without publishing a canceled write intent.
+        void ValidateReservationLocked(const BufferState &state, AccessMode mode, Device device, bool checked)
+        {
+            DNDS_check_throw_info(mode == AccessMode::Read || mode == AccessMode::Write || mode == AccessMode::ReadWrite,
+                                  "runtime: invalid scheduled access mode");
+            const bool write = mode != AccessMode::Read;
+            DNDS_check_throw_info(state.device == device, "runtime: scheduled access placement mismatch");
+            DNDS_check_throw_info(!state.failed, "runtime: failed allocation must be replaced");
+            DNDS_check_throw_info(!write || state.writable, "runtime: imported allocation is read-only");
+            DNDS_check_throw_info(!state.writer && (!write || !state.readers), "runtime: conflicting immediate buffer access");
+            const auto otherWriters = checked ? state.pendingWriters - state.checkedWriters : state.checkedWriters;
+            const auto otherReaders = checked ? state.pendingReaders - state.checkedReaders : state.checkedReaders;
+            DNDS_check_throw_info(!otherWriters && (!write || !otherReaders),
+                                  "runtime: conflicting checked/unchecked access; observe completion at the policy boundary");
+            DNDS_check_throw_info((write ? state.pendingWriters : state.pendingReaders) < SIZE_MAX,
+                                  "runtime: scheduled access count overflow");
+            DNDS_check_throw_info(!write || state.mutationEpoch != UINT64_MAX, "runtime: mutation epoch overflow");
+        }
+
         std::shared_ptr<BufferState> MakeState(std::unique_ptr<AllocationResource> resource)
         {
             DNDS_check_throw_info(resource, "runtime: null allocation resource");
@@ -559,26 +579,22 @@ namespace DNDS::Runtime
     {
         return ScheduledAccess(_state, _offset, _bytes, device, mode, checked);
     }
+    void Buffer::ValidateReservation(AccessMode mode, Device device, bool checked) const
+    {
+        DNDS_check_throw_info(_state, "runtime: access to an unallocated buffer");
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        ValidateReservationLocked(*_state, mode, device, checked);
+    }
 
     ScheduledAccess::ScheduledAccess(std::shared_ptr<BufferState> state, size_t offset, size_t bytes, Device device, AccessMode mode, bool checked)
         : _state(std::move(state)), _offset(offset), _bytes(bytes), _write(mode != AccessMode::Read), _checked(checked)
     {
-        DNDS_check_throw_info(mode == AccessMode::Read || mode == AccessMode::Write || mode == AccessMode::ReadWrite,
-                              "runtime: invalid scheduled access mode");
-        DNDS_check_throw_info(_state && _state->device == device, "runtime: scheduled access placement mismatch");
+        DNDS_check_throw_info(_state, "runtime: access to an unallocated buffer");
         std::lock_guard<std::mutex> lock(_state->mutex);
-        DNDS_check_throw_info(!_state->failed, "runtime: failed allocation must be replaced");
-        DNDS_check_throw_info(!_write || _state->writable, "runtime: imported allocation is read-only");
-        DNDS_check_throw_info(!_state->writer && (!_write || !_state->readers), "runtime: conflicting immediate buffer access");
-        const auto otherWriters = checked ? _state->pendingWriters - _state->checkedWriters : _state->checkedWriters;
-        const auto otherReaders = checked ? _state->pendingReaders - _state->checkedReaders : _state->checkedReaders;
-        DNDS_check_throw_info(!otherWriters && (!_write || !otherReaders),
-                              "runtime: conflicting checked/unchecked access; observe completion at the policy boundary");
+        ValidateReservationLocked(*_state, mode, device, checked);
         auto &count = _write ? _state->pendingWriters : _state->pendingReaders;
-        DNDS_check_throw_info(count < SIZE_MAX, "runtime: scheduled access count overflow");
         if (_write)
         {
-            DNDS_check_throw_info(_state->mutationEpoch != UINT64_MAX, "runtime: mutation epoch overflow");
             ++_state->mutationEpoch;
         }
         ++count;

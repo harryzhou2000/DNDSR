@@ -61,9 +61,12 @@ namespace DNDS::Cauchy::CUDA::Detail
             {
                 real basis[4][19];
                 const int derivatives = controls.viscous && !controls.primitiveGradient ? dimension + 1 : 1;
+                CFV::Math::TaylorPointEvaluation prepared;
+                if (derivatives > geometry.basis.cachedDerivatives)
+                    prepared = geometry.basis.PreparePoint(iCell, position);
                 for (int d = 0; d < derivatives; ++d)
                     for (int mode = 0; mode < controls.modes; ++mode)
-                        basis[d][mode] = geometry.basis.Evaluate(iCell, sample.point, other ? 1 - sample.side : sample.side, position, d, mode);
+                        basis[d][mode] = geometry.basis.Evaluate(iCell, sample.point, other ? 1 - sample.side : sample.side, prepared, d, mode);
                 for (int j = 0; j < Components; ++j)
                     for (int mode = 0; mode < controls.modes; ++mode)
                     {

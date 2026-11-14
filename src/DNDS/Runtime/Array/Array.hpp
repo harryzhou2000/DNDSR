@@ -434,6 +434,12 @@ namespace DNDS::Runtime
         ArrayHandle To(Device device, ExecutionContext context) const
         {
             ArrayHandle result(Layout(), device);
+            // A new physical allocation keeps its semantic label across
+            // placement/snapshot copies. Identity still distinguishes it;
+            // shared metadata aliases do not contribute extra bytes.
+            const auto name = Name();
+            if (!name.empty())
+                result.SetName(name);
             result.CopyFrom(*this, context).Wait();
             return result;
         }

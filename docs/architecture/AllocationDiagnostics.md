@@ -26,8 +26,26 @@ Runtime::AllocationDiagnostics::Snapshot().Dump(std::cout);
 Python aliases. Naming does not change values, shape or generations. Diagnostic
 records keep all observed names for an allocation identity and count its
 capacity once. `DNDS_ALLOCATION_SITE()` captures the calling function/file/line;
-put it at the caller rather than in a default argument. Clone/migration naming
-is explicit because a new storage publication may have a different role.
+put it at the caller rather than in a default argument. Explicit `Array::To`
+and `Clone` preserve a nonempty source label on the new allocation. Callers
+can then assign a new role; recorded aliases still count the capacity once.
+Other builders must name their newly allocated arrays explicitly.
+
+For a provenance audit, set `DNDS_RUNTIME_ALLOCATION_STACKS=1` before enabling
+tracking, or call `AllocationDiagnostics::CaptureStacks(true)`. Each subsequent
+allocation records its creation stack, including unnamed allocations. Dumps
+emit `allocation_stack identity=...` blocks and the process ID on Unix hosts.
+Stack capture is off by default and incurs symbolization/setup overhead: do
+not use a stack-enabled run as a performance measurement. It changes no kernel
+arithmetic or allocation capacity. Creation paths identify where storage was
+produced; they are not a complete enumeration of current sharing handles.
+Use them together with the owning module's retained fields/read scopes to
+attribute live allocations. Disabling tracking clears stacks and resets capture.
+
+This registry does not call NVML, inspect other PIDs, or query whole-device
+usage. Its records are created only by this process's Runtime Buffer lifecycle
+hooks. A separate `nvidia-smi` reading can include other processes; a Runtime
+report cannot, even when its arrays have no diagnostic name.
 
 Records do not retain allocations. The activity callback captures only a weak
 BufferState reference and reports current readers/writers and queued uses at

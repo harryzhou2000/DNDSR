@@ -8,7 +8,7 @@
 // Private shared preparation data. Public callers use FiniteVolume and explicit
 // Workspace/AuxiliaryValues owners; this header is not a mesh or solver API.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
-#include "CFV/Plans/PolynomialSamplingPlan.hpp"
+#include "Cauchy/Discretization/FiniteVolumeQuadrature.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/State/RANSState.hpp"
@@ -99,16 +99,6 @@ namespace DNDS::Cauchy
 {
     namespace Detail
     {
-        /// Immutable volume-source quadrature. Prepared once with the spatial
-        /// plan, shared by workspaces, and explicitly placed with that plan.
-        /// No mean values, reconstruction coefficients or worker state live here.
-        struct SourceQuadrature
-        {
-            Runtime::Array<index> offsets{Runtime::RowLayout::Dense(0, 1)};
-            Runtime::Array<real> weights{Runtime::RowLayout::Dense(0, 1)};
-            std::optional<CFV::PolynomialSamplingPlan> sampling, jacobianSampling;
-            bool valuesAreMeans = false;
-        };
         struct BoundaryPointLayout
         {
             std::weak_ptr<Geom::UnstructuredMesh> mesh;
@@ -175,7 +165,7 @@ namespace DNDS::Cauchy
         // Unique faces required by each cell-output region. A face shared
         // across the regions may occur in both; each region remains callable
         // independently, without a hidden prior-core publication contract.
-        std::optional<CFV::PolynomialSamplingPlan> positivitySamples;
+        Detail::FiniteVolumeQuadrature quadrature;
         /// Setup extent for CPU row-local PP scratch; no device readback is
         /// needed when constructing a placed workspace.
         index maximumPositivityPoints = 0;
@@ -188,9 +178,11 @@ namespace DNDS::Cauchy
         std::optional<AdmissibilityPolicy> defaultAdmissibility;
         std::optional<WallDistanceSamples> wallDistance;
         Runtime::Array<real> ransCellLength;
-        std::shared_ptr<const Detail::SourceQuadrature> sourceQuadrature;
         /// CPU-only immutable preparation; called before a spatial placement.
         void BuildSourceQuadrature();
+        /// Allocate/fill PP query maps, borrowing face/source caches without
+        /// changing the canonical per-cell point order or sampling rules.
+        void BuildPositivityQuadrature(bool limitedVR);
         Runtime::TransferBinding BindHalo(CFV::FVField &field, const char *channel = "cauchy-field") const
         {
             return metrics.BindHalo(field, HaloTransferOptions(channel));

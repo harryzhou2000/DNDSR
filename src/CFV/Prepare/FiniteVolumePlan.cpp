@@ -16,7 +16,10 @@ namespace DNDS::CFV
     void ReconstructionSettings::Validate() const
     {
         functional.Validate();
-        DNDS_check_throw_info(maxOrder >= 1 && maxOrder <= 3 && intOrder >= maxOrder + 1 && intOrder <= INT_ORDER_MAX &&
+        // Quadrature and polynomial degrees are independent numerical choices.
+        // No degree+1 rule guarantees exact integration of the full functional.
+        // Keep the supported-rule range; SVD handles the chosen discrete system.
+        DNDS_check_throw_info(maxOrder >= 1 && maxOrder <= 3 && intOrder >= 1 && intOrder <= INT_ORDER_MAX &&
                                   cacheDiffBaseOrder >= 0 && cacheDiffBaseOrder <= 3 &&
                                   std::isfinite(jacobiRelax) && jacobiRelax > 0 && jacobiRelax < 2 &&
                                   std::isfinite(bcWeight) && bcWeight >= 0 &&
@@ -63,6 +66,7 @@ namespace DNDS::CFV
                 }
             data = std::make_shared<Detail::FiniteVolumeData>(mesh, intOrder, axisymmetric, communication);
             data->cell = R::Array<real>(R::RowLayout::Dense(view.NumCellProc(), 8));
+            data->cell.SetName("CFV/metrics/cell", DNDS_ALLOCATION_SITE());
             data->radialMoment = R::Array<real>(R::RowLayout::Dense(view.NumCellProc(), 3));
             auto radialWrite = data->radialMoment.Write();
             const auto radial = radialWrite.View<R::FixedRows<3>>();

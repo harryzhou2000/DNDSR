@@ -106,7 +106,7 @@ three operators:
     },
     "numerics": {
       "positivity": true, "positivityReconstruction": "Euler",
-      "positivityCompressToMean": true, "positivityVolumePoints": true,
+      "positivityCompressToMean": true,
       "positivityBetaPower": 1, "positivityBetaCutoff": 0.001
     }
   }
@@ -114,7 +114,10 @@ three operators:
 ```
 
 Domain settings can override the `defaults` sections. Physical dt PP has its
-own enable flag; `numerics.positivity` currently gates reconstruction and
+own enable flag. Interior reconstruction PP uses the same quadrature as volume
+source integration, regardless of whether the source is active; face PP uses
+the RHS face points. There is no separately configurable PP quadrature.
+`numerics.positivity` currently gates reconstruction and
 implicit thermal PP. `rhsFPPMode` selects none, complete-defect scaling (`rhs`)
 or scalar pseudo-step compression (`dTau`). `rhsFPPScale` multiplies only the
 trial increment; `rhsFPPRelax` sets its Euler relaxed density/energy threshold.

@@ -51,7 +51,14 @@ namespace DNDS::CFV::Detail
               dim(source.dim), intOrder(source.intOrder), axisymmetric(source.axisymmetric),
               cell(source.cell.To(device, context)), radialMoment(source.radialMoment.To(device, context)),
               faceQuadrature(source.faceQuadrature.To(device, context)), faceMean(source.faceMean.To(device, context)),
-              faceOffsets(source.faceOffsets.To(device, context)) {}
+              faceOffsets(source.faceOffsets.To(device, context))
+        {
+            cell.SetName("CFV/metrics/cell", DNDS_ALLOCATION_SITE());
+            radialMoment.SetName("CFV/metrics/radialMoment", DNDS_ALLOCATION_SITE());
+            faceQuadrature.SetName("CFV/metrics/faceQuadrature", DNDS_ALLOCATION_SITE());
+            faceMean.SetName("CFV/metrics/faceMean", DNDS_ALLOCATION_SITE());
+            faceOffsets.SetName("CFV/metrics/faceOffsets", DNDS_ALLOCATION_SITE());
+        }
     };
     struct ReconstructionData
     {
@@ -96,6 +103,10 @@ namespace DNDS::CFV::Detail
             hostThreads = OMP::DistributedThreads();
         }
     };
+    /// Prepare the immutable hot-path face cache independently of VR matrix
+    /// assembly, after moments and geometry setup writers have been released.
+    void PrepareFaceBasis(ReconstructionData &data, const FiniteVolumeData &geometry);
+
     inline void Zero(FVField &field)
     {
         for (auto *array : {&field.Owned(), &field.Ghost()})

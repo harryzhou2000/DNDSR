@@ -31,6 +31,9 @@ namespace DNDS::Runtime
         bool externalProvider = false, streamOrderedMemory = false, pinnedHostMemory = false;
         std::vector<std::string> names;
         std::string file, function;
+        /// Optional creation provenance, captured only for diagnostics. This
+        /// identifies the allocation path, not every current sharing handle.
+        std::string creationStack;
         int line = 0;
         AllocationActivity activity;
     };
@@ -50,6 +53,10 @@ namespace DNDS::Runtime
     {
     public:
         static void Enable(bool enabled = true);
+        /// Capture allocation creation stacks while tracking is enabled.
+        /// Off by default; DNDS_RUNTIME_ALLOCATION_STACKS=1 enables it at Enable.
+        /// Symbol resolution costs setup time and must not be used for timings.
+        static void CaptureStacks(bool enabled = true);
         static bool Enabled() noexcept;
         static AllocationSnapshot Snapshot();
     };

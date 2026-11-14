@@ -61,7 +61,7 @@ namespace DNDS::Cauchy
                 } });
         }
         if (reconstruction)
-            result->sampling.emplace(*reconstruction, cells, points, equation.HasRANS());
+            result->sampling = CFV::PolynomialSamplingPlan(*reconstruction, cells, points, equation.HasRANS()).WithDerivativeOrder(equation.HasRANS() ? 1 : 0).Named("Cauchy/quadrature/volume");
         result->valuesAreMeans = settings.numerics.reconstruction != "variational" && count == metrics.NumCell();
         for (index iCell = 0; result->valuesAreMeans && iCell < metrics.NumCell(); ++iCell)
             result->valuesAreMeans = offsets[iCell] == iCell && offsets[iCell + 1] == iCell + 1;
@@ -82,7 +82,7 @@ namespace DNDS::Cauchy
                     for (int d = 0; d < 3; ++d)
                         p(iCell, d) = center[d]; });
             }
-            result->jacobianSampling.emplace(*reconstruction, centerCells, centers);
+            result->jacobianSampling = CFV::PolynomialSamplingPlan(*reconstruction, centerCells, centers).WithDerivativeOrder(1).Named("Cauchy/quadrature/source-jacobian-center");
         }
         result->offsets = R::Array<index>(R::RowLayout::Dense(index(offsets.size()), 1));
         {
@@ -91,8 +91,8 @@ namespace DNDS::Cauchy
             for (index iRow = 0; iRow < index(offsets.size()); ++iRow)
                 rows(iRow, 0) = offsets[iRow];
         }
-        result->offsets.SetName("Cauchy/sourceOffsets", DNDS_ALLOCATION_SITE());
-        result->weights.SetName("Cauchy/sourceWeights", DNDS_ALLOCATION_SITE());
-        sourceQuadrature = std::move(result);
+        result->offsets.SetName("Cauchy/quadrature/volume/offsets", DNDS_ALLOCATION_SITE());
+        result->weights.SetName("Cauchy/quadrature/volume/weights", DNDS_ALLOCATION_SITE());
+        quadrature.source = std::move(result);
     }
 }

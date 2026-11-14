@@ -3,6 +3,7 @@
 #include "CFV/Plans/GradientPlan.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "CFV/Math/TaylorBasis.hpp"
+#include "CFV/Math/PeriodicFrame.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "Solver/Linear.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
@@ -421,6 +422,138 @@ TEST_CASE("Shared basis policies snapshot points and sample cubic values and der
             mutation.Commit();
         }
         CHECK_THROWS(sampler.Evaluate(mean, coefficients, result));
+    }
+}
+
+TEST_CASE("Shared quadrature face banks preserve periodic parent frames and scattered outputs")
+{
+    auto mesh = CFVTest::Sector(mpi);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, 3);
+    C::ReconstructionSettings settings;
+    settings.maxOrder = 3;
+    settings.intOrder = 3; // Quadrature degree is independent of polynomial degree.
+    settings.cacheDiffBase = false;
+    auto directPlan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+    const I modes = directPlan.NRecDOF();
+    auto mean = metrics.BuildField(2), coefficients = metrics.BuildField(2 * modes);
+    for (auto *field : {&mean, &coefficients})
+    {
+        auto write = field->Owned().Write();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            for (I component = 0; component < I(field->Width()); ++component)
+                write.View()(iCell, component) = .013 * (component + 1) + .07 * (iCell + 1);
+    }
+    std::vector<std::array<I, 2>> queries;
+    std::vector<G::tPoint> positions;
+    {
+        auto scope = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
+        const auto topology = scope.HostView();
+        auto read = metrics.AcquireRead();
+        const auto geometry = read.HostView();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        {
+            const auto faces = topology.CellFaces(iCell);
+            for (I slot = 0; slot < faces.size(); ++slot)
+            {
+                const I iFace = faces[slot];
+                const int side = topology.CellIsFaceBack(iCell, iFace, DNDS::rowsize(slot)) ? 0 : 1;
+                for (I iPoint = geometry.FaceQuadratureBegin(iFace); iPoint < geometry.FaceQuadratureEnd(iFace); ++iPoint)
+                {
+                    queries.push_back({iCell, 2 * iPoint + side});
+                    positions.push_back(C::Detail::FacePointInCell(topology, iFace, side, geometry.GetFacePoint(iPoint)));
+                }
+            }
+        }
+    }
+    const I count = I(queries.size());
+    R::Array<I> cells(R::RowLayout::Dense(count, 1)), rows(R::RowLayout::Dense(count, 1)), scatter(R::RowLayout::Dense(count, 1));
+    R::Array<double> points(R::RowLayout::Dense(count, 3)), expected(R::RowLayout::Dense(count, 2));
+    {
+        auto c = cells.Write(), r = rows.Write(), s = scatter.Write();
+        auto p = points.Write();
+        for (I iPoint = 0; iPoint < count; ++iPoint)
+        {
+            c.View()(iPoint, 0) = queries[iPoint][0];
+            r.View()(iPoint, 0) = queries[iPoint][1];
+            s.View()(iPoint, 0) = 2 * (count - 1 - iPoint) + 1;
+            for (int d = 0; d < 3; ++d)
+                p.View()(iPoint, d) = positions[iPoint][d];
+        }
+    }
+    // Two logical tables may refer to different ranges of one allocation.
+    // Placement must not confuse them merely because identities/layouts match.
+    {
+        R::Array<double> bank(R::RowLayout::Dense(4, 1));
+        auto first = R::Array<double>::FromStorage(R::RowLayout::Dense(2, 1), bank.Storage().Subspan(0, 2 * sizeof(double)));
+        auto second = R::Array<double>::FromStorage(R::RowLayout::Dense(2, 1), bank.Storage().Subspan(2 * sizeof(double), 2 * sizeof(double)));
+        C::SamplingPlacementMemo memo(R::Device::Host(), R::ExecutionContext::Host());
+        const auto placedFirst = memo.Place(first), placedSecond = memo.Place(second);
+        CHECK(placedFirst.Storage().SameRange(first.Storage()));
+        CHECK(placedSecond.Storage().SameRange(second.Storage()));
+        CHECK_FALSE(placedFirst.Storage().SameRange(placedSecond.Storage()));
+    }
+    C::PolynomialSamplingPlan direct(directPlan, cells, points);
+    for (bool cache : {false, true})
+    {
+        settings.cacheDiffBase = cache;
+        settings.cacheDiffBaseOrder = 1;
+        auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        auto shared = C::PolynomialSamplingPlan::FromSharedBasis(metrics, plan, cells, points,
+                                                                 plan.SamplingFaceBasis(), rows, cache ? 3 : 0, true);
+        if (cache)
+            CHECK(shared.BasisStorage().Identity() == plan.SamplingFaceBasis().Identity());
+        else
+            CHECK(shared.BasisStorage().RowCount() == 0);
+        for (int derivative : {0, 1, 3})
+        {
+            direct.Evaluate(mean, coefficients, expected, derivative);
+            R::Array<double> result(R::RowLayout::Dense(2 * count + 1, 2));
+            {
+                auto write = result.Write();
+                for (I iRow = 0; iRow < result.RowCount(); ++iRow)
+                    for (int j = 0; j < 2; ++j)
+                        write.View()(iRow, j) = -123;
+            }
+            R::EagerEngine worker(2);
+            const auto stream = worker.CreateCPUStream();
+            {
+                // First-derivative consumers release unused direct metadata
+                // when covered by cache; arbitrary higher derivatives still work.
+                auto selected = derivative < 3 ? shared.WithDerivativeOrder(1) : shared;
+                auto segment = selected.WithOutputRows(scatter, result.RowCount());
+                segment.Evaluate(worker, stream, mean, coefficients, result, derivative);
+            } // Queued access retains the segment's mapping and basis handles.
+            worker.Close();
+            auto output = result.Read(), reference = expected.Read();
+            for (I iRow = 0; iRow < result.RowCount(); ++iRow)
+                for (int j = 0; j < 2; ++j)
+                {
+                    const double wanted = iRow % 2 ? reference.View()(count - 1 - iRow / 2, j) : -123;
+                    CHECK(output.View()(iRow, j) == doctest::Approx(wanted).epsilon(2e-11).scale(1));
+                }
+        }
+        if (cache)
+        {
+            // The owner API deliberately returns a shared handle; any later
+            // write through an alias invalidates its immutable sampling users.
+            auto alias = plan.SamplingFaceBasis();
+            {
+                auto write = alias.Write();
+                if (alias.RowCount())
+                    write.View()(0, 0) += 1;
+            }
+            CHECK_THROWS(shared.Validate());
+        }
+        else
+        {
+            auto normalization = plan.SamplingMoments();
+            {
+                auto write = normalization.Write();
+                if (normalization.RowCount())
+                    write.View()(0, 0) += 1;
+            }
+            CHECK_THROWS(shared.Validate());
+        }
     }
 }
 

@@ -2,8 +2,13 @@
 #include "DNDS/Core/CheckedSize.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
+#if defined(__unix__) || defined(__APPLE__)
+#    include <unistd.h>
+#endif
 
 namespace DNDS::Runtime
 {
@@ -17,6 +22,7 @@ namespace DNDS::Runtime
         struct Registry
         {
             std::atomic<bool> enabled{false};
+            std::atomic<bool> captureStacks{false};
             std::mutex mutex;
             std::unordered_map<uint64_t, TrackedAllocation> records;
             size_t live = 0, peak = 0;
@@ -38,8 +44,15 @@ namespace DNDS::Runtime
         {
             registry.records.clear();
             registry.live = registry.peak = 0;
+            registry.captureStacks.store(false, std::memory_order_relaxed);
         }
+        else if (const auto *value = std::getenv("DNDS_RUNTIME_ALLOCATION_STACKS"))
+            registry.captureStacks.store(std::strcmp(value, "1") == 0, std::memory_order_relaxed);
         registry.enabled.store(enabled, std::memory_order_release);
+    }
+    void AllocationDiagnostics::CaptureStacks(bool enabled)
+    {
+        GetRegistry().captureStacks.store(enabled, std::memory_order_release);
     }
     bool AllocationDiagnostics::Enabled() noexcept
     {
@@ -62,6 +75,8 @@ namespace DNDS::Runtime
         record.externalProvider = external;
         record.streamOrderedMemory = streamOrdered;
         record.pinnedHostMemory = pinnedHost;
+        if (registry.captureStacks.load(std::memory_order_acquire))
+            record.creationStack = DNDS::getTraceString();
         const auto live = CheckedSize::Add(registry.live, bytes);
         const auto inserted = registry.records.emplace(identity, TrackedAllocation{std::move(record), std::move(activity)}).second;
         if (inserted)
@@ -133,7 +148,11 @@ namespace DNDS::Runtime
     void AllocationSnapshot::Dump(std::ostream &output) const
     {
         output << "Runtime allocation ownership: live_bytes=" << liveBytes << " peak_bytes=" << peakBytes
-               << " pinned_host_bytes=" << pinnedHostBytes << '\n';
+               << " pinned_host_bytes=" << pinnedHostBytes;
+#if defined(__unix__) || defined(__APPLE__)
+        output << " pid=" << ::getpid();
+#endif
+        output << '\n';
         for (const auto &entry : allocations)
         {
             output << entry.identity << ' ' << (entry.device.space == MemorySpace::CUDA ? "cuda:" : "host:")
@@ -148,6 +167,9 @@ namespace DNDS::Runtime
             if (!entry.file.empty())
                 output << " site=" << entry.file << ':' << entry.line << ' ' << entry.function;
             output << '\n';
+            if (!entry.creationStack.empty())
+                output << "allocation_stack identity=" << entry.identity << '\n'
+                       << entry.creationStack << "end_allocation_stack\n";
         }
     }
 }

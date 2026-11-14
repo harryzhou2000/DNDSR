@@ -21,7 +21,12 @@ TEST_CASE("Array mutation epochs cover aliases and canceled reservations without
     auto alias = array;
     const auto initial = array.MutationEpoch();
     const auto version = array.Version();
+    CHECK_NOTHROW(array.Storage().ValidateReservation(R::AccessMode::Write, R::Device::Host()));
+    CHECK(array.MutationEpoch() == initial);
+    CHECK(array.Version() == version);
     auto pending = array.Storage().Reserve(R::AccessMode::Write, R::Device::Host(), false);
+    CHECK_NOTHROW(array.Storage().ValidateReservation(R::AccessMode::Write, R::Device::Host()));
+    CHECK_THROWS(array.Storage().ValidateReservation(R::AccessMode::Write, R::Device::Host(), true));
     CHECK(alias.MutationEpoch() == initial + 1);
     CHECK(alias.Version() == version);
     CHECK_THROWS(alias.Read());
@@ -43,6 +48,8 @@ TEST_CASE("Array mutation epochs cover aliases and canceled reservations without
     {
         auto read = alias.Read();
         CHECK(read.View()(0, 0) == 3.);
+        CHECK_THROWS(array.Storage().ValidateReservation(R::AccessMode::Write, R::Device::Host()));
+        CHECK_NOTHROW(array.Storage().ValidateReservation(R::AccessMode::Read, R::Device::Host()));
     }
     CHECK(array.MutationEpoch() == initial + 3);
 }
@@ -51,7 +58,11 @@ TEST_CASE("Allocation diagnostics count shared capacity once and do not retain a
 {
     struct DiagnosticsScope
     {
-        DiagnosticsScope() { R::AllocationDiagnostics::Enable(); }
+        DiagnosticsScope()
+        {
+            R::AllocationDiagnostics::Enable();
+            R::AllocationDiagnostics::CaptureStacks();
+        }
         ~DiagnosticsScope() { R::AllocationDiagnostics::Enable(false); }
     } scope;
     const auto initial = R::AllocationDiagnostics::Snapshot().liveBytes;
@@ -74,7 +85,14 @@ TEST_CASE("Allocation diagnostics count shared capacity once and do not retain a
         CHECK(record->activity.readers == 1);
         CHECK_FALSE(record->externalProvider);
         CHECK_FALSE(record->function.empty());
+        CHECK_FALSE(record->creationStack.empty());
         CHECK(snapshot.liveBytes == initial + record->bytes);
+        {
+            auto copied = values.Clone();
+            CHECK(copied.Name() == values.Name());
+            CHECK(copied.Identity() != values.Identity());
+            CHECK(R::AllocationDiagnostics::Snapshot().liveBytes == initial + 2 * record->bytes);
+        }
     }
     // Only the explicit access retains the payload after both handles die.
     CHECK(R::AllocationDiagnostics::Snapshot().liveBytes == initial + 4 * 5 * sizeof(double));

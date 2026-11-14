@@ -15,6 +15,7 @@
 #include "../CFV/ReconstructionFixture.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
+#include "DNDS/Runtime/Storage/AllocationDiagnostics.hpp"
 #include "../CFV/RotatedSectorFixture.hpp"
 #include <tuple>
 #include <cstdlib>
@@ -1710,6 +1711,107 @@ TEST_CASE("Mixture volume quadrature adds the conservative chemical rate and lea
     }
 }
 
+TEST_CASE("Shared quadrature keeps chemical source and P3 positivity caches unique without changing results")
+{
+    struct DiagnosticsScope
+    {
+        bool wasEnabled = R::AllocationDiagnostics::Enabled();
+        DiagnosticsScope() { R::AllocationDiagnostics::Enable(); }
+        ~DiagnosticsScope()
+        {
+            if (!wasEnabled)
+                R::AllocationDiagnostics::Enable(false);
+        }
+    } diagnostics;
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    std::optional<C::EquationDofs> referenceResidual, referenceLimited;
+    for (bool cache : {false, true})
+    {
+        C::DomainSettings settings;
+        settings.equation.source = "chemical";
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 5;
+        settings.numerics.cfv.cacheDiffBase = cache;
+        settings.numerics.cfv.cacheDiffBaseOrder = 1;
+        settings.numerics.reconstructionIterations = 0; // Prescribed nonconstant polynomial.
+        settings.numerics.viscousGradient = "polynomial";
+        settings.numerics.faceFallback = false;
+        settings.numerics.positivity = true;
+        // PP uses exactly the source volume rule with no independent setting.
+        settings.numerics.temperatureFloor = 900 / mixture.scales.T0;
+        C::FiniteVolume fv(mesh, settings, mixture.equation);
+        auto state = mixture.State(fv.Metrics().Space(), 0);
+        mixture.Fill(state, fv.Metrics(), true);
+        auto reconstruction = fv.BuildReconstructionState(state);
+        auto work = fv.BuildWorkspace(state, mixture.workers);
+        const I modes = fv.PolynomialReconstruction()->NRecDOF();
+        auto guess = fv.ReconstructionGuess(*reconstruction);
+        C::EquationDofOperations::Fill(guess, 0);
+        {
+            auto write = guess.WriteOwned();
+            const auto flow = write.Block("flow");
+            for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+                flow(iCell, 4 * modes) = .4 * (1 + .25 * std::sin(6.283185307179586 * fv.Metrics().GetCellCent(iCell)[0]));
+        }
+        auto residual = C::EquationDofOperations::NewVector(state);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, residual, *reconstruction, *work, engine, stream);
+        engine.Close();
+        if (referenceResidual)
+            Compare(residual, *referenceResidual, 2e-10);
+        else
+            referenceResidual.emplace(std::move(residual));
+
+        // These named records identify physical allocations, not aliases.
+        // One face bank plus one source bank serves RHS and PP simultaneously;
+        // the source bank stores values only, with no unused direct point data.
+        I sourceBanks = 0, hotBanks = 0;
+        for (const auto &record : R::AllocationDiagnostics::Snapshot().allocations)
+        {
+            if (!record.bytes)
+                continue;
+            const auto named = [&](const char *name)
+            { return std::find(record.names.begin(), record.names.end(), name) != record.names.end(); };
+            if (named("Cauchy/quadrature/volume/basis"))
+            {
+                ++sourceBanks;
+                CHECK(record.bytes == size_t(fv.Metrics().NumCell() * 9 * modes) * sizeof(double));
+            }
+            bool hotBasis = false;
+            for (const auto &name : record.names)
+                hotBasis |= (name.find("CFV/quadrature/") == 0 || name.find("Cauchy/quadrature/") == 0) &&
+                            name.size() >= 6 && name.compare(name.size() - 6, 6, "/basis") == 0;
+            hotBanks += hotBasis;
+            if (cache)
+                CHECK_FALSE(named("Cauchy/quadrature/volume/points"));
+        }
+        CHECK(sourceBanks == I(cache && fv.Metrics().NumCell() > 0));
+        CHECK(hotBanks == (cache && fv.Metrics().NumCell() > 0 ? 2 : 0));
+
+        {
+            auto write = guess.WriteOwned();
+            const auto flow = write.Block("flow");
+            for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+                flow(iCell, 4 * modes) = 300;
+        }
+        fv.LimitReconstructionPP(state, *reconstruction, *work);
+        const auto statistics = fv.PositivityReconstructionStats(*work);
+        if (fv.Metrics().NumCell())
+            CHECK(statistics.first > 0);
+        auto limited = fv.FluxReconstruction(*reconstruction, *work);
+        if (referenceLimited)
+            Compare(limited, *referenceLimited, 2e-11);
+        else
+        {
+            referenceLimited.emplace(C::EquationDofOperations::NewVector(limited));
+            C::EquationDofOperations::Copy(*referenceLimited, limited);
+        }
+    }
+}
+
 TEST_CASE("Nonconstant assembled mixture diffusion matches an independent face integration with direct backend coefficients")
 {
     MixtureFixture mixture(2e-4); // Resolve a substantial code-unit diffusion signal.
@@ -2055,8 +2157,7 @@ TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unli
         settings.numerics.positivity = true;
         settings.numerics.temperatureFloor = 900 / mixture.scales.T0;
         settings.numerics.positivityCompressToMean = !scenario;
-        settings.numerics.positivityVolumePoints = !scenario;
-        settings.equation.source = "chemical"; // Its quadrature is mandatory even when the optional volume grid is off.
+        settings.equation.source = "chemical"; // PP always protects this same volume rule.
         C::FiniteVolume fv(mesh, settings, mixture.equation);
         auto state = mixture.State(fv.Metrics().Space(), scenario + 1);
         mixture.Fill(state, fv.Metrics(), true);

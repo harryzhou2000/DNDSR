@@ -106,7 +106,7 @@ TEST_CASE("Device domains advance nonuniform implicit flow through single grid a
     }
 }
 
-TEST_CASE("Domain reconstruction selection runs quantized maps with FP64 evolving fields")
+TEST_CASE("Domain reconstruction selection runs quantized maps and shared or direct quadrature with FP64 evolving fields")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
     const auto metrics = DNDS::CFV::FiniteVolumePlan::ConstructMetrics(mesh);
@@ -120,6 +120,7 @@ TEST_CASE("Domain reconstruction selection runs quantized maps with FP64 evolvin
     settings.numerics.reconstructionTolerance = 0;
     settings.numerics.limiter = "none";
     settings.numerics.faceFallback = false;
+    settings.numerics.positivity = true;
     settings.implicit.linear.method = "jacobi";
     C::TimeSettings time;
     time.method = "ssprk3";
@@ -136,10 +137,11 @@ TEST_CASE("Domain reconstruction selection runs quantized maps with FP64 evolvin
         }
     }
     std::optional<R::Array<double>> reference;
-    for (const char *kernel : {"fp64", "fp32"})
+    for (const std::string kernel : {"fp64", "fp32", "fp64Direct"})
     {
         CAPTURE(kernel);
-        settings.execution.reconstructionKernel = kernel;
+        settings.execution.reconstructionKernel = kernel == "fp64Direct" ? "fp64" : kernel;
+        settings.numerics.cfv.cacheDiffBase = kernel != "fp64Direct";
         C::Domain domain("fluid", mesh, settings, time);
         domain.Dofs().CoupledField().Owned().CopyFrom(initial, {R::Device::CUDA(0), nullptr}).Wait();
         for (int step = 0; step < 3; ++step)

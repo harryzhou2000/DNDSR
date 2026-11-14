@@ -64,12 +64,12 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::Workspace::BuildSourceSampling(const EquationDofs &state)
     {
-        if (!owner->sourceQuadrature)
+        if (!owner->quadrature.source)
             return;
         // Geometry is frozen once by the plan before placement; workspaces
         // share it and own only mutable values/gradients. No host mesh access
         // or reconstruction setup is required for a CUDA workspace.
-        const auto &prepared = *owner->sourceQuadrature;
+        const auto &prepared = *owner->quadrature.source;
         sourceOffsets = prepared.offsets;
         sourceWeights = prepared.weights;
         sourceSampling = prepared.sampling;
@@ -283,6 +283,20 @@ namespace DNDS::Cauchy
         BuildPreparationStatus();
         BuildCharacteristicStorage();
         BuildDeviceFlux();
+        boundaryMomentumFlux.SetName("Cauchy/workspace/boundaryMomentumFlux", DNDS_ALLOCATION_SITE());
+        faceFlux.SetName("Cauchy/workspace/faceFlux", DNDS_ALLOCATION_SITE());
+        if (lowOrderFaceFlux)
+            lowOrderFaceFlux->SetName("Cauchy/workspace/lowOrderFaceFlux", DNDS_ALLOCATION_SITE());
+        for (index iField = 0; iField < index(sourceValues.size()); ++iField)
+        {
+            sourceValues[iField].SetName("Cauchy/source/values/" + std::to_string(iField), DNDS_ALLOCATION_SITE());
+            if (iField < index(sourceGradients.size()))
+                for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                    sourceGradients[iField][d].SetName("Cauchy/source/gradients/" + std::to_string(iField) + "/" + std::to_string(d), DNDS_ALLOCATION_SITE());
+            if (iField < index(sourceJacobianGradients.size()))
+                for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                    sourceJacobianGradients[iField][d].SetName("Cauchy/source/jacobianGradients/" + std::to_string(iField) + "/" + std::to_string(d), DNDS_ALLOCATION_SITE());
+        }
         if (nativeDirectGradient || ransFirst >= 0)
             directGradientPublications.resize(directGradients.size());
     }

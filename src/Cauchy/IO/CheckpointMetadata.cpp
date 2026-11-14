@@ -159,8 +159,10 @@ namespace DNDS::Cauchy::CheckpointMetadata
                 {
                     if (!numerics.contains("positivityReconstruction"))
                         numerics["positivityReconstruction"] = "Segment";
-                    if (!numerics.contains("positivityVolumePoints"))
-                        numerics["positivityVolumePoints"] = true;
+                    // The old explicit positivityVolumePoints option describes
+                    // a retired face-only/maximum-volume-grid policy. Do not
+                    // invent that option for new archives or normalize away
+                    // an active old policy difference: PP now follows RHS/source.
                     if (numerics["positivityReconstruction"] == "Segment")
                     {
                         numerics.erase("positivityCompressToMean");

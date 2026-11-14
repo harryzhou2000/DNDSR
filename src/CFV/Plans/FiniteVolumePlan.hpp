@@ -56,7 +56,7 @@ namespace DNDS::CFV
         DNDS_DECLARE_CONFIG(ReconstructionSettings)
         {
             DNDS_FIELD(maxOrder, "Polynomial degree, 1..3");
-            DNDS_FIELD(intOrder, "Integration degree, at least polynomial degree plus one");
+            DNDS_FIELD(intOrder, "Supported integration degree, independent of polynomial degree; lower rules deliberately change the discrete functional");
             DNDS_FIELD(jacobiRelax, "Jacobi/SOR relaxation");
             DNDS_FIELD(SORInstead, "Use ordered two-buffer SOR with completed local predecessors from the output");
             DNDS_FIELD(coreFirst, "Use conservative node-star core before dependent cells for ordered SOR");
@@ -417,18 +417,32 @@ namespace DNDS::CFV
         {
             Runtime::ValidateViewDevices(device, cached, moments, cells);
         }
+        /// Prepare only when requested derivatives exceed cachedDerivatives.
+        /// Fully cached placements need no cell-geometry allocation at all.
+        DNDS_DEVICE_CALLABLE Math::TaylorPointEvaluation PreparePoint(
+            index iCell, const std::array<real, 3> &point) const noexcept
+        {
+            return Math::TaylorPointEvaluation::FromPoint(
+                point, {cells(iCell, 1), cells(iCell, 2), cells(iCell, 3)}, cells(iCell, 7));
+        }
+        /// Reuse this point context across all modes and field components;
+        /// cached derivative rows still take precedence over direct evaluation.
+        DNDS_DEVICE_CALLABLE real Evaluate(index iCell, index iPoint, int side, const Math::TaylorPointEvaluation &point,
+                                           int derivative, int mode) const noexcept
+        {
+            DNDS_HD_assert(derivative >= 0 && derivative < availableDerivatives && mode >= 0 && mode < polynomial.size - 1);
+            if (derivative < cachedDerivatives)
+                return cached(2 * iPoint + side, mode * cachedDerivatives + derivative);
+            const real value = polynomial.Derivative(derivative, mode + 1, point);
+            return derivative == 0 ? value - moments(iCell, mode + 1) : value;
+        }
         DNDS_DEVICE_CALLABLE real Evaluate(index iCell, index iPoint, int side, const std::array<real, 3> &point,
                                            int derivative, int mode) const noexcept
         {
             DNDS_HD_assert(derivative >= 0 && derivative < availableDerivatives && mode >= 0 && mode < polynomial.size - 1);
             if (derivative < cachedDerivatives)
                 return cached(2 * iPoint + side, mode * cachedDerivatives + derivative);
-            std::array<real, 3> x{};
-            const real scale = cells(iCell, 7);
-            for (int d = 0; d < 3; ++d)
-                x[d] = (point[d] - cells(iCell, 1 + d)) / scale;
-            const real value = polynomial.Derivative(derivative, mode + 1, x, scale);
-            return derivative == 0 ? value - moments(iCell, mode + 1) : value;
+            return Evaluate(iCell, iPoint, side, PreparePoint(iCell, point), derivative, mode);
         }
     };
     /// Pins the geometry generation and Runtime cache allocations once outside
@@ -510,7 +524,6 @@ namespace DNDS::CFV
         int PlacementNRecDOF() const;
         index PlacementOwnedRows() const;
         index PlacementBoundaryPoints() const;
-        const Runtime::Array<real> &SamplingMoments() const;
         FVField BuildDeviceField(Runtime::RowLayout) const;
         void ValidatePlacement() const;
 
@@ -530,6 +543,18 @@ namespace DNDS::CFV
                                             ReconstructionResidencyOptions = {}) const;
         Runtime::Device Device() const;
         bool RetainsHostPayloads() const { return bool(_data); }
+        /// Immutable shared face sampling allocation on this plan's backend.
+        /// Rows are 2*globalQuadratureOrdinal+side, columns are mode-major
+        /// derivative values. Empty when caching is disabled. A device plan
+        /// with caching enabled must have requested basis residency at placement.
+        /// Copy the handle to retain the allocation beyond this plan's lifetime.
+        const Runtime::Array<real> &SamplingFaceBasis() const;
+        /// Immutable normalization moments and cell geometry used by on-site
+        /// evaluation. On a placed plan these are available when direct basis
+        /// evaluation or arbitraryPointSampling was requested. Copies retain
+        /// the same allocations used by RHS point evaluation, without matrices.
+        const Runtime::Array<real> &SamplingMoments() const;
+        const Runtime::Array<real> &SamplingCellGeometry() const;
         /// Stable field row identity, also available after CPU payload release.
         const Algebra::DofSpace &Space() const;
         bool SupportsKernel(ReconstructionDeviceKernel) const;

@@ -121,12 +121,12 @@ namespace DNDS::Cauchy
           gradientExecution(data.limitedVRGeometry->gradient.BuildWorkspace(prototype.components, prototype.periodicVectorStarts)),
           base(R::RowLayout::Dense(data.metrics.NumCell(), 2), data.metrics.Device()),
           alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1), data.metrics.Device()), sampledFaces(R::RowLayout::Dense(data.limitedVRGeometry ? 2 * data.limitedVRGeometry->faces.RowCount() : 0, prototype.components), data.metrics.Device()),
-          sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components), data.metrics.Device()), targetHalo(data.BindHalo(targetCoefficients)),
+          sampledPP(R::RowLayout::Dense(data.quadrature.positivity ? data.quadrature.positivity->Size() : 0, prototype.components), data.metrics.Device()), targetHalo(data.BindHalo(targetCoefficients)),
           branchHalo(data.BindHalo(branches)), seedHalo(data.BindHalo(seeds))
     {
         // Current physical adapter dispatches only compressible flow5. Generic
         // CFV penalties/targets and scalar stencils do not assume this width.
-        DNDS_check_throw_info(prototype.components == 5 && data.limitedVRGeometry && data.positivitySamples, "LVR compressible target setup is incomplete");
+        DNDS_check_throw_info(prototype.components == 5 && data.limitedVRGeometry && data.quadrature.positivity, "LVR compressible target setup is incomplete");
         Algebra::Fill(targetCoefficients, 0.);
         Algebra::Fill(target.temporary, 0.);
         if (data.metrics.Device() == R::Device::Host())

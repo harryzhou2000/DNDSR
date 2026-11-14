@@ -75,6 +75,7 @@ gates. The placement foundation mock alone is not a fluid validation.
 | Optional stream-ordered NCCL payloads and caller ordering | [NCCL transfers](architecture/NCCLTransfer.md) |
 | Resident CUDA Jacobi/WBAP, placements and caller ordering | [Device reconstruction](architecture/DeviceReconstruction.md) |
 | Native CPU FV/VR, explicit WBAP and boundary point interfaces | [FV and interface facilities](architecture/FVFacility.md) |
+| Shared PP/RHS quadrature, cache placement and direct evaluation | [Quadrature and basis ownership](architecture/QuadratureBasis.md) |
 | CPU reconstruction operation profiles and storage accounting | [Reconstruction capabilities](architecture/ReconstructionCapabilities.md) |
 | Reusable element projection and distributed surface location | [Surface geometry and location](architecture/SurfaceLocation.md) |
 | Completed CFV/Geom work orders and validation limits | [Facility completion ledger](dev/fv_completion_2026-10-31.md) |

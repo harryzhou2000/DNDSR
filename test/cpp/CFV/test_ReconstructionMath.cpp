@@ -7,6 +7,63 @@ namespace M = DNDS::CFV::Math;
 using S = DNDS::CFV::ReconstructionFunctionalSettings;
 using Point = DNDS::Geom::tPoint;
 
+TEST_CASE("Prepared Taylor points preserve nonunit-scale physical derivatives and zero-mean modes")
+{
+    const std::array<DNDS::real, 3> point{0.19, -0.37, 0.61}, center{-0.23, 0.11, -0.17};
+    for (int dim : {2, 3})
+        for (int degree : {1, 2, 3})
+            for (DNDS::real scale : {0.7, 1.9})
+            {
+                const M::TaylorBasis basis(dim, degree);
+                const auto parameters = basis.KernelParameters();
+                const auto prepared = M::TaylorPointEvaluation::FromPoint(point, center, scale);
+                std::array<DNDS::real, 3> normalized{};
+                for (int d = 0; d < 3; ++d)
+                    normalized[d] = (point[d] - center[d]) / scale;
+                M::SmallMatrix legacy;
+                basis.Derivatives(legacy, {point[0], point[1], point[2]}, {center[0], center[1], center[2]}, scale);
+                for (int derivative = 0; derivative < basis.Size(); ++derivative)
+                    for (int mode = 0; mode < basis.Size(); ++mode)
+                    {
+                        // Independent physical polynomial oracle: differentiate
+                        // product_d (point_d-center_d)^alpha_d / scale^|alpha|.
+                        // This does not use the prepared coordinates or powers.
+                        DNDS::real expected = 1;
+                        const auto &alpha = basis.MultiIndex(mode), &beta = basis.MultiIndex(derivative);
+                        for (int d = 0; d < 3; ++d)
+                        {
+                            if (beta[d] > alpha[d])
+                            {
+                                expected = 0;
+                                break;
+                            }
+                            for (int k = 0; k < beta[d]; ++k)
+                                expected *= alpha[d] - k;
+                            expected *= std::pow(point[d] - center[d], alpha[d] - beta[d]) / std::pow(scale, alpha[d]);
+                        }
+                        CAPTURE(dim);
+                        CAPTURE(degree);
+                        CAPTURE(scale);
+                        CAPTURE(derivative);
+                        CAPTURE(mode);
+                        CHECK(parameters.Derivative(derivative, mode, prepared) == doctest::Approx(expected).epsilon(2e-13));
+                        CHECK(parameters.Derivative(derivative, mode, normalized, scale) == doctest::Approx(expected).epsilon(2e-13));
+                        CHECK(legacy(derivative, mode) == doctest::Approx(expected).epsilon(2e-13));
+                    }
+                // Cell moments affect values only, never physical derivatives.
+                std::array<DNDS::real, 20> moments{};
+                for (int mode = 0; mode < basis.Size(); ++mode)
+                    moments[mode] = 0.03 * (mode + 1);
+                M::SmallMatrix reconstruction;
+                basis.Reconstruction(reconstruction, {point[0], point[1], point[2]}, {center[0], center[1], center[2]}, scale, moments, degree);
+                for (int derivative = 0; derivative < basis.Size(); ++derivative)
+                    for (int mode = 1; mode < basis.Size(); ++mode)
+                        CHECK(reconstruction(derivative, mode - 1) == doctest::Approx(
+                                                                          parameters.Derivative(derivative, mode, prepared) - (derivative == 0 ? moments[mode] : 0))
+                                                                          .epsilon(2e-13));
+            }
+}
+
 TEST_CASE("Taylor derivative pullback preserves Frobenius tensor norms through degree three")
 {
     for (int dim : {2, 3})

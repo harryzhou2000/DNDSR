@@ -167,7 +167,7 @@ namespace DNDS::Cauchy
         real positivityBetaCutoff = 1e-3;
         std::string positivityReconstruction = "Euler";
         std::string positivityClippedReferencePolicy = "fallbackToBase";
-        bool positivityCompressToMean = true, positivityVolumePoints = true;
+        bool positivityCompressToMean = true;
         int positivityBetaPower = 1;
         real densityFloor = 1e-12, pressureFloor = 1e-12;
         real sensibleEnergyFloor = 1e-12;
@@ -205,7 +205,6 @@ namespace DNDS::Cauchy
             DNDS_FIELD(positivityReconstruction, "Euler common quadrature beta or Segment for reproducing earlier Cauchy archives");
             DNDS_FIELD(positivityClippedReferencePolicy, "Clipped-composition reconstruction energy policy: fallbackToBase (Euler compatibility) or backtracking");
             DNDS_FIELD(positivityCompressToMean, "Euler reference is the mean; false uses legacy progressive order reduction");
-            DNDS_FIELD(positivityVolumePoints, "Add the maximum-order volume grid to face PP checks; chemical source quadrature is always protected");
             DNDS_FIELD(positivityBetaPower, "Euler extra beta exponent, so the total exponent is 1+power");
             DNDS_FIELD(densityFloor, "Positive inclusive density admissibility floor");
             DNDS_FIELD(pressureFloor, "Positive inclusive pressure admissibility floor for the initial perfect-gas equation");

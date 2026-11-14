@@ -11,7 +11,7 @@ namespace DNDS::CFV
     {
         ValidateField(mean, mean.Width());
         ValidateField(coefficients, mean.Width() * _modes);
-        DNDS_check_throw_info(derivative >= 0 && derivative <= (_cacheDerivatives ? _modes : 0) && output.GetDevice() == Device() &&
+        DNDS_check_throw_info(derivative >= 0 && derivative <= _maximumDerivative && output.GetDevice() == Device() &&
                                   !output.Layout().IsVariable() && output.RowCount() == Size() && output.Layout().Width() == index(mean.Width()),
                               "polynomial sample output shape/placement or derivative mismatch");
         for (const auto *input : {&mean.Owned(), &mean.Ghost(), &coefficients.Owned(), &coefficients.Ghost()})
@@ -43,10 +43,10 @@ namespace DNDS::CFV
         const auto meanRead = mean.Owned().Read(), coefficientRead = coefficients.Owned().Read();
         const auto meanGhost = (_needsGhost ? mean.Ghost() : _empty).Read();
         const auto coefficientGhost = (_needsGhost ? coefficients.Ghost() : _empty).Read();
-        const auto cells = _cells.Read();
+        const auto cells = _cells.Read(), basisRows = _basisRows.Read(), outputRows = _outputRows.Read();
         const auto points = _points.Read(), basis = _basis.Read(), moments = _moments.Read(), geometry = _cellGeometry.Read();
         auto writer = output.Write();
-        Detail::PolynomialSamplingView plan{cells.View<R::FixedRows<1>>(), points.View<R::FixedRows<3>>(),
+        Detail::PolynomialSamplingView plan{cells.View<R::FixedRows<1>>(), basisRows.View<R::FixedRows<1>>(), outputRows.View<R::FixedRows<1>>(), points.View<R::FixedRows<3>>(),
                                             basis.View<R::TableRows>(), moments.View<R::TableRows>(), geometry.View<R::FixedRows<8>>(),
                                             Math::TaylorBasis(_dimension, _degree).KernelParameters(), _cachedDerivatives};
         Detail::EvaluatePolynomialSamples(plan,
@@ -68,9 +68,9 @@ namespace DNDS::CFV
         // while declared operands retain all sampling payloads. Repeated value
         // refreshes therefore need no engine-wide retained-owner accumulation.
         const auto polynomial = Math::TaylorBasis(_dimension, _degree).KernelParameters();
-        R::SubmitArrays(engine, stream, [geometryGuard, polynomial, derivative, cachedDerivatives = _cachedDerivatives](R::ExecutionContext context, auto cells, auto points, auto basis, auto moments, auto geometry, auto meanOwned, auto meanGhost, auto coefficientOwned, auto coefficientGhost, auto result)
+        R::SubmitArrays(engine, stream, [geometryGuard, polynomial, derivative, cachedDerivatives = _cachedDerivatives](R::ExecutionContext context, auto cells, auto basisRows, auto outputRows, auto points, auto basis, auto moments, auto geometry, auto meanOwned, auto meanGhost, auto coefficientOwned, auto coefficientGhost, auto result)
                         {
-                            Detail::PolynomialSamplingView plan{cells, points, basis, moments, geometry, polynomial, cachedDerivatives};
+                            Detail::PolynomialSamplingView plan{cells, basisRows, outputRows, points, basis, moments, geometry, polynomial, cachedDerivatives};
                             const Detail::SamplingField mean{meanOwned, meanGhost}, coefficients{coefficientOwned, coefficientGhost};
                             if (context.device == R::Device::Host())
                                 Detail::EvaluatePolynomialSamples(plan, mean, coefficients, result, derivative);
@@ -79,7 +79,7 @@ namespace DNDS::CFV
                                 Detail::LaunchPolynomialSamples(context, plan, mean, coefficients, result, derivative);
 #endif
                         },
-                        R::ReadAs<R::FixedRows<1>>(_cells), R::ReadAs<R::FixedRows<3>>(_points), R::ReadAs<R::TableRows>(_basis), R::ReadAs<R::TableRows>(_moments), R::ReadAs<R::FixedRows<8>>(_cellGeometry), R::ReadAs<R::UniformTableRows>(mean.Owned()), R::ReadAs<R::UniformTableRows>(_needsGhost ? mean.Ghost() : _empty), R::ReadAs<R::UniformTableRows>(coefficients.Owned()), R::ReadAs<R::UniformTableRows>(_needsGhost ? coefficients.Ghost() : _empty), R::WriteAs<R::UniformTableRows>(output));
+                        R::ReadAs<R::FixedRows<1>>(_cells), R::ReadAs<R::FixedRows<1>>(_basisRows), R::ReadAs<R::FixedRows<1>>(_outputRows), R::ReadAs<R::FixedRows<3>>(_points), R::ReadAs<R::TableRows>(_basis), R::ReadAs<R::TableRows>(_moments), R::ReadAs<R::FixedRows<8>>(_cellGeometry), R::ReadAs<R::UniformTableRows>(mean.Owned()), R::ReadAs<R::UniformTableRows>(_needsGhost ? mean.Ghost() : _empty), R::ReadAs<R::UniformTableRows>(coefficients.Owned()), R::ReadAs<R::UniformTableRows>(_needsGhost ? coefficients.Ghost() : _empty), R::WriteAs<R::UniformTableRows>(output));
     }
     void PolynomialSamplingPlan::EvaluateDeviceValueGradient(const FVField &mean, const FVField &coefficients, const PolynomialSampleOutputs &outputs) const
     {

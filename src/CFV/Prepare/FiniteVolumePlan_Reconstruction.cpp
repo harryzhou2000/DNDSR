@@ -129,6 +129,7 @@ namespace DNDS::CFV
                 }
             }
             data->moments = R::Array<real>(R::RowLayout::Dense(mesh.NumCellProc(), n + 1));
+            data->moments.SetName("CFV/quadrature/cellMoments", DNDS_ALLOCATION_SITE());
             data->offsets = R::Array<index>(R::RowLayout::Dense(nCell + 1, 1));
             data->faces = R::Array<index>(R::RowLayout::Dense(incidences, 1));
             data->neighbors = R::Array<index>(R::RowLayout::Dense(incidences, 1));
@@ -165,17 +166,6 @@ namespace DNDS::CFV
             OptionalTableWriter localMatrixWrite(data->localMatrix), localInverseWrite(data->localInverse);
             const auto localMatrices = localMatrixWrite.values, localInverses = localInverseWrite.values;
             data->boundaryPoints = R::Array<index>(R::RowLayout::Dense(boundaryCount, 4));
-            if (settings.cacheDiffBase)
-                data->faceBasis = R::Array<real>(R::RowLayout::Dense(2 * point.RowCount(), data->cachedDerivatives * n));
-            std::optional<R::Array<real>::WriteLease> cacheWrite;
-            R::ArrayView<real, false, R::TableRows> cache;
-            if (settings.cacheDiffBase)
-            {
-                cacheWrite.emplace(data->faceBasis.Write());
-                cache = cacheWrite->View<R::TableRows>();
-                OMP::ForRows(0, cache.RowCount(), [&](index iRow)
-                    { std::fill(cache[iRow].begin(), cache[iRow].end(), 0); });
-            }
             // Only requested face-system blocks exist. This is preparation
             // scratch, released before returning the immutable plan.
             std::optional<R::Array<real>> systems;
@@ -186,7 +176,7 @@ namespace DNDS::CFV
             }
             auto momentWrite = data->moments.Write();
             const auto moment = momentWrite.View<R::TableRows>();
-            const bool needHalfBoxes = (faceSystem.width || settings.cacheDiffBase) &&
+            const bool needHalfBoxes = faceSystem.width &&
                 settings.functional.scaleType == ReconstructionFunctionalSettings::LengthScale::MeanAACBB;
             R::Array<real> halfBoxStorage(R::RowLayout::Dense(needHalfBoxes ? mesh.NumCellProc() : 0, 3));
             halfBoxStorage.SetName("CFV/setup/halfBoxes", DNDS_ALLOCATION_SITE());
@@ -225,7 +215,7 @@ namespace DNDS::CFV
             OMP::ForSetupRows(0, nFace, [&](index iFace)
             {
                 if (!active[size_t(iFace)]) return;
-                if (!faceSystem.width && !settings.cacheDiffBase) return;
+                if (!faceSystem.width) return;
                 SmallMatrix left, right, weighted, aL, aR, bLR, secondaryL, secondaryR;
                 tSmallCoords coords;
                 if (systems) std::fill(system[iFace].begin(), system[iFace].end(), 0.);
@@ -304,8 +294,6 @@ namespace DNDS::CFV
                 {
                     const tPoint p{point(iQ, 0), point(iQ, 1), point(iQ, 2)};
                     basis(iL, p, left);
-                    if (settings.cacheDiffBase)
-                        Eigen::Map<Matrix>(cache[2 * iQ].data(), data->cachedDerivatives, n) = left.topRows(data->cachedDerivatives);
                     if (faceSystem.a >= 0)
                     {
                         weighted = left;
@@ -317,8 +305,6 @@ namespace DNDS::CFV
                     if (iR != UnInitIndex)
                     {
                         basis(iR, Detail::FacePointInCell(mesh, iFace, 1, p), right);
-                        if (settings.cacheDiffBase)
-                            Eigen::Map<Matrix>(cache[2 * iQ + 1].data(), data->cachedDerivatives, n) = right.topRows(data->cachedDerivatives);
                         if (rotated) polynomial.Pullback(right, rightToLeft.transpose());
                         if (faceSystem.b >= 0) bLR.noalias() += weighted.transpose() * right;
                         if (faceSystem.a >= 0)
@@ -505,6 +491,11 @@ namespace DNDS::CFV
                         summary.maxConditionCell = original(iCell, 0);
                     }
                 } });
+        // The matrix assembly's full derivative scratch and mutable moments
+        // leases are gone. Hot sampling prepares only its requested rows and
+        // never retains the full-order setup matrices.
+        geometry->communication->LocalStage([&]
+                                            { Detail::PrepareFaceBasis(*data, *geometry); });
         if (capabilities.inverseDiagnostics)
         {
             auto &summary = data->inverseDiagnostics;

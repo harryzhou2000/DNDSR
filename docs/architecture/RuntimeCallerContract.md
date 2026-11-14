@@ -399,6 +399,24 @@ is used. Reopen v2 readers for another slice of cached row-start metadata.
 Checkpoint the mesh IDs, state time level and all related fields together
 at the application level; individual Array writes are not an atomic restart.
 
+## Compound-operator entry validation
+
+`Buffer::ValidateReservation(mode, device, checked)` performs the admission
+checks of a future scheduled access without acquiring it, changing a value or
+mutation generation, or waiting for existing work. It rejects conflicting
+immediate host leases and mixed checked/unchecked access policies; pending
+operations under the same policy remain valid. It is not a stream dependency
+proof, a readiness check, or permission to dereference a pointer.
+
+A compound collective operator can include this check in its existing entry
+preflight before launching halos or writing its first output field. Cauchy FV
+does this for every physical residual field. This prevents a rank-local output
+lease exception from escaping late in submission while peers reach a different
+collective. Actual operators still reserve their operands and validate dependency
+ordering. Callers must serialize control-thread mutation/submission. Checked UT
+callers can reject coherently; production solver exception scopes still abort
+without attempting distributed recovery. No additional MPI agreement is added.
+
 ## What tests establish
 
 Tests exercise immediate conflict errors, stale version/schema rejection,

@@ -43,9 +43,8 @@ namespace DNDS::Cauchy
             std::vector<index> auxiliaryCoreFaces, auxiliaryDependentFaces, rhsCoreFaces, rhsDependentFaces;
             std::vector<index> auxiliaryInterfaceIndependentFaces, auxiliaryInterfaceFaces,
                 interfaceIndependentCells, interfaceCoreCells;
-            std::vector<index> auxiliaryCellOffsets, auxiliaryCellFaces, positivityOffsets;
+            std::vector<index> auxiliaryCellOffsets, auxiliaryCellFaces;
             std::vector<real> auxiliaryFaceArea;
-            std::vector<Geom::tPoint> positivityDisplacements;
             std::vector<Sample> samples, jacobianSamples;
             std::vector<BoundaryPoint> boundaryPoints, boundaryFaces;
         };
@@ -358,53 +357,6 @@ namespace DNDS::Cauchy
             }
             for (index iPoint = 0; iPoint < rows.RowCount(); ++iPoint)
                 rows(iPoint, 0) = gradientBoundaryPoints[size_t(iPoint)];
-        }
-        if (settings.numerics.positivity || limitedVR)
-        {
-            std::vector<int> volumeOrders;
-            if (settings.numerics.positivityVolumePoints) volumeOrders.push_back(Geom::Elem::INT_ORDER_MAX);
-            if ((settings.equation.source == "chemical" || equation.HasRANS()) && std::find(volumeOrders.begin(), volumeOrders.end(), settings.numerics.RHSIntegrationOrder()) == volumeOrders.end())
-                volumeOrders.push_back(settings.numerics.RHSIntegrationOrder());
-            build.positivityOffsets.resize(size_t(data->metrics.NumCell()) + 1, 0);
-            for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
-            {
-                build.positivityOffsets[iCell + 1] = build.positivityOffsets[iCell] + build.offsets[iCell + 1] - build.offsets[iCell];
-                for (auto order : volumeOrders)
-                    build.positivityOffsets[iCell + 1] += Geom::Elem::Quadrature(topology.GetCellElement(iCell), order).GetNumPoints();
-            }
-            const auto count = build.positivityOffsets.back();
-            R::Array<index> cells(R::RowLayout::Dense(count, 1));
-            R::Array<real> points(R::RowLayout::Dense(count, 3));
-            {
-                auto cellWrite = cells.Write(); auto pointWrite = points.Write();
-                const auto c = cellWrite.View<R::FixedRows<1>>(); const auto p = pointWrite.View<R::FixedRows<3>>();
-                Geom::tSmallCoords coords;
-                for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
-                {
-                    index iPoint = build.positivityOffsets[iCell];
-                    const auto append = [&](const Geom::tPoint &point)
-                    {
-                        c(iPoint, 0) = iCell;
-                        for (int d = 0; d < 3; ++d)
-                            p(iPoint, d) = point[d];
-                        build.positivityDisplacements.push_back(point - metric.GetCellCent(iCell));
-                        ++iPoint;
-                    };
-                    for (index entry = build.offsets[iCell]; entry < build.offsets[iCell + 1]; ++entry) append(build.samples[entry].ownPoint);
-                    for (auto order : volumeOrders)
-                    {
-                        topology.GetCoordsOnCell(iCell, coords);
-                        const auto element = topology.GetCellElement(iCell);
-                        const Geom::Elem::Quadrature quadrature(element, order);
-                        for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
-                            append(Geom::Elem::PPhysicsCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ)));
-                    }
-                }
-            }
-            if (data->reconstruction)
-                data->positivitySamples.emplace(*data->reconstruction, cells, points, false);
-            DNDS_check_throw_info(index(build.positivityDisplacements.size()) == count,
-                                  "direct-P1 positivity geometry size differs");
         } });
         // Zone presence is a domain-global property; do not reject a condition
         // just because this partition has no wall faces. Only small BC IDs move.
@@ -470,10 +422,6 @@ namespace DNDS::Cauchy
             publishIndices(build.rhsDependentFaces, data->stencil.rhsDependentFaces);
             publishIndices(build.auxiliaryCellOffsets, data->stencil.auxiliaryCellOffsets);
             publishIndices(build.auxiliaryCellFaces, data->stencil.auxiliaryCellFaces);
-            publishIndices(build.positivityOffsets, data->stencil.positivityOffsets);
-            for (index iCell = 0; iCell + 1 < index(build.positivityOffsets.size()); ++iCell)
-                data->maximumPositivityPoints = std::max(data->maximumPositivityPoints,
-                                                         build.positivityOffsets[iCell + 1] - build.positivityOffsets[iCell]);
             publishIndices(build.boundaryEntries, data->stencil.boundaryEntries);
             publishIndices(data->partition.Core(), data->stencil.coreCells);
             publishIndices(data->partition.HaloDependent(), data->stencil.dependentCells);
@@ -482,16 +430,10 @@ namespace DNDS::Cauchy
             publishIndices(build.interfaceIndependentCells, data->stencil.interfaceIndependentCells);
             publishIndices(build.interfaceCoreCells, data->stencil.interfaceCoreCells);
             data->stencil.auxiliaryFaceArea = R::Array<real>(R::RowLayout::Dense(build.auxiliaryFaceArea.size(), 1));
-            data->stencil.positivityDisplacements = R::Array<real>(R::RowLayout::Dense(build.positivityDisplacements.size(), 3));
             auto areas = data->stencil.auxiliaryFaceArea.Write();
-            auto displacements = data->stencil.positivityDisplacements.Write();
             const auto a = areas.View<R::FixedRows<1>>();
-            const auto x = displacements.View<R::FixedRows<3>>();
             for (index iRow = 0; iRow < a.RowCount(); ++iRow)
                 a(iRow, 0) = build.auxiliaryFaceArea[iRow];
-            for (index iRow = 0; iRow < x.RowCount(); ++iRow)
-                for (int d = 0; d < 3; ++d)
-                    x(iRow, d) = build.positivityDisplacements[iRow][d];
         }
         const auto publishBoundary = [](const auto &values)
         {
@@ -506,9 +448,10 @@ namespace DNDS::Cauchy
         };
         data->boundaryLayout->points = publishBoundary(build.boundaryPoints);
         data->boundaryLayout->faces = publishBoundary(build.boundaryFaces);
+        data->BuildSourceQuadrature();
+        data->BuildPositivityQuadrature(limitedVR);
         if (limitedVR)
             data->limitedVRGeometry = std::make_shared<LimitedVRGeometry>(*data);
-        data->BuildSourceQuadrature();
         _data = std::move(data);
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }

@@ -23,6 +23,7 @@ Legacy/VariationalReconstruction.cpp
 Legacy/ModelEvaluator.cpp
 Prepare/FiniteVolumePlan.cpp
 Prepare/FiniteVolumePlan_Reconstruction.cpp
+Detail/ReconstructionData_FaceBasis.cpp
 Prepare/FiniteVolumePlan_Placement.cpp
 Prepare/GradientPlan.cpp
 Prepare/GradientPlan_Placement.cpp
@@ -43,6 +44,7 @@ Operators/PolynomialSamplingPlan_ValueGradient.cpp
 Operators/LimitedVRPlan_Operators.cpp
 Operators/LimitedVRPlan_Queued.cpp
 Prepare/PolynomialSamplingPlan.cpp
+Prepare/PolynomialSamplingPlan_Sharing.cpp
 Plans/DistributedInterfaceSamplingPlan.cpp
 CPU/DistributedInterfaceSamplingKernels.cpp
 CPU/ReconstructionBasisKernels.cpp

@@ -10,6 +10,7 @@
 #include "../Geom/NativeMeshOverlapFixture.hpp"
 #include "CartesianFixture.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Storage/AllocationDiagnostics.hpp"
 #include <filesystem>
 #include <unistd.h>
 #include <sys/resource.h>
@@ -362,19 +363,40 @@ TEST_CASE("Semantic finite-volume dispatch preserves the trusted flow kernel and
 }
 TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated reference across layouts during halo exchange")
 {
+    struct DiagnosticsScope
+    {
+        bool wasEnabled = R::AllocationDiagnostics::Enabled();
+        DiagnosticsScope() { R::AllocationDiagnostics::Enable(); }
+        ~DiagnosticsScope()
+        {
+            if (!wasEnabled)
+                R::AllocationDiagnostics::Enable(false);
+        }
+    } diagnostics;
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
     for (bool compressToMean : {true, false})
-        for (bool volumePoints : {true, false})
+        for (int quadratureOrder : {3, 5})
             for (int layout = 0; layout < 3; ++layout)
             {
                 C::DomainSettings settings;
                 settings.numerics.positivity = true;
                 settings.numerics.positivityCompressToMean = compressToMean;
-                settings.numerics.positivityVolumePoints = volumePoints;
                 settings.numerics.positivityBetaCutoff = 0;
                 settings.numerics.reconstruction = "variational";
                 settings.numerics.cfv.maxOrder = 3;
+                settings.numerics.cfv.intOrder = quadratureOrder;
                 C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
+                // No source is active: PP still uses the same volume rule.
+                // Quad degree3 uses 2x2 points, degree5 uses 3x3, with no
+                // independent maximum-order PP bank hidden alongside them.
+                bool foundVolume = false;
+                for (const auto &record : R::AllocationDiagnostics::Snapshot().allocations)
+                    if (std::find(record.names.begin(), record.names.end(), "Cauchy/quadrature/volume/cells") != record.names.end())
+                    {
+                        foundVolume = true;
+                        CHECK(record.bytes == size_t(fv.Metrics().NumCell() * (quadratureOrder == 3 ? 4 : 9)) * sizeof(DNDS::index));
+                    }
+                CHECK(foundVolume);
                 const auto shape = layout == 0 ? R::RowLayout::Dense(0, 5) : layout == 1 ? R::RowLayout::ColMajor(0, 5)
                                                                                          : R::RowLayout::TiledColMajor(0, 5, 4);
                 auto state = fv.Metrics().BuildField(shape);

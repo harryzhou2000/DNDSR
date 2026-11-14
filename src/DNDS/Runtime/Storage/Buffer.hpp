@@ -309,6 +309,14 @@ namespace DNDS::Runtime
         /// Checked and unchecked reservations cannot have simultaneous conflicting
         /// uses. Drain/import at an execution-policy boundary; read/read is safe.
         ScheduledAccess Reserve(AccessMode mode, Device device, bool checked = false) const;
+        /// Non-mutating preflight for a later scheduled reservation. Rejects
+        /// conflicting immediate leases, placement and access-policy mismatches;
+        /// permits pending uses from the same scheduling policy. No wait, access
+        /// acquisition, version/epoch change or stream-order proof occurs here.
+        /// Compound collective operators may call this before posting work.
+        /// The real Reserve still validates atomically; callers must serialize
+        /// controller submissions and provide the required stream/event edges.
+        void ValidateReservation(AccessMode mode, Device device, bool checked = false) const;
 
         /// Compatibility boundary only. Raw pointers cannot enforce future
         /// writes, synchronization or lifetimes. Native kernels use access leases.

@@ -47,6 +47,7 @@ namespace DNDS::Cauchy
         auto placed = std::make_shared<Data>(*_data);
         placed->metrics = _data->metrics.Placed(device, context);
         placed->gradient = _data->gradient.Placed(placed->metrics, context);
+        CFV::SamplingPlacementMemo samplingPlacement(device, context);
         if (_data->reconstruction)
         {
             CFV::ReconstructionResidencyOptions options;
@@ -62,6 +63,15 @@ namespace DNDS::Cauchy
                                       placed->reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64,
                                   "LVR currently requires the fp64 reconstruction kernel");
             placed->reconstruction = _data->reconstruction->Place(device, context, options);
+            placed->quadrature.faceBasis = placed->reconstruction->SamplingFaceBasis();
+            samplingPlacement.Seed(_data->quadrature.faceBasis, placed->quadrature.faceBasis);
+            const auto &cache = _data->reconstruction->Settings();
+            const bool directBasis = !cache.cacheDiffBase || cache.cacheDiffBaseOrder < options.basisDerivativeOrder;
+            if (directBasis || options.arbitraryPointSampling)
+            {
+                samplingPlacement.Seed(_data->reconstruction->SamplingMoments(), placed->reconstruction->SamplingMoments());
+                samplingPlacement.Seed(_data->reconstruction->SamplingCellGeometry(), placed->reconstruction->SamplingCellGeometry());
+            }
             DNDS_check_throw_info(placed->reconstruction->SupportsKernel(placed->reconstructionKernel),
                                   "requested CFV reconstruction kernel is unsupported on this CUDA device");
         }
@@ -100,18 +110,18 @@ namespace DNDS::Cauchy
         placed->deviceEmpty = R::Array<real>(R::RowLayout::Dense(0, 0), device);
         if (_data->wallDistance)
             placed->wallDistance = _data->wallDistance->Placed(device, context);
-        if (_data->positivitySamples)
-            placed->positivitySamples = _data->positivitySamples->Placed(device, context);
-        if (_data->sourceQuadrature)
+        if (_data->quadrature.positivity)
+            placed->quadrature.positivity = _data->quadrature.positivity->Placed(samplingPlacement);
+        if (_data->quadrature.source)
         {
-            auto source = std::make_shared<Detail::SourceQuadrature>(*_data->sourceQuadrature);
+            auto source = std::make_shared<Detail::SourceQuadrature>(*_data->quadrature.source);
             source->offsets = moveField(source->offsets, "sourceOffsets");
             source->weights = moveField(source->weights, "sourceWeights");
             if (source->sampling)
-                source->sampling = source->sampling->Placed(device, context);
+                source->sampling = source->sampling->Placed(samplingPlacement);
             if (source->jacobianSampling)
-                source->jacobianSampling = source->jacobianSampling->Placed(device, context);
-            placed->sourceQuadrature = std::move(source);
+                source->jacobianSampling = source->jacobianSampling->Placed(samplingPlacement);
+            placed->quadrature.source = std::move(source);
         }
         if (_data->limitedVRGeometry)
         {
@@ -122,7 +132,7 @@ namespace DNDS::Cauchy
             limited->cellFaceOffsets = moveField(_data->limitedVRGeometry->cellFaceOffsets, "lvrCellFaceOffsets");
             limited->cellFaces = moveField(_data->limitedVRGeometry->cellFaces, "lvrCellFaces");
             if (_data->limitedVRGeometry->sampling)
-                limited->sampling = _data->limitedVRGeometry->sampling->Placed(device, context);
+                limited->sampling = _data->limitedVRGeometry->sampling->Placed(samplingPlacement);
             placed->limitedVRGeometry = std::move(limited);
         }
         placed->settings.execution.device = "cuda";
