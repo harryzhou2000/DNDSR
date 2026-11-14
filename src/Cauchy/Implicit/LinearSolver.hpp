@@ -32,6 +32,10 @@ namespace DNDS::Cauchy
         /// For GMRES/Jacobi this is the fixed local preconditioner sweep count
         /// from zero; no preconditioner halo is needed in that mode.
         int jacobiLocalSweeps = 1;
+        /// Optional block-inverse residual corrections: 0 preserves the
+        /// original policy, 1..3 preserves the SVD cutoff/retained subspace.
+        /// Applies to SGS/Jacobi, not ILU or provider-owned AMG inverses.
+        int diagonalInverseRefinement = 0;
         /// Fixed zero-started ILU defect corrections per GMRES application.
         /// More than one uses the full operator/halo between local solves.
         /// The count is frozen for Solve; stationary ILU uses maxIterations.

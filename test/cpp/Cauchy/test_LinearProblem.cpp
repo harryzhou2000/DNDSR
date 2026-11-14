@@ -4,6 +4,8 @@
 #include "Cauchy/State/EquationDofs.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "DNDS/Core/OMP.hpp"
+#include "Solver/BlockInverse.hpp"
+#include "InverseRefinementFixture.hpp"
 #include <Eigen/LU>
 #include <optional>
 #include <condition_variable>
@@ -16,6 +18,33 @@ namespace A = DNDS::Algebra;
 using Field = A::DofField<DNDS::real>;
 using Matrix = Eigen::Matrix<double, 5, 5>;
 using Vector = Eigen::Matrix<double, 5, 1>;
+
+TEST_CASE("Optional inverse refinement repairs the SST action and preserves truncated subspaces")
+{
+    const auto a = CauchyTest::InverseRefinementBlock();
+    const auto original = DNDS::Direct::TryInvertDiagonalBlock(a);
+    const auto refined = DNDS::Direct::TryInvertDiagonalBlock(a, 2);
+    REQUIRE(original);
+    REQUIRE(refined);
+    CHECK(original.value.usedSVD);
+    const auto rhs = CauchyTest::InverseRefinementRHS();
+    const Eigen::Matrix<double, 7, 1> action = refined.value.value * rhs;
+    CHECK(std::abs(action[5] - CauchyTest::InverseRefinementRhoK) < 1e-12);
+    CHECK((a * action - rhs).norm() / rhs.norm() < 1e-12);
+
+    // Deliberately rounded retained factors exercise a genuine correction.
+    // The discarded mode is small but nonzero; refinement must not restore it.
+    Eigen::Matrix3d b = Eigen::Vector3d(1, 2, 1e-20).asDiagonal();
+    Eigen::Matrix3d u = Eigen::Matrix3d::Identity(), v = u;
+    Eigen::Vector3d s(1.1, 2.2, 1e-20);
+    Eigen::Matrix3d x = Eigen::Vector3d(1 / 1.1, 1 / 2.2, 0).asDiagonal();
+    Eigen::Matrix3d c, z, residual, trial;
+    DNDS::Direct::RefineSVDInverse(b, u, v, s, x, c, z, residual, trial, 3, 3);
+    CHECK(std::abs(x(0, 0) - 1) < 1e-7);
+    CHECK(std::abs(x(1, 1) - .5) < 1e-7);
+    CHECK(x.row(2).isZero(0));
+    CHECK(x.col(2).isZero(0));
+}
 
 namespace
 {

@@ -1,5 +1,35 @@
 # Cauchy native implicit operator contracts
 
+## Optional diagonal inverse refinement
+
+`implicit.linear.diagonalInverseRefinement` is an integer from 0 to 3.
+Zero (the default) preserves the existing CPU guarded-LU/SVD and CUDA batched
+SVD arithmetic. Positive values allow that many guarded Newton corrections
+for block-diagonal SGS/Jacobi, including their GMRES preconditioner use.
+Independent diagonal entries, ILU and provider-owned AmgX inverses reject this
+option. The C++ standalone inverse accepts the same optional count, and Python
+exposes `invert_diagonal(refinement_steps=0)` and the linear setting.
+
+For the row-scaled matrix B, the correction is X' = X + X(I-BX). It is accepted
+only when finite and the infinity norm of I-BX strictly decreases. Corrections
+stop at a small FP64 roundoff floor or the first rejected trial. The default
+CUDA specialization has no refinement scratch; enabled work stays on device.
+
+The singular cutoff remains epsilon*sigma_max. If modes were discarded, the
+identity-residual criterion applies only inside the retained singular subspace:
+form C = U_r^T B V_r, refine its inverse Z, then reconstruct X = V_r Z U_r^T.
+Discarded directions never participate. A full-space I-BX residual is not an
+inverse error for a truncated pseudoinverse. Shared host/device arithmetic in
+`Solver/InverseRefinement.hpp` owns these rules; Cauchy wrappers own shape,
+residency, leases, submission and the final status check. Euler callers retain
+the zero-correction default and their existing behavior.
+
+This is opt-in because it changes rounding and therefore nonlinear history.
+It targets measured ill-conditioned SST block errors; it is not a requirement
+that GPU SVD match a less accurate CPU inverse. Focused tests use a retained
+SST block with an independent high-precision action and a deliberately perturbed
+truncated decomposition with a known nullspace.
+
 ## Queued row actions
 
 `LinearProblemContext::SubmitApply`, `SubmitJacobi` and `SubmitJacobiZero`

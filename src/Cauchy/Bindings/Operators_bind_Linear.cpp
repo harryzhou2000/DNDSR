@@ -47,8 +47,8 @@ namespace DNDS::Cauchy::Bindings
         })
             .def_property_readonly("core", &LinearProblemContext::Core)
             .def_property_readonly("halo_dependent", &LinearProblemContext::HaloDependent)
-            .def("invert_diagonal", &LinearProblemContext::InvertDiagonal, py::call_guard<py::gil_scoped_release>(),
-                 Local)
+            .def("invert_diagonal", &LinearProblemContext::InvertDiagonal, py::arg("refinement_steps") = 0,
+                 py::call_guard<py::gil_scoped_release>(), Local)
             .def("apply",
                  py::overload_cast<const EquationDofs &, EquationDofs &, LinearRegion>(&LinearProblemContext::Apply,
                                                                                        py::const_),
@@ -90,6 +90,7 @@ namespace DNDS::Cauchy::Bindings
             .def_readwrite("subspace", &LinearSolveSettings::subspace)
             .def_readwrite("sgs_sweeps", &LinearSolveSettings::sgsSweeps)
             .def_readwrite("jacobi_local_sweeps", &LinearSolveSettings::jacobiLocalSweeps)
+            .def_readwrite("diagonal_inverse_refinement", &LinearSolveSettings::diagonalInverseRefinement)
             .def_readwrite("ilu_fill", &LinearSolveSettings::iluFill)
             .def_readwrite("ilu_preconditioner_corrections", &LinearSolveSettings::iluPreconditionerCorrections)
             .def_readwrite("ilu_core_first", &LinearSolveSettings::iluCoreFirst)

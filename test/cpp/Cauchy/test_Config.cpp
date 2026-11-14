@@ -3,6 +3,19 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Diagonal inverse refinement is opt-in and rejects unrelated inverse providers")
+{
+    C::DomainSettings settings;
+    CHECK(settings.implicit.linear.diagonalInverseRefinement == 0);
+    settings.implicit.diagonal = "block";
+    settings.implicit.linear.method = "jacobi";
+    settings.implicit.linear.diagonalInverseRefinement = 2;
+    const auto restored = C::Json(settings).get<C::DomainSettings>();
+    CHECK(restored.implicit.linear.diagonalInverseRefinement == 2);
+    CHECK_NOTHROW(settings.implicit.Validate());
+    settings.implicit.linear.method = "ilu";
+    CHECK_THROWS_WITH(settings.implicit.Validate(), doctest::Contains("block-inverse refinement"));
+}
 TEST_CASE("Reconstruction kernel selection is explicit and retains the FP64 default")
 {
     using Kernel = DNDS::CFV::ReconstructionDeviceKernel;

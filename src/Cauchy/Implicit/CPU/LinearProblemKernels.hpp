@@ -17,6 +17,7 @@ namespace DNDS::Cauchy::CPU
             inverse;
         index components = 0;
         bool fullBlock = false;
+        int refinementSteps = 0;
     };
 
     /// @return Number of rows that needed the existing SVD fallback.

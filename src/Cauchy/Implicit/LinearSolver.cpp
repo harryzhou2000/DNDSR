@@ -613,7 +613,7 @@ namespace DNDS::Cauchy
             else
             {
                 auto engine = data.compute.LockEngine();
-                data.problem->SubmitInvertDiagonal(engine, data.compute);
+                data.problem->SubmitInvertDiagonal(engine, data.compute, data.settings.diagonalInverseRefinement);
                 // Numerical preparation observation, shared by inline/worker
                 // and device execution. The Krylov loop never consumes an
                 // unobserved inverse; only compact status crosses from CUDA.
@@ -785,13 +785,15 @@ namespace DNDS::Cauchy
                                       settings.subspace > 0 && settings.subspace < INT_MAX && settings.sgsSweeps > 0 && settings.iluFill >= -1 && settings.iluFill <= 5 &&
                                       settings.iluPreconditionerCorrections > 0 &&
                                       settings.jacobiLocalSweeps >= 1 && settings.jacobiLocalSweeps <= 2 &&
+                                      settings.diagonalInverseRefinement >= 0 && settings.diagonalInverseRefinement <= 3 &&
+                                      (!settings.diagonalInverseRefinement || (!UsesILU(settings) && !UsesAMG(settings) && problem->DiagonalMode() == DiagonalStorage::Block)) &&
                                       (settings.iluOrdering == "natural" || settings.iluOrdering == "rcm") &&
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
                                   "invalid linear solver controls");
             DNDS_check_throw_info(!((UsesILU(settings) || UsesAMG(settings) || settings.method == "jacobi" || (settings.method == "gmres" && settings.preconditioner == "jacobi")) && settings.exchangeBetweenSweeps),
                                   "local ILU/Jacobi has no inter-scan exchange"); });
-            const std::array<int64_t, 18> integers{settings.method == "gmres" ? 1 : settings.method == "ilu"  ? 2
+            const std::array<int64_t, 19> integers{settings.method == "gmres" ? 1 : settings.method == "ilu"  ? 2
                                                                                 : settings.method == "jacobi" ? 3
                                                                                                               : 0,
                                                    settings.preconditioner == "ilu" ? 1 : settings.preconditioner == "jacobi" ? 2
@@ -799,7 +801,7 @@ namespace DNDS::Cauchy
                                                                                                                               : 0,
                                                    settings.maxIterations, settings.subspace,
                                                    settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
-                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps, settings.residualCheckInterval, int(prototype.Device().space)};
+                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps, settings.residualCheckInterval, int(prototype.Device().space), settings.diagonalInverseRefinement};
             auto lowest = integers, highest = integers;
             const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
             auto lowTolerance = tolerances, highTolerance = tolerances;

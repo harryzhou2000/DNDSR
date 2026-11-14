@@ -270,11 +270,13 @@ namespace DNDS::Cauchy
         index residualCheckInterval = 1;
         int subspace = 10;
         int jacobiLocalSweeps = 1;
+        int diagonalInverseRefinement = 0;
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
         DNDS_DECLARE_CONFIG(ImplicitLinearSettings)
         {
             DNDS_FIELD(method, "sgs or jacobi stationary sweeps, ilu stationary defect correction, or restarted left-gmres");
             DNDS_FIELD(jacobiLocalSweeps, "One or two local Jacobi sweeps per iteration; two freezes remote iterate values between sweeps, with one input exchange");
+            DNDS_FIELD(diagonalInverseRefinement, "Optional guarded block-inverse corrections: 0 (default) preserves the existing inversion, 1..3 refines within retained SVD subspaces without changing the cutoff. Requires block-diagonal SGS/Jacobi; unavailable for ILU/AmgX.");
             DNDS_FIELD(preconditioner, "Fixed sgs, zero-started jacobi, rank-local ilu or single-device amgx for GMRES; amgx requires assembled CUDA storage; unused by stationary methods");
             DNDS_FIELD(stopping, "residual uses tolerance checks; fixedCount executes exactly iterations for SGS/ILU, omits true-residual reporting and checks the final update is finite; tolerances are ignored");
             DNDS_FIELD(componentScaling, "GMRES metric: none or meanState (Euler volume-averaged absolute conservative magnitudes with a common momentum scale and kinetic energy scale; requires a compressible flow5 block)");

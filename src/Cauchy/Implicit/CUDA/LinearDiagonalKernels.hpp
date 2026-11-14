@@ -21,11 +21,13 @@ namespace DNDS::Cauchy::CUDA
      * existing HardEigen filter with svdTol=0, mode=0. All CUDA blocks use SVD
      * initially (including healthy blocks); CPU keeps its guarded LU/SVD path.
      * Each row reports numerical status and its number of truncated modes.
+     * Optional refinement (0=off, up to 3 guarded corrections) preserves the
+     * retained SVD subspace; it never restores discarded singular modes.
      */
-    void CompleteDiagonalSVD(Runtime::ExecutionContext, DiagonalRead singularValues,
+    void CompleteDiagonalSVD(Runtime::ExecutionContext, DiagonalRead diagonal, DiagonalRead singularValues,
                              DiagonalRead left, DiagonalRead right, DiagonalRead scales,
                              DiagonalInfo info, DiagonalWrite inverse, DiagonalStatus status,
-                             DiagonalModes truncated, int components);
+                             DiagonalModes truncated, int components, int refinementSteps = 0);
     /// Independent diagonal-entry inverse, with no provider/workspace needed.
     void InvertDiagonalEntries(Runtime::ExecutionContext, DiagonalRead diagonal,
                                DiagonalWrite inverse, DiagonalStatus status, int components);

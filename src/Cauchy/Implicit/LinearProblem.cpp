@@ -168,9 +168,12 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_offDiagonalEvaluator, "semi-matrix-free off-diagonal data have not been prepared");
         return {std::move(publication), _offDiagonalEvaluator, _components};
     }
-    void LinearProblemContext::InvertDiagonal()
+    void LinearProblemContext::InvertDiagonal(int refinementSteps)
     {
         DNDS_check_throw_info(!_inversePending, "diagonal inverse preparation is already pending");
+        DNDS_check_throw_info(refinementSteps >= 0 && refinementSteps <= 3 &&
+                                  (!refinementSteps || _diagonalStorage == DiagonalStorage::Block),
+                              "inverse refinement requires block storage and 0..3 corrections");
         _inverseCurrent = false;
         _inverseFallbacks = 0;
         ValidateMatrix();
@@ -183,7 +186,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(input.RowCount() == index(_pattern->partition->owned) && input.Width() == width, "linear diagonal shape changed");
         _inverseFallbacks = RequireNumericalSuccess(CPU::InvertLinearDiagonal(
                                                         {input, output, _components,
-                                                         _diagonalStorage == DiagonalStorage::Block}),
+                                                         _diagonalStorage == DiagonalStorage::Block, refinementSteps}),
                                                     "InvertLinearDiagonal");
         _inverseSVDCells = _inverseFallbacks;
         _diagonalVersion = _diagonal.Version();

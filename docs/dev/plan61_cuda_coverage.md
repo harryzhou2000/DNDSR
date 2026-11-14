@@ -114,18 +114,29 @@ Final cylinder pilots and comparisons are recorded separately in canonical
 `data/plan61-device-qualification/`. All four CPU/CUDA SG/pMG pilots reached
 their deliberate 20-update cap and returned frontend status 2. Full conservative
 fields agree within 2e-13 after persistent-ID alignment. Longer CPU SG and pMG
-runs converged at 5325 and 1361 updates/cycles; matched full CUDA convergence
-remains open. The direct RTX3060 `auwd` port times out, but WSL execution works
-through `auw`; a frozen source tree and the locally built SM80/86 executable
+runs converged at 5325 and 1361 updates/cycles. Full two-device convergence
+was deferred by the user on 2026-11-14; two-device correctness remains required.
+The direct RTX3060 `auwd` connection works after waking WSL through `auw`;
+a frozen source tree and the locally built SM80/86 executable
 with verified runtime dependencies are staged in the requested desktop checkout.
 Twenty-update flow5/SA pilots agree near roundoff. SST fails the original
 pointwise bound in a small number of cells. A same-mesh generic CPU/CUDA probe
 shows near-roundoff RHS/Jacobian agreement, but the existing CPU Eigen-SVD
 fallback is less accurate than cuSOLVER for highly nonnormal wall blocks
 (normalized condition numbers near 1e9). An independent 80-digit solve confirms
-this; an offline inverse refinement improves both actions. The decision to
-adopt guarded Cauchy refinement is pending. Neither the comparison bound nor
-the production algorithm has been changed to make this pass.
+this; an offline inverse refinement improves both actions. The user approved
+an optional guarded refinement, now exposed as
+`implicit.linear.diagonalInverseRefinement` (0..3, default 0). It preserves
+discarded singular modes and shares pure host/device arithmetic. See
+[the inverse contract](../architecture/CauchyImplicit.md). The grouped build,
+five CPU checks, two device1 checks and forced two-device linear check pass.
+Rebuilt/installed Python passes its selected operator case (chemistry skipped
+for an unavailable mechanism). The inverse tests also pass on the `cs` A5000
+and desktop RTX3060. With refinement=2, the desktop 20-update SST CPU/CUDA pair
+passes the original rtol=2e-7, atol=2e-10 bound for all seven components across
+20,816 persistent-ID-aligned cells. These are deliberately capped pilots,
+not steady convergence. The original optional-off discrepancy remains recorded.
+The default algorithm and comparison bounds remain unchanged.
 The full two-device AmgX SG run reached its 540-second bound
 with decreasing residual; pMG has only capped pilot evidence.
 
@@ -174,8 +185,9 @@ density residuals were 9.61e-9 and 1.70e-5 respectively, versus an approximately
 coefficient bounds; TF32 fails both. Quantized modes therefore do not qualify
 for this strict steady solve. Their different stopping outcomes make total
 runtime unsuitable as a speedup comparison. The converged one-device FP64
-fields agree near roundoff with the CPU anchor; this does not replace the
-required two-device SG/pMG and AmgX convergence gates.
+fields agree near roundoff with the CPU anchor. This is additional evidence,
+not a two-device SG/pMG or AmgX convergence result; those full solves are now
+explicitly deferred.
 
 ## CPU threading and device leaf map
 

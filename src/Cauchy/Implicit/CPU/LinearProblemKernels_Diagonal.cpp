@@ -42,7 +42,7 @@ namespace DNDS::Cauchy::CPU
               {
                 if (!input[iCell].allFinite())
                     return NumericalStatus{NumericalError::InvalidState, 2, iCell};
-                auto inverseResult = Direct::TryInvertDiagonalBlock(input[iCell]);
+                auto inverseResult = Direct::TryInvertDiagonalBlock(input[iCell], request.refinementSteps);
                 if (!inverseResult)
                     return inverseResult.status.At(iCell);
                 const auto &result = inverseResult.value;

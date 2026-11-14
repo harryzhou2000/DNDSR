@@ -1,5 +1,6 @@
 #include "Cauchy/Implicit/CUDA/LinearDiagonalKernels.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
+#include "Solver/InverseRefinement.hpp"
 #include <cuda_runtime.h>
 #include <limits>
 
@@ -34,8 +35,21 @@ namespace DNDS::Cauchy::CUDA
                             normalized(iCell, i + n * j) = i == j ? 1 : 0;
             }
         }
-        __global__ void Complete(DiagonalRead singular, DiagonalRead left, DiagonalRead right, DiagonalRead scales,
-                                 DiagonalInfo info, DiagonalWrite inverse, DiagonalStatus status, DiagonalModes truncated, int n)
+        struct SmallMatrix
+        {
+            real values[49];
+            DNDS_DEVICE_CALLABLE real &operator()(int i, int j) { return values[i + 7 * j]; }
+            DNDS_DEVICE_CALLABLE real operator()(int i, int j) const { return values[i + 7 * j]; }
+        };
+        struct SingularRow
+        {
+            DiagonalRead values;
+            index row;
+            DNDS_DEVICE_CALLABLE real operator()(int k) const { return values(row, k); }
+        };
+        template <bool Refine>
+        __global__ void Complete(DiagonalRead diagonal, DiagonalRead singular, DiagonalRead left, DiagonalRead right, DiagonalRead scales,
+                                 DiagonalInfo info, DiagonalWrite inverse, DiagonalStatus status, DiagonalModes truncated, int n, int steps)
         {
             for (index iCell = index(blockIdx.x) * blockDim.x + threadIdx.x; iCell < inverse.RowCount(); iCell += index(gridDim.x) * blockDim.x)
             {
@@ -70,10 +84,37 @@ namespace DNDS::Cauchy::CUDA
                         for (int k = 0; k < n; ++k)
                             if (singular(iCell, k) > cutoff)
                                 value += right(iCell, i + n * k) * (left(iCell, j + n * k) / singular(iCell, k));
-                        value *= scales(iCell, j);
+                        if constexpr (!Refine)
+                            value *= scales(iCell, j);
                         valid = valid && isfinite(value);
                         inverse(iCell, i + n * j) = value;
                     }
+                if constexpr (Refine)
+                {
+                    // Separate specialization keeps refinement scratch out of
+                    // the default kernel. Rebuild B from the original block:
+                    // cuSOLVER overwrites its input workspace during SVD.
+                    if (valid)
+                    {
+                        SmallMatrix a, u, v, x, c, z, residual, trial;
+                        for (int i = 0; i < n; ++i)
+                            for (int j = 0; j < n; ++j)
+                            {
+                                a(i, j) = diagonal(iCell, i + n * j) * scales(iCell, i);
+                                u(i, j) = left(iCell, i + n * j);
+                                v(i, j) = right(iCell, i + n * j);
+                                x(i, j) = inverse(iCell, i + n * j);
+                            }
+                        Direct::RefineSVDInverse(a, u, v, SingularRow{singular, iCell}, x, c, z, residual, trial, n, steps);
+                        for (int i = 0; i < n; ++i)
+                            for (int j = 0; j < n; ++j)
+                            {
+                                const real value = x(i, j) * scales(iCell, j);
+                                valid = valid && isfinite(value);
+                                inverse(iCell, i + n * j) = value;
+                            }
+                    }
+                }
                 if (!valid)
                     status(iCell, 0) = NumericalStatus{NumericalError::InvalidState, 3, iCell};
             }
@@ -124,12 +165,14 @@ namespace DNDS::Cauchy::CUDA
         Prepare<<<Blocks(rows), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(diagonal, normalized, scales, status, n);
         CheckLaunch();
     }
-    void CompleteDiagonalSVD(R::ExecutionContext context, DiagonalRead singular, DiagonalRead left, DiagonalRead right,
+    void CompleteDiagonalSVD(R::ExecutionContext context, DiagonalRead diagonal, DiagonalRead singular, DiagonalRead left, DiagonalRead right,
                              DiagonalRead scales, DiagonalInfo info, DiagonalWrite inverse, DiagonalStatus status,
-                             DiagonalModes truncated, int n)
+                             DiagonalModes truncated, int n, int refinementSteps)
     {
         CheckContext(context, n);
         const index rows = inverse.RowCount();
+        DNDS_check_throw_info(refinementSteps >= 0 && refinementSteps <= 3, "invalid diagonal inverse refinement count");
+        Table(diagonal, context.device, rows, n * n);
         Table(singular, context.device, rows, n);
         Table(scales, context.device, rows, n);
         Table(left, context.device, rows, n * n);
@@ -138,12 +181,15 @@ namespace DNDS::Cauchy::CUDA
         Table(info, context.device, rows, 1);
         Table(status, context.device, rows, 1);
         Table(truncated, context.device, rows, 1);
-        DNDS_check_throw_info(!rows || (inverse.data != singular.data && inverse.data != left.data && inverse.data != right.data && inverse.data != scales.data),
+        DNDS_check_throw_info(!rows || (inverse.data != diagonal.data && inverse.data != singular.data && inverse.data != left.data && inverse.data != right.data && inverse.data != scales.data),
                               "CUDA SVD inverse aliases an input");
-        R::CheckKernelArgumentBudget<DiagonalRead, DiagonalRead, DiagonalRead, DiagonalRead, DiagonalInfo, DiagonalWrite, DiagonalStatus, DiagonalModes, int>();
+        R::CheckKernelArgumentBudget<DiagonalRead, DiagonalRead, DiagonalRead, DiagonalRead, DiagonalRead, DiagonalInfo, DiagonalWrite, DiagonalStatus, DiagonalModes, int, int>();
         if (!rows)
             return;
-        Complete<<<Blocks(rows), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(singular, left, right, scales, info, inverse, status, truncated, n);
+        if (refinementSteps)
+            Complete<true><<<Blocks(rows), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(diagonal, singular, left, right, scales, info, inverse, status, truncated, n, refinementSteps);
+        else
+            Complete<false><<<Blocks(rows), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(diagonal, singular, left, right, scales, info, inverse, status, truncated, n, 0);
         CheckLaunch();
     }
     void InvertDiagonalEntries(R::ExecutionContext context, DiagonalRead diagonal, DiagonalWrite inverse, DiagonalStatus status, int n)

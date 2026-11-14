@@ -224,7 +224,9 @@ namespace DNDS::Cauchy
         /// Explicit preparation of diagonal inverses. Block mode follows the
         /// active Euler guarded LU/SVD inversion policy. Later diagonal writes
         /// invalidate the inverses; active writers are rejected by read leases.
-        void InvertDiagonal();
+        /// refinementSteps=0 preserves that policy exactly. Values 1..3 opt
+        /// into guarded residual corrections, preserving discarded SVD modes.
+        void InvertDiagonal(int refinementSteps = 0);
         index LastInverseFallbacks() const { return _inverseFallbacks; }
         /// CPU: fallback rows. CUDA full blocks: all rows use batched SVD.
         index LastInverseSVDCells() const { return _inverseSVDCells; }
@@ -234,7 +236,7 @@ namespace DNDS::Cauchy
         /// Queue CPU inversion or CUDA scale/SVD/recovery/status reduction.
         /// The current inverse is invalid until ObserveDiagonalInverse succeeds.
         /// Every operand and provider is retained beyond this object's lifetime.
-        void SubmitInvertDiagonal(Runtime::EagerEngine &, const Runtime::ExecutionStream &);
+        void SubmitInvertDiagonal(Runtime::EagerEngine &, const Runtime::ExecutionStream &, int refinementSteps = 0);
         /// Explicit numerical observation after the controller drains the
         /// preparation segment. Only compact status is copied from CUDA.
         /// Solver failures take the normal rank-local abort path.

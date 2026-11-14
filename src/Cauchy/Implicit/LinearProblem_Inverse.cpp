@@ -70,10 +70,13 @@ namespace DNDS::Cauchy
             return;
         _inverseWorkspace = std::make_shared<InverseWorkspace>(context, index(_space.OwnedRows()), int(_components), _diagonalStorage == DiagonalStorage::Block);
     }
-    void LinearProblemContext::SubmitInvertDiagonal(R::EagerEngine &engine, const R::ExecutionStream &stream)
+    void LinearProblemContext::SubmitInvertDiagonal(R::EagerEngine &engine, const R::ExecutionStream &stream, int refinementSteps)
     {
         ValidateMatrix();
         const auto context = stream.Context();
+        DNDS_check_throw_info(refinementSteps >= 0 && refinementSteps <= 3 &&
+                                  (!refinementSteps || _diagonalStorage == DiagonalStorage::Block),
+                              "inverse refinement requires block storage and 0..3 corrections");
         DNDS_check_throw_info(engine.Owns(stream) && context.device == Device() && !_inversePending && _inverseWorkspace &&
                                   _inverseWorkspace->context.device == context.device && _inverseWorkspace->context.stream == context.stream,
                               "inverse requires an idle prepared workspace on this stream");
@@ -86,9 +89,9 @@ namespace DNDS::Cauchy
         const bool fullBlock = _diagonalStorage == DiagonalStorage::Block;
         if (context.device == R::Device::Host())
         {
-            R::SubmitArrays(engine, stream, [retained, width, fullBlock](R::ExecutionContext, auto diagonal, auto inverse, auto status, auto counts)
+            R::SubmitArrays(engine, stream, [retained, width, fullBlock, refinementSteps](R::ExecutionContext, auto diagonal, auto inverse, auto status, auto counts)
                             {
-                const auto result = CPU::InvertLinearDiagonal({diagonal, inverse, width, fullBlock});
+                const auto result = CPU::InvertLinearDiagonal({diagonal, inverse, width, fullBlock, refinementSteps});
                 status(0, 0) = result.status;
                 counts(0, 0) = result ? result.value : 0; }, R::ReadAs<R::TableRows>(_diagonal), R::WriteAs<R::TableRows>(_inverse), R::WriteAs<R::FixedRows<1>>(retained->summary), R::WriteAs<R::FixedRows<1>>(*retained->fallbackCount));
         }
@@ -104,8 +107,8 @@ namespace DNDS::Cauchy
                                 { CUDA::PrepareDiagonalSVD(context, diagonal, normalized, scales, status, width); }, R::ReadAs<R::TableRows>(_diagonal), R::WriteAs<R::TableRows>(retained->normalized), R::WriteAs<R::TableRows>(retained->scales), R::WriteAs<R::FixedRows<1>>(retained->rowStatus));
                 R::SubmitArrays(engine, stream, [retained](R::ExecutionContext context, auto a, auto s, auto u, auto v, auto work, auto info)
                                 { retained->provider->SubmitBorrowed(context, {a, s, u, v}, work, info); }, R::ReadWrite(retained->normalized), R::Write(retained->singular), R::Write(retained->left), R::Write(retained->right), R::Write(retained->work), R::Write(retained->info));
-                R::SubmitArrays(engine, stream, [retained, width](R::ExecutionContext context, auto s, auto u, auto v, auto scales, auto info, auto inverse, auto status, auto truncated)
-                                { CUDA::CompleteDiagonalSVD(context, s, u, v, scales, info, inverse, status, truncated, width); }, R::ReadAs<R::TableRows>(retained->singular), R::ReadAs<R::TableRows>(retained->left), R::ReadAs<R::TableRows>(retained->right), R::ReadAs<R::TableRows>(retained->scales), R::ReadAs<R::FixedRows<1>>(retained->info), R::WriteAs<R::TableRows>(_inverse), R::ReadWriteAs<R::FixedRows<1>>(retained->rowStatus), R::WriteAs<R::FixedRows<1>>(retained->truncated));
+                R::SubmitArrays(engine, stream, [retained, width, refinementSteps](R::ExecutionContext context, auto diagonal, auto s, auto u, auto v, auto scales, auto info, auto inverse, auto status, auto truncated)
+                                { CUDA::CompleteDiagonalSVD(context, diagonal, s, u, v, scales, info, inverse, status, truncated, width, refinementSteps); }, R::ReadAs<R::TableRows>(_diagonal), R::ReadAs<R::TableRows>(retained->singular), R::ReadAs<R::TableRows>(retained->left), R::ReadAs<R::TableRows>(retained->right), R::ReadAs<R::TableRows>(retained->scales), R::ReadAs<R::FixedRows<1>>(retained->info), R::WriteAs<R::TableRows>(_inverse), R::ReadWriteAs<R::FixedRows<1>>(retained->rowStatus), R::WriteAs<R::FixedRows<1>>(retained->truncated));
             }
             R::SubmitArrays(engine, stream, [retained](R::ExecutionContext context, auto rows, auto scratch, auto summary)
                             { CUDA::ReduceNumericalStatus(context, rows, {}, scratch, summary); }, R::ReadAs<R::FixedRows<1>>(retained->rowStatus), R::WriteAs<R::FixedRows<1>>(retained->statusScratch), R::WriteAs<R::FixedRows<1>>(retained->summary));
