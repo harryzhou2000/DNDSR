@@ -9,7 +9,8 @@ the final physical acceptance campaign is complete.
 `ResolvedExecutionPlan::Resolve` in
 `Cauchy/Config/SimulationConfig_Validation.cpp` resolves the requested backend
 before a simulation advances. CUDA requires combined AoS perfect gas, flow5
-or SA/Wilcox/SST extensions, Jacobi VR and Jacobi or GMRES with Jacobi/AmgX.
+or SA/Wilcox/SST extensions, Jacobi VR, and Jacobi, stationary AmgX, or
+GMRES with Jacobi/AmgX. AmgX retains native 5/6/7 cell blocks.
 Coarse pMG levels are checked individually. Unsupported CPU algorithms are
 not run by copying device fields back to host.
 
@@ -45,14 +46,19 @@ other. DNDS now shares one resource per process/device across matrix owners;
 an overlapping-instance/destruction test passes. Different-device concurrent
 owners in one process reject explicitly, consistent with one rank per GPU.
 
-The pinned provider supports native row-major 5x5 blocks in LOW_DEG aggregation
-and block Jacobi. Flow5 now uses this path, as specified by Plan 61's native-block
-preference; widths 6/7 retain scalar CSR expansion because LOW_DEG has no native
-6/7 implementation. Scalarizing flow5 permitted cross-component aggregation
-and gave poor finite-iteration cylinder behavior, including nonzero transverse
-momentum. The native-block test preserves an uncoupled zero transverse equation;
-its physical 20-update pilot is positive and far better behaved, but full AmgX
-convergence is still being measured. Both earlier failures remain recorded.
+The patched pinned provider supports native row-major 5x5/6x6/7x7 cell blocks
+through the selected LOW_DEG/BLOCK_JACOBI path. Cauchy scalar CSR expansion has
+been removed. The reproducible patch repairs the upstream large-block kernels
+as well as adding the missing dispatches; see [the build guide](../guides/amgx.md).
+Independent CPU Galerkin, exact dense-block, multilevel contraction and value
+refresh checks pass, with zero MPI-free memcheck errors. Other upstream
+smoothers remain outside the qualified configuration.
+
+Earlier scalarized experiments are preserved as historical evidence, including
+poor finite-iteration behavior. They do not qualify the corrected native-block,
+fixed-count stationary path and cannot be explained by bugs in native kernels
+they never executed. The native flow5 test also preserves an uncoupled zero
+transverse equation. Actual nonlinear convergence remains separate evidence.
 
 The interface path is included. Final required physical cases are single-domain
 distributed solves; that does not restrict the implementation to one domain.

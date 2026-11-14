@@ -1,0 +1,303 @@
+diff --git a/include/solvers/block_common_solver.h b/include/solvers/block_common_solver.h
+index d05fc9b..917ef5b 100644
+--- a/include/solvers/block_common_solver.h
++++ b/include/solvers/block_common_solver.h
+@@ -344,6 +344,10 @@ void compute_block_inverse2( volatile ValueType *s_Amat, const int s_offset, con
+ #define s_A2_rval(ROW,COL)   types::util<ValueType>::volcast(s_Amat[s_offset+(ROW)*bsize+(COL)])
+ ValueType diag;
+ ValueType tmp;
++    // Sixteen lanes cooperate on one block. Volatile shared memory alone does
++    // not establish cross-lane ordering on independently scheduled GPUs.
++    const unsigned lane_mask = 0xffffu << ((threadIdx.x & 16) ? 16 : 0);
++    __syncwarp(lane_mask);
+ 
+     for (int row = 0; row < bsize; row++)
+     {
+@@ -356,20 +360,24 @@ ValueType tmp;
+                 s_A2_lval(tmp, row, j_ind + t2 * 4);
+             }
+ 
++        __syncwarp(lane_mask);
+         for (int t1 = 0; t1 < tile_num; t1++)
+             for (int t2 = 0; t2 < tile_num; t2++)
+                 if ((i_ind + t1 * 4 != row) && !(j_ind + t2 * 4 == row) && ((t1 * 4 + i_ind) < bsize) && ((t2 * 4 + j_ind) < bsize))
+                 {
+-                    tmp = types::util<ValueType>::invert((s_A2_rval(i_ind + t1 * 4, row) * s_A2_rval(row, j_ind + t2 * 4)) + s_A2_rval(i_ind + t1 * 4, j_ind + t2 * 4));
++                    // Schur update A_ij -= A_ik*A_kj, matching the <=5 path.
++                    tmp = types::util<ValueType>::invert(s_A2_rval(i_ind + t1 * 4, row) * s_A2_rval(row, j_ind + t2 * 4)) + s_A2_rval(i_ind + t1 * 4, j_ind + t2 * 4);
+                     s_A2_lval(tmp, i_ind + t1 * 4, j_ind + t2 * 4);
+                 }
+ 
++        __syncwarp(lane_mask);
+         for (int t2 = 0; t2 < tile_num; t2++)
+             if (i_ind == 0 && (t2 * 4 + j_ind) < bsize)
+             {
+                 tmp = ((j_ind + t2 * 4) == row) ? diag : types::util<ValueType>::invert(s_A2_rval(j_ind + t2 * 4, row) * diag);
+                 s_A2_lval(tmp, j_ind + t2 * 4, row)
+             }
++        __syncwarp(lane_mask);
+     }
+ 
+     for (int t1 = 0; t1 < tile_num; t1++)
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 6c1542c..3ec90c9 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -15,7 +15,9 @@ target_include_directories(amgx_libs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../inclu
+ 
+ set(AMGX_INCLUDES ../include)
+ 
+-set(tests_all ${tests_all} testframework.cu test_utils.cu unit_test.cu)
++# Keep the provider patch's independent host/GPU Galerkin oracle available.
++# This target is only built explicitly; normal library builds remain unchanged.
++set(tests_all ${tests_all} tests/aggregates_coarse_generator.cu testframework.cu test_utils.cu unit_test.cu)
+ 
+ add_library(amgx_tests_libs OBJECT ${tests_all})
+ 
+diff --git a/src/aggregation/aggregation_amg_level.cu b/src/aggregation/aggregation_amg_level.cu
+index 447fb3f..f57c95f 100644
+--- a/src/aggregation/aggregation_amg_level.cu
++++ b/src/aggregation/aggregation_amg_level.cu
+@@ -499,6 +499,16 @@ void Aggregation_AMG_Level<TemplateConfig<AMGX_device, t_vecPrec, t_matPrec, t_i
+             cudaCheckError();
+             break;
+ 
++        case 6:
++            restrictResidualBlockDiaCsrKernel<IndexType, ValueTypeB, 6> <<< num_blocks, block_size>>>(R_row_offsets_ptr, R_column_indices_ptr, r_ptr, rr_ptr, max_threads);
++            cudaCheckError();
++            break;
++
++        case 7:
++            restrictResidualBlockDiaCsrKernel<IndexType, ValueTypeB, 7> <<< num_blocks, block_size>>>(R_row_offsets_ptr, R_column_indices_ptr, r_ptr, rr_ptr, max_threads);
++            cudaCheckError();
++            break;
++
+         case 8:
+             restrictResidualBlockDiaCsrKernel<IndexType, ValueTypeB, 8> <<< num_blocks, block_size>>>(R_row_offsets_ptr, R_column_indices_ptr, r_ptr, rr_ptr, max_threads);
+             cudaCheckError();
+diff --git a/src/aggregation/coarseAgenerators/low_deg_coarse_A_generator.cu b/src/aggregation/coarseAgenerators/low_deg_coarse_A_generator.cu
+index 38a1ef3..99ea6d8 100644
+--- a/src/aggregation/coarseAgenerators/low_deg_coarse_A_generator.cu
++++ b/src/aggregation/coarseAgenerators/low_deg_coarse_A_generator.cu
+@@ -718,8 +718,12 @@ void fill_A_kernel_NxN_large( const int  R_num_rows, // same as num_aggregates.
+         // Load the range of the row.
+         int r_col_it  = R_rows[r_row_id + 0];
+         int r_col_end = R_rows[r_row_id + 1];
+-        // Diagonal value (each half warp stores a diagonal element).
+-        Value_type ac_diag(types::util<Value_type>::get_zero());
++        // One warp owns one coarse row; each lane keeps distinct block entries.
++        // N*N may exceed 32: retain every lane tile, including the diagonal.
++        Value_type ac_diag[NUM_BLOCK_ITERS_PER_WARP];
++#pragma unroll
++        for (int i = 0; i < NUM_BLOCK_ITERS_PER_WARP; ++i)
++            ac_diag[i] = types::util<Value_type>::get_zero();
+ 
+         // Iterate over the columns of R.
+         for ( ; utils::any(r_col_it < r_col_end) ; r_col_it += NUM_ITEMS_PER_WARP )
+@@ -730,7 +734,10 @@ void fill_A_kernel_NxN_large( const int  R_num_rows, // same as num_aggregates.
+             // Update the diagonal if needed.
+             if ( HAS_DIAG )
+             {
+-                ac_diag = ac_diag + A_vals[NxN * A_diag[a_row_id] + lane_id];
++#pragma unroll
++                for (int i = 0; i < NUM_BLOCK_ITERS_PER_WARP; ++i)
++                    if (WARP_SIZE * i + lane_id < NxN)
++                        ac_diag[i] = ac_diag[i] + A_vals[NxN * A_diag[a_row_id] + WARP_SIZE * i + lane_id];
+             }
+ 
+             // Load the range of the row of A.
+@@ -738,7 +745,7 @@ void fill_A_kernel_NxN_large( const int  R_num_rows, // same as num_aggregates.
+             int a_col_end   = A_rows[a_row_id + 1];
+ 
+             // Iterate over the range of columns of B.
+-            for ( ; utils::any(a_col_begin < a_col_end) ; a_col_begin += NxN )
++            for ( ; utils::any(a_col_begin < a_col_end) ; a_col_begin += WARP_SIZE )
+             {
+                 int a_col_it = a_col_begin + lane_id;
+                 // Is it active.
+@@ -763,7 +770,7 @@ void fill_A_kernel_NxN_large( const int  R_num_rows, // same as num_aggregates.
+                 int ac_idx = ac_col_it + set.find_index( key, index, false );
+ 
+                 // Iterate over the NxN items.
+-                for ( int k = 0 ; k < NxN ; ++k )
++                for ( int k = 0 ; k < WARP_SIZE ; ++k )
+                 {
+                     int uniform_ac_col = utils::shfl( ac_col_id, k );
+                     int uniform_ac_idx = utils::shfl( ac_idx,    k );
+@@ -792,12 +799,11 @@ void fill_A_kernel_NxN_large( const int  R_num_rows, // same as num_aggregates.
+                         // Update the diagonal if it is a diagonal term.
+                         if ( HAS_DIAG && uniform_ac_col == r_row_id )
+                         {
+-                            ac_diag = ac_diag + a_value;
+-                            uniform_ac_col = -1;
++                            ac_diag[i] = ac_diag[i] + a_value;
+                         }
+ 
+                         // Update the value.
+-                        if ( uniform_ac_col != -1 && (WARP_SIZE * i + lane_id) < NxN)
++                        if ( uniform_ac_col != -1 && !(HAS_DIAG && uniform_ac_col == r_row_id) && (WARP_SIZE * i + lane_id) < NxN)
+                         {
+                             utils::atomic_add( &Ac_vals[NxN * uniform_ac_idx + WARP_SIZE * i + lane_id], a_value );
+                         }
+@@ -808,12 +814,11 @@ void fill_A_kernel_NxN_large( const int  R_num_rows, // same as num_aggregates.
+ 
+         if ( HAS_DIAG )
+         {
+-            if ( !FORCE_DETERMINISM )
+-            {
+-                ac_diag = utils::warp_reduce<NxN, utils::Add>( ac_diag );
+-            }
+-
+-            Ac_vals[NxN * Ac_diag[r_row_id] + lane_id] = ac_diag;
++            // Distinct lanes are distinct matrix entries, never reduction peers.
++#pragma unroll
++            for (int i = 0; i < NUM_BLOCK_ITERS_PER_WARP; ++i)
++                if (WARP_SIZE * i + lane_id < NxN)
++                    Ac_vals[NxN * Ac_diag[r_row_id] + WARP_SIZE * i + lane_id] = ac_diag[i];
+         }
+     }
+ }
+@@ -1083,6 +1088,50 @@ void fill_A_dispatch( Workspace &hash_wk,
+                 cudaCheckError();
+             break;
+ 
++        case 6:
++            fill_A_kernel_NxN_large<Value_type, 6, CTA_SIZE, SMEM_SIZE, 32, HAS_DIAG, false, 2> <<< GRID_SIZE, CTA_SIZE>>>(
++                R_num_rows,
++                R_rows,
++                R_cols,
++                A_rows,
++                A_cols,
++                A_diag,
++                A_vals,
++                aggregates,
++                Ac_rows,
++                Ac_cols,
++                Ac_pos,
++                Ac_diag,
++                Ac_vals,
++                hash_wk.get_gmem_size(),
++                hash_wk.get_keys(),
++                reinterpret_cast<int *>( hash_wk.get_vals() ),
++                hash_wk.get_work_queue() );
++                cudaCheckError();
++            break;
++
++        case 7:
++            fill_A_kernel_NxN_large<Value_type, 7, CTA_SIZE, SMEM_SIZE, 32, HAS_DIAG, false, 2> <<< GRID_SIZE, CTA_SIZE>>>(
++                R_num_rows,
++                R_rows,
++                R_cols,
++                A_rows,
++                A_cols,
++                A_diag,
++                A_vals,
++                aggregates,
++                Ac_rows,
++                Ac_cols,
++                Ac_pos,
++                Ac_diag,
++                Ac_vals,
++                hash_wk.get_gmem_size(),
++                hash_wk.get_keys(),
++                reinterpret_cast<int *>( hash_wk.get_vals() ),
++                hash_wk.get_work_queue() );
++                cudaCheckError();
++            break;
++
+         case 8:
+             fill_A_kernel_NxN_large<Value_type, 8, CTA_SIZE, SMEM_SIZE, 32, HAS_DIAG, false, 2> <<< GRID_SIZE, CTA_SIZE>>>(
+                 R_num_rows,
+diff --git a/src/solvers/block_jacobi_solver.cu b/src/solvers/block_jacobi_solver.cu
+index 19bd6fe..1ef30b9 100644
+--- a/src/solvers/block_jacobi_solver.cu
++++ b/src/solvers/block_jacobi_solver.cu
+@@ -1089,12 +1089,14 @@ void BlockJacobiSolver<TemplateConfig<AMGX_device, t_vecPrec, t_matPrec, t_indPr
+     const IndexType *A_dia_idx_ptr = A.diag.raw();
+     ValueTypeA *Dinv_ptr = this->Dinv.raw();
+     const ValueTypeA *A_nonzero_values_ptr = A.values.raw();
+-    MVector temp(AMGX_GRID_MAX_SIZE * ((bsize - 1) / 4 + 1) * ((bsize - 1) / 4 + 1));
+-    ValueTypeA *temp_ptr = temp.raw();
+     // MUST BE MULTIPLE OF 16
+     const int threads_per_block = 512;
+     const int halfwarps_per_block = threads_per_block / 16;
+     const int num_blocks = std::min(AMGX_GRID_MAX_SIZE, (int) (A.get_num_rows() - 1) / halfwarps_per_block + 1);
++    // The kernel assigns tile storage per launched thread, not per block.
++    const size_t tile_count = (bsize - 1) / 4 + 1;
++    MVector temp(size_t(num_blocks) * threads_per_block * tile_count * tile_count);
++    ValueTypeA *temp_ptr = temp.raw();
+     cudaFuncSetCacheConfig(setupBlockJacobiSmoothbBigBlockDiaCsrKernel<IndexType, ValueTypeA, threads_per_block, halfwarps_per_block>, cudaFuncCachePreferL1);
+     setupBlockJacobiSmoothbBigBlockDiaCsrKernel<IndexType, ValueTypeA, threads_per_block, halfwarps_per_block> <<< num_blocks, threads_per_block, sizeof(ValueTypeA)*bsize *bsize *halfwarps_per_block>>>
+     (A_row_offsets_ptr, A_column_indices_ptr, A_nonzero_values_ptr, A_dia_idx_ptr, Dinv_ptr, A.get_num_rows(), bsize, bsize * bsize, temp_ptr);
+diff --git a/src/tests/aggregates_coarse_generator.cu b/src/tests/aggregates_coarse_generator.cu
+index bfcd9c7..c8a9d09 100644
+--- a/src/tests/aggregates_coarse_generator.cu
++++ b/src/tests/aggregates_coarse_generator.cu
+@@ -115,14 +115,16 @@ void compare_matrices_kernel( const int  num_rows,
+         {
+             int a_it = A_diag[row_id];
+             int b_it = B_diag[row_id];
+-            Value_type a_val = A_vals[a_it];
+-            Value_type b_val = A_vals[b_it];
+-
+-            if ( !equal( a_val, b_val ) )
++            for (int k = 0; k < block_size_sq; ++k)
+             {
+-                printf( "ERROR: row=%d: Diag A[%d]=%f and B[%d]=%f are different!!!\n", row_id, a_it, a_val, b_it, b_val );
+-                ok[0] = 0;
+-                return;
++                Value_type a_val = A_vals[block_size_sq * a_it + k];
++                Value_type b_val = B_vals[block_size_sq * b_it + k];
++                if (!equal(a_val, b_val))
++                {
++                    printf("ERROR: separate diagonal differs at row=%d component=%d!!!\n", row_id, k);
++                    ok[0] = 0;
++                    return;
++                }
+             }
+         }
+ 
+@@ -261,7 +263,7 @@ void run()
+     UNITTEST_ASSERT_TRUE(h_generator != NULL);
+     cudaCheckError();
+     MatrixA A, Ac;
+-    int bsizes[] = {1, 2, 3, 4, 5, 8, 10};
++    int bsizes[] = {1, 2, 3, 4, 5, 6, 7, 8, 10};
+ 
+     for (int diag_prop = 0; diag_prop < 2; diag_prop++)
+     {
+@@ -270,11 +272,19 @@ void run()
+             int b = bsizes[bs];
+             // setup matrix A
+             cudaCheckError();
+-            generateMatrixRandomStruct<TConfig>::generate(A, 128, diag_prop, b, false);
++            // Dense enough to cross the 32-column warp traversal boundary.
++            generateMatrixRandomStruct<TConfig>::generateExact(A, 128, diag_prop, b, false, b > 5 ? 128 : 10);
+             cudaCheckError();
+             random_fill(A);
+             cudaCheckError();
+             Matrix_h h_A = A;
++            if (b > 5)
++            {
++                int largest_row = 0;
++                for (int i = 0; i < h_A.get_num_rows(); ++i)
++                    largest_row = std::max(largest_row, int(h_A.row_offsets[i + 1] - h_A.row_offsets[i]));
++                UNITTEST_ASSERT_TRUE(largest_row > 32);
++            }
+             cudaCheckError();
+             Matrix_h h_Ac;
+             cudaCheckError();
+@@ -301,6 +311,13 @@ void run()
+             // compute Galerkin product on CPU and GPU
+             h_generator->computeAOperator(h_A, h_Ac, h_aggregates, h_R_row_offsets, h_R_col_indices, num_aggregates);
+             d_generator->computeAOperator(A, Ac, aggregates, R_row_offsets, R_col_indices, num_aggregates);
++            if (b > 5)
++            {
++                int largest_coarse_row = 0;
++                for (int i = 0; i < h_Ac.get_num_rows(); ++i)
++                    largest_coarse_row = std::max(largest_coarse_row, int(h_Ac.row_offsets[i + 1] - h_Ac.row_offsets[i]));
++                UNITTEST_ASSERT_TRUE(largest_coarse_row > 32);
++            }
+             // simple check on matrix size
+             this->PrintOnFail("Coarse matrix has wrong size %i != num aggregates %i", Ac.get_num_rows(), num_aggregates);
+             UNITTEST_ASSERT_TRUE( Ac.get_num_rows() == num_aggregates );

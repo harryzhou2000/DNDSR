@@ -96,7 +96,7 @@ TEST_CASE("Reserved weighted products and finite checks use deterministic reside
     }
 }
 
-TEST_CASE("Distributed coupled Jacobi and left GMRES share CPU worker and CUDA orchestration")
+TEST_CASE("Distributed coupled Jacobi, AmgX correction and left GMRES share queued orchestration")
 {
     const auto cuda = R::Device::CUDA(DeviceOrdinal());
     const std::vector<std::vector<I>> columns{{1}, {0, 2}, {1, 3, 4}, {2, 5}};
@@ -145,9 +145,9 @@ TEST_CASE("Distributed coupled Jacobi and left GMRES share CPU worker and CUDA o
                 }
         }
         for (int backend : {0, 1, 2})
-            for (int mode : {0, 1, 2})
+            for (int mode : {0, 1, 2, 3})
             {
-                if (mode == 2 && (backend != 2 || !A::AmgXPreconditioner::Available()))
+                if (mode >= 2 && (backend != 2 || !A::AmgXPreconditioner::Available()))
                     continue;
                 CAPTURE(n);
                 CAPTURE(backend);
@@ -169,7 +169,8 @@ TEST_CASE("Distributed coupled Jacobi and left GMRES share CPU worker and CUDA o
                         .Bind(part.Owned(), part.Ghost());
                 };
                 C::LinearSolveSettings settings;
-                settings.method = mode == 0 ? "jacobi" : "gmres";
+                settings.method = mode == 0 ? "jacobi" : mode == 3 ? "amgx"
+                                                                   : "gmres";
                 settings.preconditioner = mode == 2 ? "amgx" : "jacobi";
                 settings.maxIterations = 24;
                 settings.subspace = 8;
@@ -193,6 +194,25 @@ TEST_CASE("Distributed coupled Jacobi and left GMRES share CPU worker and CUDA o
                 for (I iCell = 0; iCell < 4; ++iCell)
                     for (I j = 0; j < n; ++j)
                         CHECK(read.View()(iCell, j) == doctest::Approx(Exact(mpi.rank, iCell, j)).epsilon(3e-10).scale(1));
+                if (mode == 3)
+                {
+                    // Fixed-count preconditioner-only means exactly two
+                    // applications, even when the tolerance accepts zero.
+                    // The first starts at zero; only the second needs A*x.
+                    settings.stopping = "fixedCount";
+                    settings.maxIterations = 2;
+                    settings.relativeTolerance = 1e30;
+                    C::DofLinearSolver fixed(problem, rhs, bind, settings, execution);
+                    const auto fixedReport = fixed.Solve(rhs);
+                    CHECK(fixedReport.usable);
+                    CHECK(fixedReport.stop == DNDS::Linear::LinearStop::FixedCount);
+                    CHECK(fixedReport.iterations == 2);
+                    CHECK(fixedReport.preconditionerApplications == 2);
+                    CHECK(fixedReport.operatorApplications == 1);
+                    CHECK(fixedReport.innerProductBatches == 0);
+                    CHECK_FALSE(fixedReport.converged);
+                    CHECK(std::isnan(fixedReport.trueResidual));
+                }
             }
     }
 }

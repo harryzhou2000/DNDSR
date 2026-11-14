@@ -3,10 +3,12 @@
 
 This recipe does not alter cfd_externals, install system packages, select a GPU
 or launch solver jobs. CUDA architectures and the host compiler are explicit.
-An existing source checkout must already match the pin and be clean.
+An existing source checkout must match the pin and be clean or contain exactly
+the bundled native-block support patch; unrelated changes are never overwritten.
 """
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -14,6 +16,7 @@ import subprocess
 
 AMGX_REVISION = "cc1cebdbb32b14d33762d4ddabcb2e23c1669f47"
 AMGX_TAG = "v2.5.0"
+AMGX_PATCH = Path(__file__).resolve().parent / "patches/amgx-v2.5.0-native-blocks.patch"
 
 
 def run(arguments, **kwargs):
@@ -46,10 +49,20 @@ def main():
     if not source.exists():
         run(["git", "clone", "--depth=1", "--branch", AMGX_TAG,
              "https://github.com/NVIDIA/AMGX.git", source])
-    if git_output(source, "status", "--porcelain"):
-        raise RuntimeError("AmgX source has local changes; preserve them and select a clean dependency root")
     if git_output(source, "rev-parse", "HEAD") != AMGX_REVISION:
         raise RuntimeError("Existing AmgX source differs from the pinned revision; it was not modified")
+    patch = AMGX_PATCH.read_bytes()
+    status = git_output(source, "status", "--porcelain")
+    if status:
+        current = subprocess.check_output(["git", "-C", str(source), "diff", "--binary", "HEAD"])
+        # Exact patch matching also rejects partial or manually edited patches.
+        # No staged/untracked changes or unrelated source changes are accepted.
+        if (current != patch or git_output(source, "diff", "--cached", "--name-only")
+                or git_output(source, "ls-files", "--others", "--exclude-standard")):
+            raise RuntimeError("AmgX source has changes other than the bundled patch; it was not modified")
+    else:
+        run(["git", "-C", source, "apply", "--check", AMGX_PATCH])
+        run(["git", "-C", source, "apply", AMGX_PATCH])
     run(["git", "-C", source, "submodule", "update", "--init", "--recursive", "--depth=1"])
 
     configure = ["cmake", "-S", source, "-B", build,
@@ -74,7 +87,19 @@ def main():
     run(["cmake", "--build", build, "--target", "amgx", "amgxsh", "amgx_capi",
          "--parallel", args.jobs])
     run(["cmake", "--install", build])
-    provenance = dict(revision=AMGX_REVISION, tag=AMGX_TAG, mpi=False,
+    # Bind provenance to installed bytes, not merely a nearby include path.
+    libraries = {}
+    for directory in (install / "lib", install / "lib64"):
+        if directory.exists():
+            for library in directory.glob("libamgx*"):
+                if library.is_file():
+                    libraries[library.name] = hashlib.sha256(library.read_bytes()).hexdigest()
+    if not libraries:
+        raise RuntimeError("AmgX install produced no libraries")
+    provenance = dict(libraries_sha256=libraries, revision=AMGX_REVISION, tag=AMGX_TAG, mpi=False,
+                      native_block_widths=[1, 5, 6, 7],
+                      patch_sha256=hashlib.sha256(patch).hexdigest(),
+                      patch_name=AMGX_PATCH.name,
                       architectures=args.architectures,
                       configure=[str(value) for value in configure])
     (install / "dndsr-amgx-build.json").write_text(

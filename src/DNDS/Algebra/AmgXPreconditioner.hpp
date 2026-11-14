@@ -12,6 +12,7 @@ namespace DNDS::Algebra
         int cycles = 1;
         int preSweeps = 2, postSweeps = 2, coarseSweeps = 8;
         int maxLevels = 20, minCoarseRows = 16;
+        /// Applied explicitly in the Jacobi smoother scope, including coarsest sweeps.
         real relaxation = 0.75;
     };
 
@@ -50,9 +51,9 @@ namespace DNDS::Algebra
         /// Copies host CSR indices into private Runtime Arrays. Columns
         /// must be sorted, unique and local, and each row must contain a diagonal.
         /// Zero-row ranks use offsets={0}, columns={} and perform an empty apply.
-        /// blockSize=1 uses scalar CSR; 5 uses native row-major 5x5 blocks.
-        /// The pinned provider's LOW_DEG aggregation supports native width 5,
-        /// but not 6/7; those callers retain scalar expansion of all entries.
+        /// blockSize=1 represents a genuinely scalar system; 5/6/7 use native
+        /// row-major cell blocks. The pinned provider patch enables widths 6/7
+        /// without padding or scalarizing coupled equations.
         void SetPattern(Runtime::ArrayView<const int> offsets,
                         Runtime::ArrayView<const int> columns, int blockSize = 1);
         /// Device values ordered by CSR entry, then row-major block entries,

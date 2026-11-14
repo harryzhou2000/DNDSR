@@ -9,15 +9,16 @@
 namespace DNDS::Cauchy
 {
     /// Resolved numerical choices, independent of frontend configuration layout.
-    /// sgs, jacobi and ilu are stationary iterations; only gmres constructs Krylov
-    /// history and uses preconditioner. ILU uses frozen rank-local factors and
-    /// x_next=x+M^-1(b-A*x), with a normal halo before evaluating A*x.
+    /// sgs, jacobi, ilu and amgx are stationary iterations; only gmres constructs
+    /// Krylov history and uses the preconditioner selection. ILU/AmgX use frozen
+    /// rank-local factors/cycles and x_next=x+P(b-A*x), with a normal halo before
+    /// evaluating the full distributed A*x. AmgX has no hidden Krylov driver.
     /// Norms use the integrated RHS, without volume normalization. The default
     /// metric is Euclidean; Solve may supply explicit component scales.
     struct LinearSolveSettings
     {
         std::string method = "sgs", preconditioner = "sgs";
-        /// residual: tolerance checks/reporting. fixedCount: SGS/ILU execute
+        /// residual: tolerance checks/reporting. fixedCount: stationary methods execute
         /// exactly maxIterations, omit diagnostic residuals and check only the
         /// returned update's finiteness. Tolerances are ignored in fixedCount.
         std::string stopping = "residual";
@@ -106,8 +107,8 @@ namespace DNDS::Cauchy
     /// state. Flow/RANS/species may share an array or occupy separate fields in
     /// any supported table layout. Dense blocks couple every logical component;
     /// no implicit device fallback occurs. CUDA currently requires one combined
-    /// AoS flow5/SA/2EQ field and Jacobi or GMRES with Jacobi/AmgX. AmgX consumes
-    /// a scalar CSR copy of the assembled owned-owned principal matrix, while
+    /// AoS flow5/SA/2EQ field and Jacobi, AmgX defect correction or GMRES with Jacobi/AmgX. AmgX consumes
+    /// a native cell-block CSR copy of the assembled owned-owned principal matrix, while
     /// DNDS retains the full distributed operator and halo schedule.
     ///
     /// All domain ranks construct/call together. The prototype's physical

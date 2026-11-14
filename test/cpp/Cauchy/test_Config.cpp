@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "DNDS/Algebra/AmgXPreconditioner.hpp"
 
 namespace C = DNDS::Cauchy;
 TEST_CASE("Diagonal inverse refinement is opt-in and rejects unrelated inverse providers")
@@ -64,6 +65,20 @@ TEST_CASE("CUDA capability resolution requires a complete combined perfect gas p
     CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("LVR currently requires"));
     settings.numerics.limiter = "none";
     settings.execution.reconstructionKernel = "fp64";
+    settings.implicit.linear.method = "amgx";
+    settings.implicit.linear.stopping = "fixedCount";
+    CHECK_NOTHROW(settings.implicit.Validate());
+    // Provider compile definitions are private to DNDS; query the linked
+    // capability rather than assuming this test TU inherits that macro.
+    if (DNDS::Algebra::AmgXPreconditioner::Available())
+        CHECK_NOTHROW(C::ResolvedExecutionPlan::Resolve(domain));
+    else
+        CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("AmgX requires"));
+    settings.execution.device = "cpu";
+    CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("AmgX requires assembled CUDA"));
+    settings.execution.device = "cuda";
+    settings.implicit.linear.method = "jacobi";
+    settings.implicit.linear.stopping = "residual";
     settings.implicit.multigrid.coarseLevelSettings["1"].solver = {{"linear", {{"method", "ilu"}}}};
     CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("pMG level 1 CUDA linear solve"));
     settings.implicit.multigrid.coarseLevelSettings.clear();

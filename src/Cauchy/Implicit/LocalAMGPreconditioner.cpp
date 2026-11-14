@@ -16,7 +16,7 @@ namespace DNDS::Cauchy
         R::ArrayStorage::Shared diagonalIdentity, offDiagonalIdentity;
         index components;
         uint64_t diagonalEpoch = 0, offDiagonalEpoch = 0;
-        bool current = false, full, nativeBlock;
+        bool current = false, full;
     };
     LocalAMGPreconditioner::LocalAMGPreconditioner(const LinearProblemContext &problem, Algebra::AmgXSettings settings)
         : _state(std::make_shared<State>())
@@ -26,15 +26,13 @@ namespace DNDS::Cauchy
                                   problem.Components() >= 5 && problem.Components() <= 7,
                               "local AmgX requires assembled CUDA combined-AoS 5/6/7 blocks");
         const index rows = index(problem.Space().OwnedRows()), n = problem.Components();
-        DNDS_check_throw_info(rows <= INT_MAX / n, "AmgX scalar row numbering exceeds int32");
+        DNDS_check_throw_info(rows <= INT_MAX / n, "AmgX vector extent exceeds int32");
         auto &data = *_state;
         data.partition = problem.Space().Pin();
         data.components = n;
-        // Keep flow-five components in one aggregate. Scalar expansion allows
-        // coarsening to mix physically unrelated components (including the
-        // exactly-zero transverse equation in planar flow), producing a poor
-        // preconditioner. Pinned AmgX LOW_DEG supports native 5, but not 6/7.
-        data.nativeBlock = n == 5;
+        // One physical cell is one AMG block for every supported equation set.
+        // Do not scalarize RANS components: aggregation and block smoothing
+        // must preserve the coupled cell Jacobian.
         data.full = problem.DiagonalMode() == DiagonalStorage::Block;
         data.diagonalIdentity = problem.Diagonal().SharedStorage();
         data.offDiagonalIdentity = problem.OffDiagonal().Values().SharedStorage();
@@ -50,21 +48,14 @@ namespace DNDS::Cauchy
                     local.emplace_back(columns[iCell][k], globalBlock + k);
             globalBlock += index(columns[iCell].size());
             std::sort(local.begin(), local.end());
-            DNDS_check_throw_info(index(providerColumns.size()) <= INT_MAX - index(local.size()) * n * n,
-                                  "AmgX scalar entry numbering exceeds int32");
+            DNDS_check_throw_info(index(providerColumns.size()) <= INT_MAX - index(local.size()),
+                                  "AmgX block entry numbering exceeds int32");
             for (const auto &block : local)
                 sources.push_back(block.second);
             offsets.push_back(index(sources.size()));
-            for (index i = 0; i < (data.nativeBlock ? 1 : n); ++i)
-            {
-                for (const auto &block : local)
-                    if (data.nativeBlock)
-                        providerColumns.push_back(int(block.first));
-                    else
-                        for (index j = 0; j < n; ++j)
-                            providerColumns.push_back(int(block.first * n + j));
-                providerOffsets.push_back(int(providerColumns.size()));
-            }
+            for (const auto &block : local)
+                providerColumns.push_back(int(block.first));
+            providerOffsets.push_back(int(providerColumns.size()));
         }
         const auto make = [](const auto &values)
         {
@@ -78,7 +69,7 @@ namespace DNDS::Cauchy
         const auto hostOffsets = make(providerOffsets), hostColumns = make(providerColumns);
         const auto o = hostOffsets.Read(), c = hostColumns.Read();
         data.provider = std::make_shared<Algebra::AmgXPreconditioner>(problem.Device(), settings);
-        data.provider->SetPattern(o.View(), c.View(), data.nativeBlock ? int(n) : 1);
+        data.provider->SetPattern(o.View(), c.View(), int(n));
         data.offsets = make(offsets).To(problem.Device());
         data.sources = make(sources).To(problem.Device());
         data.values = R::Array<real>(R::RowLayout::Dense(index(sources.size()) * n * n, 1), problem.Device());
@@ -105,7 +96,7 @@ namespace DNDS::Cauchy
         engine.Synchronize();
 #ifdef DNDS_USE_CUDA
         R::SubmitArrays(engine, stream, [pin = _state](R::ExecutionContext context, auto offsets, auto sources, auto diagonal, auto blocks, auto values)
-                        { CUDA::PackLocalAMGMatrix(context, offsets, sources, diagonal, blocks, values, int(pin->components), pin->full, pin->nativeBlock); }, R::ReadAs<R::FixedRows<1>>(data.offsets), R::ReadAs<R::FixedRows<1>>(data.sources), R::ReadAs<R::TableRows>(problem.Diagonal()), R::ReadAs<R::TableRows>(problem.OffDiagonal().Values()), R::WriteAs<R::TableRows>(data.values));
+                        { CUDA::PackLocalAMGMatrix(context, offsets, sources, diagonal, blocks, values, int(pin->components), pin->full); }, R::ReadAs<R::FixedRows<1>>(data.offsets), R::ReadAs<R::FixedRows<1>>(data.sources), R::ReadAs<R::TableRows>(problem.Diagonal()), R::ReadAs<R::TableRows>(problem.OffDiagonal().Values()), R::WriteAs<R::TableRows>(data.values));
         engine.Synchronize();
         const auto read = data.values.Read(stream.Context());
         data.provider->UpdateValuesBorrowed(stream.Context(), read.View());

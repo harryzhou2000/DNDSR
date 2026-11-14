@@ -20,8 +20,9 @@ cmake -S . -B build-cuda -DDNDS_USE_CUDA=ON -DDNDS_USE_AMGX=ON \
 
 For auwd's RTX3060, use architecture `86` and the explicitly selected checkout
 `~/projects/DNDSR`. The recipe forces `CMAKE_NO_MPI=ON`, records its configure
-command/revision after installation, and refuses to alter a dirty or differently
-versioned source tree. It installs only into its dedicated prefix and does not
+command/revision, bundled patch hash and installed library hashes. It accepts
+only the exact clean pin or the pin with its own exact patch, refusing unrelated
+local changes. CMake checks the actual selected library against the manifest. It installs only into its dedicated prefix and does not
 install OS packages or change cfd_externals. Do not bypass CUDA host-compiler
 compatibility checks as a default workaround.
 
@@ -30,8 +31,11 @@ requesting AmgX requires the imported dependency; no fallback is implicit.
 Runtime adapter calls must order input readiness and output completion according
 to AmgX's actual API, without assuming it uses the application's stream.
 
-`DNDS::Algebra::AmgXPreconditioner` accepts a scalar CSR expansion of the full
-owned-owned principal block. `SetPattern` takes host index views and retains
+`DNDS::Algebra::AmgXPreconditioner` accepts native row-major block CSR for
+5/6/7-component cell Jacobians; Cauchy never expands them into scalar rows.
+The bundled [provider patch](../../scripts/patches/README.amgx.md) enables
+6/7 throughout the selected AMG path and repairs its large-block kernels.
+Genuinely scalar DNDS matrices may still use width one. `SetPattern` takes host index views and retains
 private Runtime arrays. `UpdateValuesBorrowed` takes FP64 device values;
 `ApplyBorrowed` takes device residual/correction views. Both wrappers check
 placement and synchronize explicitly. The submitting operator must drain
@@ -42,6 +46,44 @@ to AmgX. Unsupported builds reject the provider instead of falling back.
 The default is aggregation AMG with fixed V cycles, zero starting correction,
 Jacobi smoothing and fixed coarsest Jacobi sweeps (`coarse_solver=NOSOLVER`).
 Residual monitoring is disabled inside the provider, preserving a fixed linear
-preconditioner for ordinary GMRES. Pattern/value updates belong between Krylov
-solves. This source adapter and its focused test are not yet numerical evidence;
-actual nonsymmetric CFD matrices remain part of Plan61 acceptance.
+action. Cauchy `linear.method="amgx"`, `stopping="fixedCount"`, `iterations=2`
+performs exactly two stationary corrections with no Krylov method. An explicitly
+selected `gmres` method can also use this preconditioner. Pattern/value updates
+belong between linear solves. Focused native-block tests pass independent
+Galerkin/dense-block oracles and MPI-free memcheck. A fixed-two-application
+cylinder comparison converges with matching CPU/GPU final fields; the native6
+NACA run reaches its configured density-only target. These case results do not
+guarantee convergence of arbitrary nonsymmetric systems or all RANS components.
+
+## Caller-stream extension investigation
+
+The pinned provider's internal `memory::setStream` is not a safe asynchronous
+API. Selected restriction/prolongation launches still use stream zero;
+`BlockJacobiSolver::smooth_BxB` lazily resizes scratch and uses an unqualified
+Thrust copy; library handles are process-global; `AMG_Solver::solve` calls
+`cudaFreeWait()`, which synchronizes stream zero. C API vector transfers use
+synchronous copies. DNDS therefore retains the explicit synchronization above.
+
+A future restricted extension can keep hierarchy setup synchronous and enqueue
+a fixed, preallocated V-cycle on a caller stream. Every selected launch, library
+handle and Thrust policy must be routed explicitly, with no allocation or host
+convergence decision during apply. The new entry must preserve the existing
+synchronous API. Initially permit only one outstanding apply per mutable
+workspace, retaining the hierarchy, buffers and provider through a recorded
+completion. Separate contexts cannot assume independent handles or pools merely
+because they are separate C++ objects. Cross-stream reuse needs event ordering.
+
+Extracting the arithmetic kernels alone is insufficient: an independent DNDS
+V-cycle also needs managed hierarchy export, transfer maps, inverse blocks and
+scratch ownership, followed by equivalence validation. A narrow provider apply
+extension is the smaller first step. Neither asynchronous support nor CUDA graph
+capture is implemented by this investigation. Capture would additionally require
+stable addresses, no first-use allocation, and nondefault-stream/capture tests;
+setup, adaptive host decisions and synchronizing diagnostics remain excluded.
+
+The adapter explicitly nests Jacobi's `relaxation_factor` in the smoother's
+configuration object. The earlier string-valued smoother selected AmgX's
+default scope, so the requested 0.75 was ignored and 0.9 was actually used.
+The corrected default is the requested 0.75; one undamped sweep with requested
+factor 1 is independently checked against an exact nonsymmetric block solve.
+Historical results therefore also differ in effective smoother damping.

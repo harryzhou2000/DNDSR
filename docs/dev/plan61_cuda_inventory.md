@@ -212,6 +212,9 @@ from required iterative work; excluded CPU algorithms are not deleted.
 Built the selected C++, CUDA and Python targets at j16 with GCC 12, CUDA 12.6,
 CUDA-aware OpenMPI 5.0.9 and installed NCCL. Built pinned AmgX v2.5.0 without
 MPI. The adapter's 5/6/7-component scalar-CSR checks passed on local device 0.
+Those were historical scalar-expansion checks. The November14 correction
+removes that path and validates native5/6/7 blocks on physical device1 with
+the reproducible provider patch; see [AmgX](../guides/amgx.md).
 AmgX's prefix-only RUNPATH was disabled so the application's selected CUDA
 toolkit takes precedence; installed DNDS Python libraries retain that toolkit
 directory too. The corrected loader trace resolves CUDA libraries to 12.6.

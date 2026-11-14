@@ -34,6 +34,7 @@ namespace DNDS::Cauchy
                 Factor,
                 Action,
                 Triangular,
+                AMG,
                 SGS,
                 Products,
                 Algebra,
@@ -41,13 +42,14 @@ namespace DNDS::Cauchy
                 PhaseNumber
             };
             bool enabled = std::getenv("DNDS_CAUCHY_PROFILE_LINEAR") != nullptr;
+            bool reports = std::getenv("DNDS_CAUCHY_DIAG_LINEAR") != nullptr;
             bool allRanks = std::getenv("DNDS_CAUCHY_PROFILE_ALL_RANKS") != nullptr;
             std::array<real, PhaseNumber> seconds{};
             std::array<index, PhaseNumber> calls{};
-            index instance = 0, solves = 0;
+            index instance = 0, solves = 0, reportedSolves = 0;
             LinearProfile()
             {
-                if (enabled)
+                if (enabled || reports)
                 {
                     static thread_local index next = 0;
                     instance = next++;
@@ -82,9 +84,21 @@ namespace DNDS::Cauchy
                 ++solves;
                 if ((!rank || allRanks) && solves % 32 == 0)
                 {
-                    const auto record = nlohmann::ordered_json{{"rank", rank}, {"solver_instance", instance}, {"solves", solves}, {"phases", {"factor", "action", "triangular", "sgs", "products", "algebra", "total"}}, {"seconds", seconds}, {"calls", calls}}.dump();
+                    const auto record = nlohmann::ordered_json{{"rank", rank}, {"solver_instance", instance}, {"solves", solves}, {"phases", {"factor", "action", "triangular", "amgx", "sgs", "products", "algebra", "total"}}, {"seconds", seconds}, {"calls", calls}}.dump();
                     std::fprintf(stdout, "CAUCHY_LINEAR_PROFILE %s\n", record.c_str());
                 }
+            }
+            void RecordSolve(int rank, const LinearSolveSettings &settings, const Linear::LinearIterationReport &report)
+            {
+                if (!reports || (rank && !allRanks))
+                    return;
+                // Diagnostics only: emit values already observed by the solve.
+                // Fixed-count residuals stay null; no extra action/reduction is
+                // introduced and no tolerance changes the requested work.
+                const auto record = nlohmann::ordered_json{
+                    {"rank", rank}, {"solver_instance", instance}, {"solve", ++reportedSolves}, {"method", settings.method}, {"preconditioner", settings.preconditioner}, {"stopping", settings.stopping}, {"iterations", report.iterations}, {"converged", report.converged}, {"usable", report.usable}, {"stop", int(report.stop)}, {"operator_applications", report.operatorApplications}, {"preconditioner_applications", report.preconditionerApplications}, {"initial_true_residual", report.initialTrueResidual}, {"true_residual", report.trueResidual}, {"preconditioned_residual", report.preconditionedResidual}}
+                                        .dump();
+                std::fprintf(stdout, "CAUCHY_LINEAR_REPORT %s\n", record.c_str());
             }
         };
         bool UsesILU(const LinearSolveSettings &settings)
@@ -93,7 +107,7 @@ namespace DNDS::Cauchy
         }
         bool UsesAMG(const LinearSolveSettings &settings)
         {
-            return settings.method == "gmres" && settings.preconditioner == "amgx";
+            return settings.method == "amgx" || (settings.method == "gmres" && settings.preconditioner == "amgx");
         }
         struct FieldLinearOperations : Linear::FieldKrylovOperations
         {
@@ -474,6 +488,16 @@ namespace DNDS::Cauchy
                           { algebra.Copy(output, next); });
                 }
             }
+            void ApplyLocalPreconditioner(const Field &rhs, Field &output)
+            {
+                if (localAMG)
+                {
+                    auto engine = compute.LockEngine();
+                    localAMG->Apply(engine, compute, Ops::Owned(rhs), Ops::Owned(output));
+                }
+                else
+                    ApplyILU(rhs, output);
+            }
             void Clear(Field &field)
             {
                 auto engine = compute.LockEngine();
@@ -631,6 +655,7 @@ namespace DNDS::Cauchy
                         auto engine = data.compute.LockEngine();
                         data.problem->CheckQueuedActions(engine, data.compute);
                         engine.Synchronize();
+                        data.profile.RecordSolve(data.mpi.rank, data.settings, report);
                         return report;
                     };
                     if (data.gmres)
@@ -639,15 +664,16 @@ namespace DNDS::Cauchy
                                                         { data.Precondition(x, y); }, [&](const Field &x, const auto &probes)
                                                         { return data.Products(x, probes); }, {data.settings.maxIterations, data.settings.relativeTolerance, data.settings.absoluteTolerance, data.settings.residualCheckInterval}, initialGuess.Get()));
                     auto &x = *data.solution;
-                    const bool directFirstILU = !initialGuess && data.settings.method == "ilu" && data.settings.stopping == "fixedCount";
+                    const bool localCorrection = data.settings.method == "ilu" || data.settings.method == "amgx";
+                    const bool directFirstCorrection = !initialGuess && localCorrection && data.settings.stopping == "fixedCount";
                     data.Stage([&]
                                {
                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
                 if (initialGuess) algebra.CopyGuess(x, *initialGuess);
-                else if (data.settings.method != "sgs" && data.settings.method != "jacobi" && !directFirstILU) Clear(x); });
+                else if (data.settings.method != "sgs" && data.settings.method != "jacobi" && !directFirstCorrection) Clear(x); });
                     Linear::LinearIterationReport report;
                     // Defect formation is independent of stopping/reporting:
-                    // fixed-count ILU needs it only before later corrections.
+                    // fixed-count ILU/AmgX need it only before later corrections.
                     const auto formDefect = [&]
                     {
                         data.Apply(x, data.action);
@@ -658,30 +684,30 @@ namespace DNDS::Cauchy
                     };
                     const auto correct = [&]
                     {
-                        if (directFirstILU && report.iterations == 0)
+                        if (directFirstCorrection && report.iterations == 0)
                         {
                             // x0 is analytic zero: neither owned nor ghost
-                            // storage is read. Publish M_local^-1*b directly,
+                            // storage is read. Publish P_local(b) directly,
                             // avoiding clear, zero+correction and next->x copy.
                             data.Stage([&]
-                                       { const LinearProfile::Scope timing(data.profile, LinearProfile::Triangular);
-                                         data.ApplyILU(rhs, x); });
+                                       { const LinearProfile::Scope timing(data.profile, data.localAMG ? LinearProfile::AMG : LinearProfile::Triangular);
+                                         data.ApplyLocalPreconditioner(rhs, x); });
                             ++report.preconditionerApplications;
                             ++report.iterations;
                             return;
                         }
-                        if (data.settings.method == "ilu")
+                        if (localCorrection)
                         {
                             // Stationary defect correction, with frozen local
-                            // factors: x_next = x + M_local^-1 (b - A*x).
-                            // A*x establishes its halo; the triangular solve
-                            // itself has no communication or Krylov history.
+                            // factors/cycles: x_next = x + P_local (b - A*x).
+                            // A*x establishes its halo; the local factor/cycle
+                            // application has no communication or Krylov history.
                             const auto &defect = !initialGuess && report.iterations == 0 ? rhs : data.residual;
                             data.Stage([&]
                                        {
                                 {
-                                    const LinearProfile::Scope timing(data.profile, LinearProfile::Triangular);
-                                    data.ApplyILU(defect, data.action);
+                                    const LinearProfile::Scope timing(data.profile, data.localAMG ? LinearProfile::AMG : LinearProfile::Triangular);
+                                    data.ApplyLocalPreconditioner(defect, data.action);
                                 }
                                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
                                 algebra.LinearCombination(data.next, real(1), x, real(1), data.action); });
@@ -703,7 +729,7 @@ namespace DNDS::Cauchy
                     {
                         while (report.iterations < data.settings.maxIterations)
                         {
-                            if (data.settings.method == "ilu" && (initialGuess || report.iterations != 0))
+                            if (localCorrection && (initialGuess || report.iterations != 0))
                                 formDefect();
                             correct();
                         }
@@ -725,12 +751,12 @@ namespace DNDS::Cauchy
                         correct();
                         // Dynamic stopping is an explicit host observation
                         // boundary. Between checks the correction sequence is
-                        // fixed. ILU still needs b-A*x to compute its next
+                        // fixed. ILU/AmgX still need b-A*x to compute the next
                         // correction, but need not reduce/observe that norm.
                         if (report.iterations % data.settings.residualCheckInterval == 0 ||
                             report.iterations == data.settings.maxIterations)
                             report.trueResidual = residual();
-                        else if (data.settings.method == "ilu")
+                        else if (localCorrection)
                             formDefect();
                     }
                     report.converged = std::isfinite(report.trueResidual) && report.trueResidual <= target;
@@ -771,15 +797,15 @@ namespace DNDS::Cauchy
             if (prototype.Device() != R::Device::Host())
             {
                 DNDS_check_throw_info(prototype.Device().space == R::MemorySpace::CUDA &&
-                    (settings.method == "jacobi" || (settings.method == "gmres" && (settings.preconditioner == "jacobi" || settings.preconditioner == "amgx"))),
-                    "CUDA linear profile requires Jacobi or GMRES with Jacobi/AmgX; SGS/ILU have no device fallback");
+                    (settings.method == "jacobi" || settings.method == "amgx" || (settings.method == "gmres" && (settings.preconditioner == "jacobi" || settings.preconditioner == "amgx"))),
+                    "CUDA linear profile requires Jacobi, AmgX defect correction or GMRES with Jacobi/AmgX; SGS/ILU have no device fallback");
                 DNDS_check_throw_info(Ops::Width(prototype) >= 5 && Ops::Width(prototype) <= 7 &&
                     Ops::Owned(prototype).Layout().Kind() == R::RowLayoutKind::Table, "CUDA linear profile requires combined AoS 5/6/7");
             }
             DNDS_check_throw_info(!UsesAMG(settings) || (problem->Device().space == R::MemorySpace::CUDA &&
                 problem->HasAssembledOffDiagonal() && Algebra::AmgXPreconditioner::Available()),
                 "AmgX requires the compiled single-device provider and an assembled CUDA matrix");
-            DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "jacobi" || settings.method == "ilu" || settings.method == "gmres") &&
+            DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "jacobi" || settings.method == "ilu" || settings.method == "amgx" || settings.method == "gmres") &&
                                       (settings.stopping == "residual" || (settings.stopping == "fixedCount" && settings.method != "gmres")) &&
                                       (settings.preconditioner == "sgs" || settings.preconditioner == "ilu" || settings.preconditioner == "jacobi" || settings.preconditioner == "amgx") && settings.maxIterations >= 0 && settings.residualCheckInterval > 0 &&
                                       settings.subspace > 0 && settings.subspace < INT_MAX && settings.sgsSweeps > 0 && settings.iluFill >= -1 && settings.iluFill <= 5 &&
@@ -795,6 +821,7 @@ namespace DNDS::Cauchy
                                   "local ILU/Jacobi has no inter-scan exchange"); });
             const std::array<int64_t, 19> integers{settings.method == "gmres" ? 1 : settings.method == "ilu"  ? 2
                                                                                 : settings.method == "jacobi" ? 3
+                                                                                : settings.method == "amgx"   ? 4
                                                                                                               : 0,
                                                    settings.preconditioner == "ilu" ? 1 : settings.preconditioner == "jacobi" ? 2
                                                                                       : settings.preconditioner == "amgx"     ? 3

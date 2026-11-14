@@ -65,14 +65,18 @@ namespace DNDS::Algebra
         {
             // NOSOLVER uses fixed coarsest_sweeps of the same Jacobi smoother.
             // monitor_residual=0 prevents tolerance-dependent nonlinear action.
+            // A string-valued smoother selects AmgX's default scope, not its
+            // enclosing AMG scope. Put relaxation in the nested smoother:
+            // otherwise the requested factor is ignored (upstream default .9).
             std::ostringstream text;
             text << R"({"config_version":2,"determinism_flag":1,"block_format":"ROW_MAJOR","solver":{"solver":"AMG",)"
                  << R"("algorithm":"AGGREGATION","selector":"SIZE_2","cycle":"V",)"
-                 << R"("smoother":"BLOCK_JACOBI","coarse_solver":"NOSOLVER","monitor_residual":0,)"
+                 << R"("smoother":{"solver":"BLOCK_JACOBI","monitor_residual":0,"print_solve_stats":0,"relaxation_factor":)"
+                 << s.relaxation << R"(},"coarse_solver":"NOSOLVER","monitor_residual":0,)"
                  << R"("print_solve_stats":0,"print_grid_stats":0,"max_iters":)" << s.cycles
                  << R"(,"presweeps":)" << s.preSweeps << R"(,"postsweeps":)" << s.postSweeps
                  << R"(,"coarsest_sweeps":)" << s.coarseSweeps << R"(,"max_levels":)" << s.maxLevels
-                 << R"(,"min_coarse_rows":)" << s.minCoarseRows << R"(,"relaxation_factor":)" << s.relaxation << "}}";
+                 << R"(,"min_coarse_rows":)" << s.minCoarseRows << "}}";
             return text.str();
         }
         /** AmgX Resources owns process-global pools and CUDA library handles.
@@ -203,12 +207,12 @@ namespace DNDS::Algebra
 
     void AmgXPreconditioner::SetPattern(Runtime::ArrayView<const int> offsets, Runtime::ArrayView<const int> columns, int blockSize)
     {
-        DNDS_check_throw_info(blockSize == 1 || blockSize == 5, "unsupported AmgX native block width");
+        DNDS_check_throw_info(blockSize == 1 || (blockSize >= 5 && blockSize <= 7), "unsupported AmgX native block width");
         CheckScalarTable(offsets, Runtime::Device::Host());
         CheckScalarTable(columns, Runtime::Device::Host());
-        DNDS_check_throw_info(offsets.rows >= 1 && offsets.rows - 1 <= std::numeric_limits<int>::max() &&
+        DNDS_check_throw_info(offsets.rows >= 1 && offsets.rows - 1 <= std::numeric_limits<int>::max() / blockSize &&
                                   columns.rows <= std::numeric_limits<int>::max(),
-                              "AmgX scalar CSR exceeds int32 range");
+                              "AmgX block CSR exceeds int32 range");
         const index rows = offsets.rows - 1;
         DNDS_check_throw_info(offsets(0, 0) == 0 && offsets(rows, 0) == columns.rows, "invalid AmgX CSR endpoints");
         for (index iRow = 0; iRow < rows; ++iRow)

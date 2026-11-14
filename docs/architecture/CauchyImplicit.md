@@ -1,5 +1,56 @@
 # Cauchy native implicit operator contracts
 
+## Preconditioner-only AmgX iteration
+
+`implicit.linear.method="amgx"` selects stationary defect correction on the
+assembled CUDA operator. It does not instantiate GMRES or any other Krylov
+history. With `stopping="fixedCount"` and `iterations=2`, it performs exactly
+two corrections, irrespective of the tolerance fields:
+
+1. Start from zero and publish `x = P_local(b)` without reading an old field.
+2. Refresh `x`'s halo, evaluate the full distributed `A*x`, then publish
+   `x = x + P_local(b - A*x)`.
+
+More iterations repeat the second operation. A supplied nonzero initial guess
+requires the residual before the first correction too. `P_local` is the existing
+fixed, zero-started single-device AmgX V-cycle on each rank's owned-owned
+principal matrix. It owns no MPI communicator. DNDS performs the global action
+and communication, exactly as in the ILU stationary correction path. AmgX uses
+fixed smoother/coarse sweeps and has neither residual stopping nor a hidden
+Krylov solver. `method="gmres", preconditioner="amgx"` remains a distinct,
+explicitly requested algorithm. The `preconditioner` string is unused by
+stationary methods.
+
+`DNDS_CAUCHY_DIAG_LINEAR=1` emits one `CAUCHY_LINEAR_REPORT` JSON record per
+completed solve on the domain master (all ranks only when
+`DNDS_CAUCHY_PROFILE_ALL_RANKS` is set). It exposes the already-computed
+initial/true/preconditioned residuals and application counts, adding no norms,
+MPI reductions, stopping points or changes to the numerical work. Fixed-count
+residual fields are `null` because they were not evaluated; `usable` certifies
+finite output, not convergence. A finite iteration-limited GMRES correction
+may likewise be accepted by the nonlinear driver without meeting its linear
+tolerance. Inspect the true residual before blaming a nonlinear update.
+
+All flow5, SA and two-equation operators retain native 5x5, 6x6 and 7x7
+block CSR, with one physical cell per provider row. Scalar expansion and
+padding are forbidden in the Cauchy adapter. The pinned AmgX source patch adds
+6/7 coarse-operator/restriction dispatch and corrects large-block traversal
+across 32-column warp boundaries, including separate-diagonal accumulation.
+The generic >5 Jacobi inverse also uses correctly sized per-thread scratch,
+explicit 16-lane shared-memory ordering and the correct Schur-update sign.
+The build recipe records the patch and installed-library hashes; CMake rejects mismatched or unpatched installs.
+A genuinely scalar DNDS matrix can still use block width one.
+
+The previous SA experiment used scalar expansion; that changed block Jacobi
+into scalar Jacobi and allowed component-mixing aggregation. It therefore did
+not assess the requested coupled-block preconditioner. This verified algorithm
+difference does not alone prove the cause of that run's nonlinear residual
+growth. The new entry keeps fixed V-cycle/smoother/coarse sweep counts. A separate
+configuration-scope bug is corrected: Jacobi now receives the requested
+relaxation (default 0.75), whereas the old string-valued smoother silently used
+AmgX's default 0.9. Actual-operator residual diagnostics and corrected fixed-work experiments are
+needed before making a causal or convergence claim.
+
 ## Optional diagonal inverse refinement
 
 `implicit.linear.diagonalInverseRefinement` is an integer from 0 to 3.
@@ -2184,11 +2235,12 @@ residual products, but the final finiteness check still observes completion.
 SGS and ILU remain CPU-only and cannot silently substitute for CUDA Jacobi.
 
 GMRES accepts a zero-started one/two-local-sweep Jacobi preconditioner, or
-`amgx` for assembled CUDA matrices. `LocalAMGPreconditioner` expands only
-owned-owned coupled blocks into scalar CSR, sorted by scalar column; DNDS
+`amgx` for assembled CUDA matrices. The standalone `amgx` method instead uses
+stationary defect correction. `LocalAMGPreconditioner` retains owned-owned
+coupled 5/6/7 blocks as native block CSR, sorted by cell column; DNDS
 retains off-rank blocks for its full distributed operator. The provider has no
 communicator. Its fixed-cycle configuration has no residual-based inner stop.
-The scalar pattern is prepared once; numerical values update when the matrix
+The block pattern is prepared once; numerical values update when the matrix
 mutation epochs change. Compact AoS vectors are borrowed directly; padded AoS
 uses lazily reserved device packing scratch, with no host payload copy.
 
