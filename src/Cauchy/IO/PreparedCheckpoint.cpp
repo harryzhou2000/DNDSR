@@ -1,5 +1,6 @@
 #include "Cauchy/IO/OutputMeasurement.hpp"
 #include "Cauchy/IO/PreparedCheckpoint.hpp"
+#include "Geom/IO/NativeMeshArchive.hpp"
 #include "Cauchy/IO/StateArchive.hpp"
 #include "Cauchy/IO/OutputStaging.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
@@ -69,11 +70,13 @@ namespace DNDS::Cauchy
         const OutputMeasurement file("checkpoint_file");
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
-        serializer->WriteInt("cauchy_format", 5);
+        serializer->WriteInt("cauchy_format", 6);
         if (data.internal)
             serializer->WriteInt("cauchy_internal_format", 1);
         serializer->WriteString("resolved_config", resolved.dump());
-        serializer->WriteString("metadata_json", data.metadata.dump());
+        auto metadata = data.metadata;
+        metadata["mesh_hashes"] = CheckpointMetadata::GlobalMeshHashes(data.mesh, mpi);
+        serializer->WriteString("metadata_json", metadata.dump());
         if (!outputController.is_null())
             serializer->WriteString("output_controller_json", outputController.dump());
         serializer->WriteString("domain_name", data.name);
@@ -81,9 +84,8 @@ namespace DNDS::Cauchy
         serializer->WriteReal("last_accepted_dt", data.dt);
         serializer->WriteIndex("accepted_step", data.step);
         Runtime::WriteArray(data.ids, serializer, "cell_ids", mpi);
-        Runtime::WriteArray(data.mesh.topology, serializer, "mesh_topology", mpi);
-        Runtime::WriteArray(data.mesh.coordinates, serializer, "mesh_coordinates", mpi);
-        Runtime::WriteArray(data.mesh.periodicTransforms, serializer, "periodic_transforms", mpi);
+        if (data.mesh.archive)
+            Geom::WriteNativeMeshArchive(*data.mesh.archive, mpi, serializer, "native_mesh");
         if (data.historyDt)
             serializer->WriteReal("history_dt", *data.historyDt);
         for (const auto &[key, values] : data.fields)

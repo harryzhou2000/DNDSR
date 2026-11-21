@@ -148,6 +148,7 @@ TEST_CASE("ACM CUDA exports zero tangential slip-wall flux and nonzero no-slip s
     int pid = int(getpid());
     MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
     const auto prefix = (std::filesystem::temp_directory_path() / ("cauchy-cuda-wall-" + std::to_string(pid))).string();
+    domain.Residual(); // Wall traction is sampled from the last spatial evaluation.
     domain.WriteVisualization(prefix, 0);
     const auto file = H5Fopen((prefix + "_bnd.vtkhdf").c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
     REQUIRE(file >= 0);

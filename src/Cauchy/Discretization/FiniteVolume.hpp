@@ -145,6 +145,10 @@ namespace DNDS::Cauchy
         /// Optional owned-cell record paired with this spatial rate.
         OptionalRef<Runtime::Array<real>> sourceDerivative;
 
+        /// Caller-side submission after the last spatial row and before the FV join.
+        /// Queue consumers on the same compute stream. This callback is invoked inline.
+        std::function<void()> submitResidualConsumer;
+
         static FiniteVolumeEvaluation Spatial(EquationDofs &output, real time = 0,
                                               OptionalRef<AuxiliaryValues> auxiliary = {}, OptionalRef<Runtime::Array<real>> derivative = {})
         {
@@ -223,8 +227,9 @@ namespace DNDS::Cauchy
             /// perfect-gas flow5 field and never changes the outer schedule.
             RHSKernelPolicy rhsKernel;
             bool captureBoundaryFlux;
-            constexpr explicit WorkspaceOptions(RHSKernelPolicy policy = RHSKernelPolicy::Auto, bool capture = false)
-                : rhsKernel(policy), captureBoundaryFlux(capture) {}
+            bool observeSpatialResidual;
+            constexpr explicit WorkspaceOptions(RHSKernelPolicy policy = RHSKernelPolicy::Auto, bool capture = false, bool observe = false)
+                : rhsKernel(policy), captureBoundaryFlux(capture), observeSpatialResidual(observe) {}
         };
         struct Workspace;
         struct MeanWorkspace;
@@ -904,7 +909,7 @@ namespace DNDS::Cauchy
         Vector3 LastBoundaryForce(const Workspace &workspace, const std::vector<int> &zones,
                                   std::optional<Runtime::ExecutionStream> stream = {}) const;
         /// All conservative blocks plus mean thermodynamic/species fields and
-        /// reconstructed boundary traces. Reads an observation workspace only;
+        /// reconstructed boundary traces. Reads the supplied spatial workspace;
         /// does not modify the production reconstruction or any state values.
         void WriteVisualization(const EquationDofs &state, const ReconstructionState &reconstruction, const Workspace &workspace,
                                 const std::string &prefix, real time, int hdfDeflateLevel,
@@ -912,11 +917,13 @@ namespace DNDS::Cauchy
 
     private:
         friend class Domain;
+        OptionalRef<const EquationDofs> LastSpatialResidual(const Workspace &) const;
+        void InvalidateSpatialObservation(Workspace &) const;
         /// Pack the observation and stage immutable host fields on the supplied lane.
         PreparedVisualization PackVisualization(const EquationDofs &, const ReconstructionState &, const Workspace &,
                                                 real time, int hdfDeflateLevel,
                                                 const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers,
-                                                Runtime::EagerEngine &, const Runtime::ExecutionStream &, OutputStaging &) const;
+                                                Runtime::EagerEngine &, const Runtime::ExecutionStream &, OutputStaging &, bool useLastSpatialFlux = false) const;
 
     public:
         /// Complete numerical observation before returning immutable host file
@@ -979,7 +986,8 @@ namespace DNDS::Cauchy
                           const Runtime::ExecutionStream &compute,
                           const Runtime::ExecutionStream &communication, real time,
                           OptionalRef<AuxiliaryValues> auxiliary = {},
-                          OptionalRef<const QueuedEvaluationDependency> dependency = {}, OptionalRef<Runtime::Array<real>> sourceDerivative = {}) const;
+                          OptionalRef<const QueuedEvaluationDependency> dependency = {}, OptionalRef<Runtime::Array<real>> sourceDerivative = {},
+                          const std::function<void()> &submitResidualConsumer = {}) const;
         void ValidateEquationSourceJacobian(const EquationDofs &state,
                                             const JacobianContext &context, real time) const;
         bool AddEquationSourceJacobian(const EquationDofs &state,

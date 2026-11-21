@@ -30,8 +30,6 @@ namespace DNDS::Cauchy
                                                      const NonlinearSolveState &, bool detach, OutputStaging &staging) const;
         PreparedVisualization CaptureInternalVisualization(int hdfDeflateLevel, OutputStaging &);
         PreparedVisualization CaptureVisualization(int hdfDeflateLevel, OutputStaging &);
-        PreparedVisualization PackObservationVisualization(real time, int hdfDeflateLevel, OutputStaging &);
-        FiniteVolume::WorkspaceOptions ObservationWorkspaceOptions() const;
         DomainProblem _problem;
         DomainState _state;
         DomainExecution _execution;
@@ -64,7 +62,6 @@ namespace DNDS::Cauchy
         void ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt);
         void FinishChemicalStep();
         void PublishTrial(real time, StateEpoch epoch);
-        void EvaluateObservation(const DomainStateSnapshot &snapshot);
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
         void PrepareGroupOperators(bool resume);
@@ -299,14 +296,14 @@ namespace DNDS::Cauchy
         /// Full logical integrated residual; shares overwriteable workspace
         /// and invalidates any prepared candidate.
         const EquationDofs &Residual();
-        /// Collective diagnostics of the accepted state. Recomputes its RHS;
+        /// Collective diagnostics of accepted means and the last evaluated spatial RHS;
         /// no state/time update. Returns mass, energy, rho/p minima, residual L2,
         /// force xyz, VR sweeps/update, density L1/L2/Linf analytic errors, Tmin.
         std::array<real, 14> Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones);
         void WriteVisualization(const std::string &prefix, int hdfDeflateLevel = 0);
         /// Observe the current nonlinear trial at a synchronous progress
         /// boundary. This uses the stage's already-finalized reconstruction and
-        /// never rebuilds or mutates the accepted observation workspace.
+        /// packs primary fields and available finest RHS fluxes on the compute lane.
         void WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel = 0);
         /// Native parallel restart with persistent cell IDs and per-cell mesh
         /// validation. Default omits reconstruction; opt in for compatible

@@ -263,18 +263,17 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
                                               { return std::make_pair(0, 0.); },
                                               [&](int coupledStage, auto &current, bool applyCorrection)
                                               {
-                                                  CHECK(applyCorrection);
-                                                  if (coupledStage == 0)
+                                                  if (coupledStage == 0 && applyCorrection)
                                                       cfl.push_back(current.pseudoCFL);
                                                   visits.push_back(coupledStage);
-                                                  if (coupledStage == 1)
+                                                  if (coupledStage == 1 && applyCorrection)
                                                       value *= .5;
                                               }});
     CHECK(report.converged);
     CHECK(report.iterations == 2);
-    CHECK(report.initialResidual[0] == .5);
+    CHECK(report.initialResidual[0] == 1);
     CHECK(report.residual[0] == .25);
-    CHECK(visits == std::vector<int>{0, 1, 2, 3, 0, 1, 2, 3});
+    CHECK(visits == std::vector<int>{0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3});
     CHECK(cfl == std::vector<double>{1, 2});
     CHECK(report.pseudoCFL == 2);
 }

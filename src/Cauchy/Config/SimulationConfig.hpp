@@ -656,6 +656,7 @@ namespace DNDS::Cauchy
         std::map<std::string, BoundarySettings> boundaries;
         /// Resolved from global output controls by the Simulation frontend.
         bool boundaryFacialFluxes = false;
+        bool checkpointFullMesh = false, restartCheckCoordinates = true, visualizationSharedMesh = true;
         /// Resolved by pMG. Direct gradients otherwise follow numerics.positivity.
         std::optional<bool> coarseGradientPositivity;
         bool GradientPositivity() const { return coarseGradientPositivity.value_or(numerics.positivity); }
@@ -733,6 +734,7 @@ namespace DNDS::Cauchy
         real steadyTolerance = 0;
         index steadyMinSteps = 100;
         int maxRetries = 0;
+        bool exactReconstructionRollback = false;
         DITRTimeSettings ditr;
         PhysicalTimePositivitySettings positivity;
         Physics::Chemistry::ReactorStepSettings reactor;
@@ -753,6 +755,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(finalTime, "Deprecated alias for tEnd; leave at -1 in new inputs");
             DNDS_FIELD(cfl, "Positive CFL enables adaptive global stepping, capped by dt");
             DNDS_FIELD(wallSeconds, "Collective graceful wall stop; zero disables it");
+            DNDS_FIELD(exactReconstructionRollback, "Preserve the accepted VR guess and LVR history for a rejected whole-step retry; otherwise retry with cold reconstruction");
             DNDS_FIELD(maxRetries, "C++ frontend maximum whole-step dt halvings after rejection; zero reports failure. Direct/Python callers own retries");
             DNDS_FIELD(steadyTolerance, "Relative accepted-state residual target; zero means physical transient");
             DNDS_FIELD(steadyMinSteps, "Minimum accepted steps before a steady stop");
@@ -828,6 +831,9 @@ namespace DNDS::Cauchy
         int hdfDeflateLevel = 0;
         bool boundaryFacialFluxes = false;
         bool checkpointReconstruction = false;
+        bool checkpointFullMesh = false;
+        bool restartCheckCoordinates = true;
+        bool visualizationSharedMesh = true;
         bool asynchronous = false;
         std::vector<int> forceZones;
         ImplicitOutputSettings implicit;
@@ -853,6 +859,9 @@ namespace DNDS::Cauchy
             DNDS_FIELD(eventLog, "Write plain-text rotating events-rank<N>.log alongside ordinary CLI progress by default; no tee is needed. Uses diagnostics rotation limits");
             DNDS_FIELD(boundaryFacialFluxes, "Write observed face-averaged numerical flux and tangential force in boundary VTKHDF");
             DNDS_FIELD(hdfDeflateLevel, "VTKHDF compression level 0..9; uncompressed is the initial portable baseline");
+            DNDS_FIELD(checkpointFullMesh, "Embed a complete native mesh archive in each checkpoint for independent mesh recovery");
+            DNDS_FIELD(restartCheckCoordinates, "Validate mesh coordinates on restart; topology and persistent IDs are always checked");
+            DNDS_FIELD(visualizationSharedMesh, "Reference immutable shared VTKHDF topology and point files from field snapshots");
             DNDS_FIELD(checkpointReconstruction, "Store optional compatible polynomial warm guesses for exact finite-sweep continuation; default omits them");
             DNDS_FIELD(asynchronous, "Bounded background accepted-step and internal output with MPI_THREAD_MULTIPLE. Final output and shutdown drain the queue");
             DNDS_FIELD(forceZones, "Boundary zones on which pressure and viscous body force are integrated");

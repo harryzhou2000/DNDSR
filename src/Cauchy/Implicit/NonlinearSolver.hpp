@@ -111,6 +111,8 @@ namespace DNDS::Cauchy
         /// Continue from the live/restored `state` rather than initializing a
         /// new residual reference and iteration cursor.
         bool resume = false;
+        /// Internal correction followed by an RHS consumer on the same bound stream.
+        bool queuedPublication = false;
     };
     template <class Norms>
     struct BasicNonlinearIterationReport
@@ -155,7 +157,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<Data> _data;
         std::weak_ptr<const Runtime::SessionAccess::Ticket> _nestedSession;
         explicit NonlinearSolver(std::shared_ptr<Data> data) : _data(std::move(data)) {}
-        std::pair<index, real> ApplyCorrectionImpl(EquationDofs &state, const EquationDofs &increment, real scale, const std::vector<index> &components);
+        std::pair<index, real> ApplyCorrectionImpl(EquationDofs &state, const EquationDofs &increment, real scale, const std::vector<index> &components, bool queuedPublication = false);
         NonlinearSession Start(EquationDofs &state, const EquationDofs &source,
                                real mass, real rhsScale, real time, int stage,
                                NonlinearSolveControl control,

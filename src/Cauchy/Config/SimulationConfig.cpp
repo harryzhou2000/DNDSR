@@ -234,6 +234,13 @@ namespace DNDS::Cauchy
         Config::ValidatePartialJsonSchema(data->root["output"], OutputSettings::schema(), "/output");
         data->time = data->root["time"].get<TimeSettings>();
         data->output = data->root["output"].get<OutputSettings>();
+        for (auto &domain : data->domains)
+        {
+            domain.settings.checkpointFullMesh = data->output.checkpointFullMesh;
+            domain.settings.restartCheckCoordinates = data->output.restartCheckCoordinates;
+            domain.settings.visualizationSharedMesh = data->output.visualizationSharedMesh;
+            domain.settings.boundaryFacialFluxes = data->output.boundaryFacialFluxes;
+        }
         if (data->time.finalTime >= 0)
         {
             DNDS_check_throw_info(data->time.tEnd == 0 || data->time.tEnd == data->time.finalTime,

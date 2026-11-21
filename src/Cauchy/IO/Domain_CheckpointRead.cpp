@@ -52,14 +52,25 @@ namespace DNDS::Cauchy
         serializer->ReadString("domain_name", name);
         serializer->ReadReal("accepted_time", time);
         serializer->ReadIndex("accepted_step", step);
-        DNDS_check_throw_info(version >= 2 && version <= 5, "unsupported Cauchy checkpoint format");
+        DNDS_check_throw_info(version >= 2 && version <= 6, "unsupported Cauchy checkpoint format");
         const auto rowCount = StoredRows(serializer, "cell_ids");
         const auto range = EvenSplitRange(mpi.rank, mpi.size, rowCount);
         const Serializer::ArrayGlobalOffset shard{range.second - range.first, range.first};
         auto ids = Runtime::ReadArray<index, Runtime::FixedRows<1>>(serializer, "cell_ids", mpi, shard);
-        auto topology = Runtime::ReadArray<index>(serializer, "mesh_topology", mpi, shard);
-        auto coordinates = Runtime::ReadArray<real>(serializer, "mesh_coordinates", mpi, shard);
-        auto transforms = Runtime::ReadArray<real>(serializer, "periodic_transforms", mpi, {1, 0});
+        std::optional<Runtime::Array<index>> topology;
+        std::optional<Runtime::Array<real>> coordinates, transforms;
+        const bool validateCoordinates = _problem.finiteVolume.Settings().restartCheckCoordinates;
+        const int checkingRanks = MPI::AllreduceValue<MPI::Reduction::Sum>(int(validateCoordinates), mpi.comm);
+        DNDS_check_throw_info(checkingRanks == 0 || checkingRanks == mpi.size, "restart coordinate validation option differs between ranks");
+        if (version < 6)
+        {
+            topology.emplace(Runtime::ReadArray<index>(serializer, "mesh_topology", mpi, shard));
+            if (validateCoordinates)
+            {
+                coordinates.emplace(Runtime::ReadArray<real>(serializer, "mesh_coordinates", mpi, shard));
+                transforms.emplace(Runtime::ReadArray<real>(serializer, "periodic_transforms", mpi, {1, 0}));
+            }
+        }
         std::optional<Runtime::Array<real>> flow;
         if (version < 5)
             flow.emplace(Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "flow", mpi, shard));
@@ -88,7 +99,7 @@ namespace DNDS::Cauchy
                 history.emplace(Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "history_flow", mpi, shard));
         }
         std::optional<StateArchive> stateArchive, reconstructionArchive, historyArchive;
-        if (version == 5)
+        if (version >= 5)
         {
             std::string statePrefix = "state_field_";
             const Json *storage = &metadata.at("state_storage");
@@ -170,7 +181,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(false, message);
         }
         const int meshEnvelope = version >= 4 ? metadata.value("mesh_envelope", 1) : 1;
-        DNDS_check_throw_info(meshEnvelope == 1 || meshEnvelope == 2, "unsupported Cauchy mesh envelope");
+        DNDS_check_throw_info(version == 6 ? meshEnvelope == 3 : (meshEnvelope == 1 || meshEnvelope == 2), "unsupported Cauchy mesh envelope");
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         const auto targetIds = CellIds(*this);
         const auto route = Runtime::BuildRowTransferById(context, ids, targetIds, true);
@@ -191,25 +202,40 @@ namespace DNDS::Cauchy
                 MPI::LocalStage(mpi, [&]
                                 { destination.CopyFrom(*host, _execution.ComputeStream().Context()).Wait(); });
         };
-        std::optional<MeshEnvelope> envelope;
-        std::optional<Runtime::Array<index>> mappedTopology;
-        std::optional<Runtime::Array<real>> mappedCoordinates;
+        MeshEnvelope envelope;
         MPI::LocalStage(mpi, [&]
-                        { envelope.emplace(DescribeMesh(*this)); });
-        const auto topologyLayout = route.DestinationLayout(topology.Layout());
-        const auto coordinateLayout = route.DestinationLayout(coordinates.Layout());
-        MPI::LocalStage(mpi, [&]
-                        {
-            mappedTopology.emplace(topologyLayout);
-            mappedCoordinates.emplace(coordinateLayout); });
-        transfer(topology, *mappedTopology);
-        transfer(coordinates, *mappedCoordinates);
-        MPI::LocalStage(mpi, [&]
-                        {
-            const auto topologyDifference = TopologyDifference(*mappedTopology, envelope->topology, targetIds, meshEnvelope == 1);
-            const auto coordinateDifference = RowDifference(*mappedCoordinates, envelope->coordinates, targetIds);
-            DNDS_check_throw_info(topologyDifference.empty() && coordinateDifference.empty() && SameRows(transforms, envelope->periodicTransforms),
-                                  "Cauchy restart persistent-cell mesh topology/geometry mismatch: topology " + topologyDifference + "; coordinates " + coordinateDifference); });
+                        { envelope = DescribeMesh(*this, version < 6); });
+        if (version == 6)
+        {
+            const auto &stored = metadata.at("mesh_hashes");
+            const auto current = GlobalMeshHashes(envelope, mpi);
+            for (const auto key : {"nodes", "cells", "boundaries"})
+                DNDS_check_throw_info(stored.at(key) == current.at(key), std::string("restart mesh count differs: ") + key);
+            DNDS_check_throw_info(stored.at("algorithm") == current.at("algorithm") &&
+                                      stored.at("topology") == current.at("topology"),
+                                  "restart mesh topology hash differs");
+            DNDS_check_throw_info(!validateCoordinates || stored.at("coordinates") == current.at("coordinates"),
+                                  "restart mesh coordinate hash differs");
+        }
+        else
+        {
+            Runtime::Array<index> mappedTopology(route.DestinationLayout(topology->Layout()));
+            transfer(*topology, mappedTopology);
+            MPI::LocalStage(mpi, [&]
+                            {
+                const auto difference = TopologyDifference(mappedTopology, envelope.topology, targetIds, meshEnvelope == 1);
+                DNDS_check_throw_info(difference.empty(), "restart persistent-cell topology mismatch: " + difference); });
+            if (validateCoordinates)
+            {
+                Runtime::Array<real> mappedCoordinates(route.DestinationLayout(coordinates->Layout()));
+                transfer(*coordinates, mappedCoordinates);
+                MPI::LocalStage(mpi, [&]
+                                {
+                    const auto difference = RowDifference(mappedCoordinates, envelope.coordinates, targetIds);
+                    DNDS_check_throw_info(difference.empty() && SameRows(*transforms, envelope.periodicTransforms),
+                                          "restart mesh geometry mismatch: " + difference); });
+            }
+        }
         _state.trialReady = false;
         // Extended state shares the same mesh/ID validation and publication
         // transaction as historical flow5. No accepted field is changed until

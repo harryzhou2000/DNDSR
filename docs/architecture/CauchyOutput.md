@@ -226,11 +226,10 @@ console index counts completed corrections. With a before-update residual
 policy, the norm on that row is the one used to compute the correction.
 CSV keeps the residual observation index. A positive
 `output.implicit.visualizationInterval` writes the current
-trial at a quiescent nonlinear observation boundary. The observer copies the
-trial mean and the current warm reconstruction into detached storage, then
-prepares output fields with a separate workspace. Its halo publication,
-reconstruction iterations and diagnostics therefore cannot rebind or mutate
-the active time-stepper state. Each per-domain product has an
+trial at a quiescent nonlinear observation boundary. The compute stream packs primary fields directly from the trial. Boundary
+fluxes come from the last published finest spatial evaluation; requesting
+output does not advance reconstruction. Only packed output fields pass to
+the file writer. Each per-domain product has an
 `internal-snapshot.v1` manifest whose `restartScope` is `visualization_only`
 when no checkpoint is written at that boundary.
 
@@ -317,3 +316,15 @@ publishes completion manifests only after every required file has closed
 successfully across its ranks/domains. Exceptions from collective file paths
 trigger an independent abort, with no collective exception recovery. Final output and shutdown drain the writer before reporting files as complete.
 
+
+
+### Sharing the visualization mesh
+
+With `output.visualizationSharedMesh=true` (default), volume and boundary
+snapshots keep cell and point fields in each `.vtkhdf` file. Standard relative
+HDF5 external links resolve Points, Offsets, Connectivity and Types. Mesh files
+named `dnds-vtk-points-*.h5` and `dnds-vtk-topology-*.h5` live next to the
+snapshots. Copy these companions when moving a series. New coordinates generate
+a new points file while unchanged file-order topology remains shared. A
+repartition can change file order and therefore generate new companions.
+Set the switch to false when exporting self-contained snapshots.

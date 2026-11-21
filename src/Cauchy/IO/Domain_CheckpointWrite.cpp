@@ -10,10 +10,22 @@
 #include <set>
 
 #include "Cauchy/IO/CheckpointMetadata.hpp"
+#include "Geom/Transition/NativeMeshAssembler.hpp"
 
 namespace DNDS::Cauchy
 {
     using namespace CheckpointMetadata;
+    // CaptureOwned builds entity maps on the mesh communicator. Complete this
+    // optional setup on the controller before a background writer can overlap it.
+    static std::shared_ptr<const Geom::NativeOwnedMeshData> CaptureArchive(const Domain &domain, const MPIInfo &mpi)
+    {
+        const auto &fv = domain.Discretization();
+        const int count = MPI::AllreduceValue<MPI::Reduction::Sum>(int(fv.Settings().checkpointFullMesh), mpi.comm);
+        DNDS_check_throw_info(count == 0 || count == mpi.size, "checkpoint mesh storage option differs between ranks");
+        if (!count)
+            return {};
+        return std::make_shared<Geom::NativeOwnedMeshData>(Geom::NativeMeshAssembler::CaptureOwned(*fv.Mesh().CurrentNativeState(), mpi));
+    }
     void Domain::WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction,
                                  const Json &outputController) const
     {
@@ -40,6 +52,7 @@ namespace DNDS::Cauchy
                                       (relation == MPI_IDENT || relation == MPI_CONGRUENT),
                                   "checkpoint I/O communicator must preserve domain membership and rank order"); });
         auto snapshot = CaptureStateSnapshot(includeReconstruction);
+        DNDS_check_throw_info(!includeReconstruction || snapshot.Reconstruction(), "accepted reconstruction unavailable during a trial without exactReconstructionRollback");
         const bool detached = options.detached || snapshot.Means().Device() != Runtime::Device::Host();
         const bool history = bool(snapshot.PreviousState());
         const bool limitedVRHistory = bool(snapshot.LimitedVRHistory());
@@ -47,7 +60,7 @@ namespace DNDS::Cauchy
         MPI::AllreduceInPlace<MPI::Reduction::Min>(
             MPI::ContiguousView<int>{flags, 6}, mpi.comm);
         DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3] && flags[4] == -flags[5], "checkpoint optional sections differ between ranks");
-        Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", EquationMetadata(_problem.equation)}, {"reconstruction", _problem.finiteVolume.ReconstructionMetadata()}, {"time_method", snapshot.TimeMethod()}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_problem.finiteVolume, snapshot.Time())}};
+        Json metadata{{"schema_version", 1}, {"mesh_envelope", 3}, {"flow", EquationMetadata(_problem.equation)}, {"reconstruction", _problem.finiteVolume.ReconstructionMetadata()}, {"time_method", snapshot.TimeMethod()}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_problem.finiteVolume, snapshot.Time())}};
         metadata["restart_scope"] = "accepted_step";
         if (auto gauge = snapshot.PressureGauge())
             metadata["acm_pressure_mean"] = *gauge;
@@ -57,11 +70,13 @@ namespace DNDS::Cauchy
         if (includeReconstruction)
             metadata["reconstruction_storage"] = DescribeEquationStorage(*snapshot.Reconstruction());
         metadata["source_integration"] = snapshot.SourceStrang() ? "strang" : "coupled";
+        auto archive = CaptureArchive(*this, mpi);
         std::optional<PreparedCheckpoint> result;
         MPI::LocalStage(mpi, [&]
                         {
             auto ids = CellIds(*this);
             auto envelope = DescribeMesh(*this);
+            envelope.archive = std::move(archive);
             result.emplace(PreparedCheckpoint(std::move(snapshot), std::move(metadata), std::move(ids),
                            std::move(envelope), std::move(communication), detached, {}, _execution.ComputeStream().Context(), staging)); });
         return std::move(*result);
@@ -83,7 +98,7 @@ namespace DNDS::Cauchy
         std::optional<EquationTimeStepper::ActiveCheckpoint> active;
         MPI::LocalStage(mpi, [&]
                         {
-            DNDS_check_throw_info(_state.timeStepper && (!polynomial || (_state.restoreReconstruction && _state.reconstructionBackup)) &&
+            DNDS_check_throw_info(_state.timeStepper && (!polynomial || _state.restoreReconstruction) &&
                                       _state.trialEpoch.trial && state.stage >= 0 && state.iteration >= 0,
                                   "exact internal checkpoint has no active implicit trial");
             active.emplace(_state.timeStepper->CaptureActive(_state.trial)); });
@@ -129,7 +144,7 @@ namespace DNDS::Cauchy
                               {"geometry", _state.trialEpoch.geometry},
                               {"schema", _state.trialEpoch.schema}};
         Json metadata{{"schema_version", 1},
-                      {"mesh_envelope", 2},
+                      {"mesh_envelope", 3},
                       {"flow", EquationMetadata(_problem.equation)},
                       {"reconstruction", _problem.finiteVolume.ReconstructionMetadata()},
                       {"polynomial_reconstruction", polynomial},
@@ -151,7 +166,8 @@ namespace DNDS::Cauchy
                       {"source_integration", _sourceStrang ? "strang" : "coupled"}};
         if (polynomial)
         {
-            metadata["reconstruction_storage"] = DescribeEquationStorage(*acceptedSnapshot.Reconstruction());
+            if (acceptedSnapshot.Reconstruction())
+                metadata["reconstruction_storage"] = DescribeEquationStorage(*acceptedSnapshot.Reconstruction());
             metadata["endpoint_warm_storage"] = DescribeEquationStorage(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction));
             metadata["endpoint_final_storage"] = DescribeEquationStorage(_problem.finiteVolume.FluxReconstruction(*_state.reconstruction, *_execution.workspace));
         }
@@ -165,6 +181,7 @@ namespace DNDS::Cauchy
         const auto context = _execution.ComputeStream().Context();
         detach |= acceptedSnapshot.Means().Device() != Runtime::Device::Host();
         PreparedCheckpoint::InternalFields internal;
+        auto archive = CaptureArchive(*this, mpi);
         std::optional<PreparedCheckpoint> result;
         MPI::LocalStage(mpi, [&]
                         {
@@ -198,6 +215,7 @@ namespace DNDS::Cauchy
             }
             auto ids = CellIds(*this);
             auto envelope = DescribeMesh(*this);
+            envelope.archive = std::move(archive);
             result.emplace(PreparedCheckpoint(std::move(acceptedSnapshot), std::move(metadata), std::move(ids),
                            std::move(envelope), std::move(communication), detach, std::move(internal), context, staging)); });
         return std::move(*result);

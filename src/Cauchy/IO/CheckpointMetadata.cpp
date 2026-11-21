@@ -2,6 +2,7 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "DNDS/MPI/Failure.hpp"
+#include "DNDS/IO/ContentHash.hpp"
 
 namespace DNDS::Cauchy::CheckpointMetadata
 {
@@ -312,9 +313,9 @@ namespace DNDS::Cauchy::CheckpointMetadata
             write.View()(iCell, 0) = domain.Discretization().Mesh().OriginalEntityId(Geom::EntityKind::Cell, iCell);
         return ids;
     }
-    // Exact per-owned-cell records, not a collision-prone hash. These are
-    // restart metadata; the numerical flow payload is never packed/copied.
-    MeshEnvelope DescribeMesh(const Domain &domain)
+    // The hash binds cell-local slots to persistent cell IDs. XOR of independently
+    // hashed rows is invariant under both local permutation and redistribution.
+    MeshEnvelope DescribeMesh(const Domain &domain, bool legacyRows)
     {
         const auto &mesh = domain.Discretization().Mesh();
         // The metric read pins the same facade publication and its CellFlux
@@ -323,11 +324,12 @@ namespace DNDS::Cauchy::CheckpointMetadata
         const auto state = mesh.CurrentNativeState();
         const auto view = state->BorrowHostView();
         std::vector<size_t> topologySizes, coordinateSizes;
-        for (index iCell = 0; iCell < view.NumCell(); ++iCell)
-        {
-            topologySizes.push_back(4 + 2 * view.CellNodes(iCell).size() + 3 * view.CellFaces(iCell).size());
-            coordinateSizes.push_back(3 * view.CellNodes(iCell).size());
-        }
+        if (legacyRows)
+            for (index iCell = 0; iCell < view.NumCell(); ++iCell)
+            {
+                topologySizes.push_back(4 + 2 * view.CellNodes(iCell).size() + 3 * view.CellFaces(iCell).size());
+                coordinateSizes.push_back(3 * view.CellNodes(iCell).size());
+            }
         MeshEnvelope envelope{Runtime::Array<index>(Runtime::RowLayout::Ragged(topologySizes)),
                               Runtime::Array<real>(Runtime::RowLayout::Ragged(coordinateSizes)),
                               Runtime::Array<real>(Runtime::RowLayout::Dense(1, view.IsPeriodic() ? 45 : 0))};
@@ -345,14 +347,19 @@ namespace DNDS::Cauchy::CheckpointMetadata
                         transforms.View()(0, base + 6 + 3 * d + k) = periodic.rotation[axis].map()(d, k);
                 }
         }
+        std::array<uint64_t, 2> hashes{};
+        std::vector<index> cellTopology;
+        std::vector<real> cellCoordinates;
         auto topology = envelope.topology.Write();
         auto coordinates = envelope.coordinates.Write();
         std::vector<Geom::NodePeriodicBits> faceBits;
         for (index iCell = 0; iCell < view.NumCell(); ++iCell)
         {
-            auto row = topology.View()[iCell];
             const auto nodes = view.CellNodes(iCell), faces = view.CellFaces(iCell);
             auto element = view.GetCellElement(iCell);
+            cellTopology.resize(4 + 2 * nodes.size() + 3 * faces.size());
+            cellCoordinates.resize(3 * nodes.size());
+            auto &row = cellTopology;
             row[0] = index(view.GetCellInfo(iCell).getElemType());
             row[1] = view.GetCellZone(iCell);
             row[2] = nodes.size();
@@ -363,7 +370,7 @@ namespace DNDS::Cauchy::CheckpointMetadata
                 row[5 + 2 * slot] = view.IsPeriodic() ? index(uint8_t(view.CellNodePeriodicBits(iCell)[slot])) : 0;
                 const auto point = view.GetCoordNodeOnCell(iCell, slot);
                 for (int d = 0; d < 3; ++d)
-                    coordinates.View()(iCell, 3 * slot + d) = point[d];
+                    cellCoordinates[3 * slot + d] = point[d] == 0 ? 0 : point[d];
             }
             for (rowsize slot = 0; slot < rowsize(faces.size()); ++slot)
             {
@@ -387,8 +394,30 @@ namespace DNDS::Cauchy::CheckpointMetadata
                 }
                 row[offset + 2] = frame;
             }
+            const auto id = mesh.OriginalEntityId(Geom::EntityKind::Cell, iCell);
+            hashes[0] ^= DNDS::IO::ContentHash(id, row.data(), row.size() * sizeof(index));
+            hashes[1] ^= DNDS::IO::ContentHash(id, cellCoordinates.data(), cellCoordinates.size() * sizeof(real));
+            if (legacyRows)
+            {
+                std::copy(row.begin(), row.end(), topology.View()[iCell].data());
+                std::copy(cellCoordinates.begin(), cellCoordinates.end(), coordinates.View()[iCell].data());
+            }
         }
+        if (view.IsPeriodic() && mesh.getMPI().rank == 0)
+        {
+            const auto t = envelope.periodicTransforms.Read();
+            hashes[1] ^= DNDS::IO::ContentHash(uint64_t(-1), t.View().data, 45 * sizeof(real));
+        }
+        envelope.localHashes = hashes;
+        envelope.globalCounts = {mesh.NumNodeGlobal(), mesh.NumCellGlobal(), mesh.NumBndGlobal()};
         return envelope;
+    }
+
+    Json GlobalMeshHashes(const MeshEnvelope &envelope, const MPIInfo &mpi)
+    {
+        auto hashes = envelope.localHashes;
+        MPI::AllreduceInPlace<MPI::Reduction::BitXor>(MPI::ContiguousView<uint64_t>{hashes.data(), hashes.size()}, mpi.comm);
+        return {{"algorithm", "cell-id-fnv1a64-mix-v1"}, {"nodes", envelope.globalCounts[0]}, {"cells", envelope.globalCounts[1]}, {"boundaries", envelope.globalCounts[2]}, {"topology", hashes[0]}, {"coordinates", hashes[1]}};
     }
     bool SameRows(const Runtime::Array<real> &left, const Runtime::Array<real> &right)
     {

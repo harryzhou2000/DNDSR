@@ -131,9 +131,8 @@ handling, not recovery from a lost MPI process.
 Construct the destination meshes first, then call `ReadCheckpoint`. Persistent
 cell IDs allow a different MPI count, partition/order and supported field layout.
 Domain names/order, physical model and validated mesh identity must remain
-compatible; this is not arbitrary remeshing interpolation. Mesh-validation
-arrays in a solution checkpoint do not replace a standalone mesh archive or a
-mesh construction frontend. Keep the manifest and its `.parts` directory together
+compatible; this is not arbitrary remeshing interpolation. The default solution checkpoint stores mesh fingerprints. Enable
+`output.checkpointFullMesh` to include a native Geom archive. Keep the manifest and its `.parts` directory together
 when moving a restart. Visualization instead writes one `<prefix>_domainN.vtkhdf`
 per domain, in reference coordinates; a renderer applies the recorded rigid pose
 when displaying the ground-frame geometry.

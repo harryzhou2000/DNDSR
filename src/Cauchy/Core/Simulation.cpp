@@ -177,10 +177,8 @@ namespace DNDS::Cauchy
             if (factory)
                 _setupTimings[iDomain].meshIngress = MPI_Wtime() - started;
             const real domainStarted = MPI_Wtime();
-            auto domainSettings = domain.settings;
-            domainSettings.boundaryFacialFluxes = _config.Output().boundaryFacialFluxes;
             _domains[iDomain] = std::make_unique<Domain>(
-                domain.placement.name, std::move(mesh), std::move(domainSettings),
+                domain.placement.name, std::move(mesh), domain.settings,
                 _config.Time(), progress);
             _setupTimings[iDomain].domainSetup = MPI_Wtime() - domainStarted;
         }

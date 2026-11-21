@@ -96,6 +96,16 @@ namespace DNDS::Cauchy::Bindings
         {
             g.Domain(domain).AdvanceStage(stage);
         }, Released{})
+            .def("agree_terminal",
+                 [](const PythonGroup &g)
+        {
+            return g.Get().AgreeTerminal();
+        }, Released{})
+            .def("publish_iteration",
+                 [](const PythonGroup &g, bool terminal)
+        {
+            g.Get().PublishIteration(terminal);
+        }, Released{})
             .def("finish_iteration", [](const PythonGroup &g)
         {
             return g.Get().FinishIteration();

@@ -63,6 +63,11 @@ namespace DNDS::Cauchy
                                          const EquationDofs &mean, const EquationDofs &residual, const EquationDofs &constant,
                                          EquationDofs &output, real inverseDt, real rhsScale, SpanView<const uint8_t> selection,
                                          int normOrder, bool measureNorm) const;
+        /// Queue the defect, norm reduction and scalar staging. Consume the returned observation once at the stop gate.
+        std::function<std::vector<real>()> SubmitDefect(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                                        const EquationDofs &mean, const EquationDofs &residual, const EquationDofs &constant,
+                                                        EquationDofs &output, real inverseDt, real rhsScale, SpanView<const uint8_t> selection,
+                                                        int normOrder, bool measureNorm) const;
         /// Raw sums of volume*abs(U_j), then volume. Component normalization
         /// and global agreement are deliberately separate from this operator.
         std::vector<real> MeasureMeanState(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;

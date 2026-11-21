@@ -401,6 +401,8 @@ namespace DNDS::Cauchy
         if (alpha)
             alpha->Complete(completed);
         work.rhsState.reset();
+        work.boundaryMomentumCurrent = work.boundaryFacialFluxCurrent = false;
+        work.lastSpatialResidual.reset();
         work.rhsCoefficients.reset();
         work.rhsUnlimitedViscousCoefficients.reset();
         state.finalizedFrom.reset();

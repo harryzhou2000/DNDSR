@@ -274,11 +274,11 @@ namespace DNDS::CFV
             SetPeriodicTransformations(
                 [mesh = mesh, Seq123](auto u, Geom::t_index id)
                 {
-                    u(EigenAll, Seq123) = mesh->Periodic().TransVector<pDim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
+                    u(EigenAll, Seq123) = mesh->Periodic().template TransVector<pDim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
                 },
                 [mesh = mesh, Seq123](auto u, Geom::t_index id)
                 {
-                    u(EigenAll, Seq123) = mesh->Periodic().TransVectorBack<pDim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
+                    u(EigenAll, Seq123) = mesh->Periodic().template TransVectorBack<pDim, Eigen::Dynamic>(u(EigenAll, Seq123).transpose(), id).transpose();
                 });
         }
 

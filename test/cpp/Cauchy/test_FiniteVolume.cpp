@@ -1283,10 +1283,14 @@ TEST_CASE("Cauchy observation cadence leaves a fixed-sweep P3 trajectory unchang
     settings.numerics.reconstruction = "variational";
     settings.numerics.cfv.maxOrder = 3;
     settings.numerics.reconstructionIterations = 4;
-    C::Domain observed("observed", mesh, settings), control("control", mesh, settings);
+    C::TimeSettings time;
+    time.exactReconstructionRollback = true;
+    C::Domain observed("observed", mesh, settings, time), control("control", mesh, settings, time);
     const auto first = observed.Diagnostics(settings, {});
     const auto repeat = observed.Diagnostics(settings, {});
-    CHECK(first == repeat);
+    CHECK(std::isnan(first[4])); // No spatial evaluation has run yet.
+    CHECK(std::isnan(repeat[4]));
+    CHECK(first[0] == repeat[0]);
     for (int step = 0; step < 3; ++step)
     {
         observed.Diagnostics(settings, {});
@@ -1295,9 +1299,10 @@ TEST_CASE("Cauchy observation cadence leaves a fixed-sweep P3 trajectory unchang
     }
     const auto accepted = observed.Diagnostics(settings, {});
     REQUIRE(observed.PrepareStep(.002).accepted);
-    CHECK(observed.Diagnostics(settings, {}) == accepted);
+    const auto pending = observed.Diagnostics(settings, {});
+    CHECK(pending[0] == accepted[0]); // Accepted means, last natural RHS.
     observed.DiscardStep();
-    CHECK(observed.Diagnostics(settings, {}) == accepted);
+    CHECK(observed.Diagnostics(settings, {}) == pending);
     REQUIRE(observed.Advance(.001).accepted);
     REQUIRE(control.Advance(.001).accepted);
     auto a = observed.Dofs().CoupledField().Owned().Read(), b = control.Dofs().CoupledField().Owned().Read();

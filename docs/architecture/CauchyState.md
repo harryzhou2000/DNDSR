@@ -896,7 +896,7 @@ pressure/temperature and full-state residual norms. The equation RHS also
 publishes a boundary-quadrature momentum-flux array. `LastBoundaryForce` sums
 selected wall zones, then reduces across domain ranks, using the actual
 numerical pressure and viscous/RANS traction, in mesh axes. It reads only a
-completed observation workspace and rejects use before a successful RHS call.
+workspace of the last completed spatial evaluation and rejects use before a successful RHS call.
 The sign is pressure times the outward fluid normal minus viscous traction,
 matching the flow5 diagnostic. No full spatial-flame or RANS acceptance is implied.
 
@@ -1015,15 +1015,19 @@ fields and scatters logical blocks locally. This conversion belongs to restart,
 not numerical kernels. Every component range must cover its parent exactly,
 without overlap or holes; matching the total component count is insufficient.
 
-Extended Domains write `cauchy_format=5`. The top-level metadata and mesh
-envelope retain the format-4 conventions, with `state_storage` and optional
-`reconstruction_storage` descriptors added to `metadata_json`. Native arrays
-are named `state_field_0`, `state_field_1`, etc.; optional arrays use
-`reconstruction_field_` and `history_field_`. The history uses the mean-state
-block map. BDF2's previous state includes every equation block and its previous
-dt. `cell_ids`, topology, coordinates, periodic transforms, accepted time/step
-and last dt retain their existing meanings. Existing perfect-gas flow5 files
-continue to use format 4 and read formats 2 through 4.
+Domain checkpoint format 6 stores persistent `cell_ids`, owned `state_field_N` arrays,
+and method-specific history. The `metadata_json` block describes field grouping,
+time and frame state, global node/cell/boundary counts, and independent topology
+and coordinate fingerprints. The topology fingerprint preserves element-slot
+order, persistent node IDs, physical zones, neighbor IDs and periodic incidence.
+Owned cells contribute once, keyed by persistent cell ID, using a commutative
+XOR across ranks. The coordinate fingerprint includes periodic transforms.
+Both fingerprints use the native scalar representation and are intended to
+detect accidental mesh changes. Formats 2 through 5 remain readable.
+Set `output.restartCheckCoordinates=false` to accept intentionally moved or
+re-rounded coordinates. Counts, topology and cell-ID correspondence are still
+checked. Set `output.checkpointFullMesh=true` to include a recoverable Geom
+archive under `native_mesh`. Solver startup currently supplies the mesh.
 
 The default still omits reconstruction. An explicitly saved compatible guess
 restores every block; missing guesses or changed polynomial metadata/widths
@@ -1084,8 +1088,8 @@ The C++ and Python frontends share these methods. Several domains have separate
 histories and `_domainN` visualization prefixes; timestep selection uses their
 minimum and steady termination requires every domain to meet its criterion.
 
-`WriteVisualization` uses a separate observation reconstruction, so output
-cadence does not overwrite the production warm-start guess. Volume VTKHDF
+`WriteVisualization` borrows the requested primary state and the last published finest RHS.
+Packing proceeds on the compute stream before the writer receives detached host fields. Volume VTKHDF
 contains all conservative component names (including transported `rhoY:name`),
 plus `p`, `T`, `u`, `v`, `w`, `Mach` and all `Y:name` fractions, including the
 dependent species. Derived properties are evaluated once per cell into an

@@ -279,8 +279,7 @@ TEST_CASE("Coordinated DITR policy retains idle ranks and midpoint-before-endpoi
     { return std::make_pair(0, 0.); };
     problem.advanceStage = [&](int slot, auto &, bool apply)
     {
-        CHECK(apply);
-        order.push_back("update" + std::to_string(slot));
+        order.push_back(std::string(apply ? "update" : "initialRHS") + std::to_string(slot));
     };
     if (placement.DomainRank(0) >= 0)
         session.emplace(C::NonlinearSession::Prepare(setup, 0, std::move(problem)));
@@ -292,7 +291,7 @@ TEST_CASE("Coordinated DITR policy retains idle ranks and midpoint-before-endpoi
         group.domains.emplace_back(*session);
     group.refreshInterfaces = [&](int slot, I iteration)
     {
-        CHECK(iteration >= 1);
+        CHECK(iteration >= 0);
         CHECK(iteration <= 2);
         order.push_back("refresh" + std::to_string(slot));
     };
@@ -300,13 +299,13 @@ TEST_CASE("Coordinated DITR policy retains idle ranks and midpoint-before-endpoi
     { order.push_back("finish"); };
     C::SolveNonlinearGroup(group);
     std::vector<std::string> expected;
-    for (int iteration = 1; iteration <= 2; ++iteration)
+    for (int iteration = 0; iteration <= 2; ++iteration)
     {
         for (int slot = 0; slot < 2; ++slot)
         {
             expected.push_back("refresh" + std::to_string(slot));
             if (session)
-                expected.push_back("update" + std::to_string(slot));
+                expected.push_back(std::string(iteration ? "update" : "initialRHS") + std::to_string(slot));
             expected.push_back("finish");
         }
         if (session)

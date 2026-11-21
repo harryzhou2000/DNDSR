@@ -10,6 +10,7 @@
 #include "CartesianFixture.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "../Geom/InterfaceFixture.hpp"
+#include "Geom/IO/NativeMeshArchive.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -122,6 +123,66 @@ TEST_CASE("Prepared checkpoint owns its fields metadata and communicator beyond 
     prepared.reset();
     Remove({path});
 }
+TEST_CASE("Full native mesh is recoverable and coordinate validation can be disabled independently")
+{
+    const auto path = Path("cauchy-full-mesh-");
+    C::DomainSettings settings;
+    settings.checkpointFullMesh = true;
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::Domain source("flow", mesh, settings);
+    Initialize(source);
+    source.WriteCheckpoint(path, C::Json::object());
+    auto file = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
+    file->OpenFile(path, true);
+    auto archived = DNDS::Geom::ReadNativeMeshArchive(mpi, file, "native_mesh");
+    CHECK(archived->NumGlobal(DNDS::Geom::EntityKind::Cell) == mesh->NumCellGlobal());
+    file->CloseFile();
+    auto changed = CauchyTest::PeriodicQuads(mpi, 4, 1, .01);
+    C::Domain strict("flow", changed, settings);
+    CHECK_THROWS(strict.ReadCheckpoint(path, C::Json::object()));
+    settings.restartCheckCoordinates = false;
+    C::Domain permissive("flow", changed, settings);
+    permissive.ReadCheckpoint(path, C::Json::object());
+    Remove({path});
+}
+
+TEST_CASE("Shared VTK mesh reuses topology after coordinate motion and points across static dumps")
+{
+    const auto dir = std::filesystem::path(Path("cauchy-shared-vtk-"));
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    const auto dump = [&](const auto &geometry, const std::string &name)
+    {
+        auto settings = geometry->hdf5OutSetting;
+        settings.sharedMesh = true;
+        geometry->PrintParallelVTKHDFDataArray((dir / name).string(), "", 1, 0, 0, 0,
+                                               [](int)
+                                               { return std::string("sample"); }, [](int, DNDS::index)
+                                               { return 4.; },
+                                               {}, {}, {}, {}, {}, {}, 0., mpi.comm, &settings);
+    };
+    dump(mesh, "a");
+    dump(mesh, "b");
+    dump(CauchyTest::PeriodicQuads(mpi, 4, 1, .01), "c");
+    if (mpi.rank == 0)
+    {
+        size_t points = 0, topology = 0;
+        for (const auto &entry : std::filesystem::directory_iterator(dir))
+        {
+            const auto name = entry.path().filename().string();
+            points += name.find("dnds-vtk-points-") == 0;
+            topology += name.find("dnds-vtk-topology-") == 0;
+        }
+        CHECK(points == 2);
+        CHECK(topology == 1);
+        const auto a = (dir / "a.vtkhdf").string(), b = (dir / "b.vtkhdf").string(), c = (dir / "c.vtkhdf").string();
+        CHECK(ReadVTKField<double>(a, "Points", H5T_NATIVE_DOUBLE) == ReadVTKField<double>(b, "Points", H5T_NATIVE_DOUBLE));
+        CHECK(ReadVTKField<double>(a, "Points", H5T_NATIVE_DOUBLE) != ReadVTKField<double>(c, "Points", H5T_NATIVE_DOUBLE));
+        CHECK(ReadVTKField<long long>(a, "Connectivity", H5T_NATIVE_LLONG) == ReadVTKField<long long>(c, "Connectivity", H5T_NATIVE_LLONG));
+        std::filesystem::remove_all(dir);
+    }
+    MPI_Barrier(mpi.comm);
+}
+
 TEST_CASE("Detached host snapshots retain accepted values after the domain mutates")
 {
     C::DomainSettings settings;
@@ -259,6 +320,7 @@ static void CheckViscousWallSnapshot(bool acm)
             rans(cell, 0) = .03 + .02 * center[1];
         }
     }
+    domain.Residual(); // Publish the facial flux being checked.
     domain.WriteVisualization(prefix, 0);
     const auto boundary = prefix + "_bnd.vtkhdf";
     const auto zones = ReadVTKField<int>(boundary, "CellData/bnd_zone_id", H5T_NATIVE_INT);
@@ -316,6 +378,7 @@ TEST_CASE("Boundary snapshot follows the face owner when the boundary record is 
         for (int j = 0; j < 5; ++j)
             write.View()(0, j) = state[j];
     }
+    domain.Residual();
     // Use the writer communicator while preserving the rotated parent-face ownership.
     domain.PrepareVisualization(0).Write(prefix, DNDS::Runtime::CommunicationContext::Duplicate(mpi.comm));
     const auto boundary = prefix + "_bnd.vtkhdf";
@@ -845,7 +908,11 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
             source.WriteCheckpoint(polynomial, config.Root(), true);
             auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(writers);
             serializer->OpenFile(plain, true);
-            CHECK_FALSE(serializer->ListCurrentPath().count("reconstruction_field_0"));
+            const auto keys = serializer->ListCurrentPath();
+            CHECK_FALSE(keys.count("mesh_topology"));
+            CHECK_FALSE(keys.count("mesh_coordinates"));
+            CHECK_FALSE(keys.count("native_mesh"));
+            CHECK_FALSE(keys.count("reconstruction_field_0"));
             CHECK(serializer->ListCurrentPath().count("metadata_json") == 1);
             serializer->CloseFile();
             serializer->OpenFile(polynomial, true);

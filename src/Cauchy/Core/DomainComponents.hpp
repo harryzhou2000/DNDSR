@@ -46,7 +46,7 @@ namespace DNDS::Cauchy
         std::optional<Runtime::Array<real>> limitedVRBackup;
         std::unique_ptr<EquationTimeStepper> timeStepper;
         std::shared_ptr<NonlinearSolveState> coupledNonlinear = std::make_shared<NonlinearSolveState>();
-        bool restoreReconstruction = false;
+        bool restoreReconstruction = false, exactReconstructionRollback = false;
         StateEpoch epoch, trialEpoch;
         uint64_t nextTrial = 0;
         real time = 0, trialTime = 0, trialDt = 0, lastAcceptedDt = 0,
@@ -107,11 +107,7 @@ namespace DNDS::Cauchy
     {
         /// Created once on participating ranks, before binding streamed reductions.
         std::shared_ptr<Runtime::CommunicationContext> reductionContext;
-        std::shared_ptr<FiniteVolume::Workspace> workspace,
-            observationWorkspace;
-        std::shared_ptr<FiniteVolume::ReconstructionState>
-            observationReconstruction;
-        std::optional<EquationDofs> observationInput, observationState;
+        std::shared_ptr<FiniteVolume::Workspace> workspace;
         std::unique_ptr<NonlinearSolver> implicit;
         std::unique_ptr<PolynomialMultigrid> multigrid;
         /// Lazy backend reductions/explicit arithmetic; unused blend and CFL

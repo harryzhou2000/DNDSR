@@ -138,6 +138,7 @@ TEST_CASE("LVR warm restart and output cadence preserve the complete implicit tr
                 const auto settings = Settings(variant, layout);
                 C::TimeSettings time;
                 time.method = method;
+                time.exactReconstructionRollback = true;
                 time.ditr.iterations = 2;
                 time.ditr.absoluteTolerance = 1e-100;
                 time.ditr.relativeTolerance = 0;

@@ -1,9 +1,15 @@
 #pragma once
 
 #include "Cauchy/IO/CheckpointLoadMode.hpp"
+#include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
 #include "DNDS/Runtime/Array/Array.hpp"
 #include "DNDS/Serializer/SerializerBase.hpp"
 #include <nlohmann/json.hpp>
+
+namespace DNDS::Geom
+{
+    struct NativeOwnedMeshData;
+}
 
 namespace DNDS::Cauchy
 {
@@ -22,6 +28,9 @@ namespace DNDS::Cauchy::CheckpointMetadata
         Runtime::Array<index> topology;
         Runtime::Array<real> coordinates;
         Runtime::Array<real> periodicTransforms;
+        std::array<uint64_t, 2> localHashes{};
+        std::array<index, 3> globalCounts{};
+        std::shared_ptr<const Geom::NativeOwnedMeshData> archive;
     };
 
     /// Normalize inactive historical fields only; retain physical distinctions.
@@ -33,7 +42,8 @@ namespace DNDS::Cauchy::CheckpointMetadata
     bool CompatibleFrame(const Json &metadata, const FiniteVolume &fv, real time);
     index StoredRows(const Serializer::SerializerBaseSSP &serializer, const std::string &name);
     Runtime::Array<index> CellIds(const Domain &domain);
-    MeshEnvelope DescribeMesh(const Domain &domain);
+    MeshEnvelope DescribeMesh(const Domain &domain, bool legacyRows = false);
+    Json GlobalMeshHashes(const MeshEnvelope &envelope, const MPIInfo &mpi);
     bool SameRows(const Runtime::Array<real> &left, const Runtime::Array<real> &right);
     std::string RowDifference(const Runtime::Array<real> &left, const Runtime::Array<real> &right,
                               const Runtime::Array<index> &ids);

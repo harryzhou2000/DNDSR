@@ -100,6 +100,7 @@ namespace DNDS::Geom
             int deflateLevel = 1;
             bool coll_on_data = false;
             bool coll_on_meta = true;
+            bool sharedMesh = false; ///< Store immutable mesh datasets as relative HDF5 external links.
         } hdf5OutSetting;
         struct ElevationInfo
         {

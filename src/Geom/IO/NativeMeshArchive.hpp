@@ -23,6 +23,10 @@ namespace DNDS::Geom
     void WriteNativeMeshArchive(const UnstructuredMeshState &source, const MPIInfo &mpi,
                                 Serializer::SerializerBaseSSP serializer, const std::string &name);
 
+    /// Write an already captured owned mesh on the writer communicator.
+    void WriteNativeMeshArchive(const NativeOwnedMeshData &owned, const MPIInfo &mpi,
+                                Serializer::SerializerBaseSSP serializer, const std::string &name);
+
     /// Read directly into native owned arrays and rebuild sparse ghost closure.
     /// Unknown restores saved rank partitions; EvenSplit reads each entity
     /// family's contiguous even partition, including with a different MPI size.

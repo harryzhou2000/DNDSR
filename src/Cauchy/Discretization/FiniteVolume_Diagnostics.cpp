@@ -8,6 +8,22 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
+    OptionalRef<const EquationDofs> FiniteVolume::LastSpatialResidual(const Workspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
+        if (!work.boundaryMomentumCurrent || !work.lastSpatialResidual)
+            return {};
+        for (index f = 0; f < work.lastSpatialResidual->PhysicalFieldNumber(); ++f)
+            if (!work.lastSpatialRows[f].Current(work.lastSpatialResidual->PhysicalField(f).Owned()))
+                return {};
+        return std::cref(*work.lastSpatialResidual);
+    }
+    void FiniteVolume::InvalidateSpatialObservation(Workspace &work) const
+    {
+        work.boundaryMomentumCurrent = work.boundaryFacialFluxCurrent = false;
+        work.lastSpatialResidual.reset();
+        work.lastSpatialRows.clear();
+    }
     Vector3 FiniteVolume::LastBoundaryForce(const Workspace &work, const std::vector<int> &zones,
                                             std::optional<R::ExecutionStream> stream) const
     {

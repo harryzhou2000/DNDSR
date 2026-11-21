@@ -83,6 +83,8 @@ namespace DNDS::Cauchy
         /// diagnostics obey the Cauchy collective-check master switch.
         index BeginIteration();
         /// Agree termination, then publish every domain's iteration state.
+        bool AgreeTerminal() const;
+        void PublishIteration(bool terminal);
         bool FinishIteration();
         void RefreshInterfaces(int coupledStage, index iteration) const;
         void FinishInterfaces() const;

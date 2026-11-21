@@ -226,6 +226,7 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
             settings.implicit.minIterations = 0;
             C::TimeSettings time;
             time.method = method;
+            time.exactReconstructionRollback = true;
             C::Domain retried("retry", mesh, settings, time), direct("direct", mesh, settings, time);
             DensityWave(retried);
             DensityWave(direct);
@@ -268,6 +269,42 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
             CHECK(retried.Discretization().Admissible(retried.Dofs()));
         }
 }
+TEST_CASE("Default trial borrows the reconstruction and a discarded step cold-starts it")
+{
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 2;
+    settings.numerics.reconstructionIterations = 1;
+    C::Domain domain("cold", CauchyTest::PeriodicQuads(mpi, 4), settings);
+    DensityWave(domain);
+    domain.Residual();
+    const auto maxCoefficient = [&]
+    {
+        const auto snapshot = domain.CaptureStateSnapshot(true);
+        const auto read = snapshot.Reconstruction()->CoupledField().Owned().Read();
+        const auto view = read.View();
+        DNDS::real maximum = 0;
+        for (size_t i = 0; i < view.RowCount(); ++i)
+            for (size_t j = 0; j < view.RowSize(i); ++j)
+                maximum = std::max(maximum, std::abs(view(i, j)));
+        return DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Max>(maximum, mpi.comm);
+    };
+    REQUIRE(maxCoefficient() > 0);
+    REQUIRE(domain.PrepareStep(.001).accepted);
+    CHECK_FALSE(domain.CaptureStateSnapshot(true).Reconstruction());
+    domain.DiscardStep();
+    // Discard is noexcept. The next trial resets the coefficients before its first RHS.
+    C::Domain cold("reference", CauchyTest::PeriodicQuads(mpi, 4), settings);
+    DensityWave(cold);
+    REQUIRE(domain.Advance(.001).accepted);
+    REQUIRE(cold.Advance(.001).accepted);
+    const auto actual = domain.Dofs().CoupledField().Owned().Read();
+    const auto expected = cold.Dofs().CoupledField().Owned().Read();
+    for (size_t row = 0; row < actual.View().RowCount(); ++row)
+        for (size_t c = 0; c < actual.View().RowSize(row); ++c)
+            CHECK(actual.View()(row, c) == expected.View()(row, c));
+}
+
 TEST_CASE("Steady BDF1 infinite-dt mode removes a nonconstant residual without advancing physical time")
 {
     for (const auto *layout : {"aos", "soa", "aosoa32"})
@@ -279,6 +316,7 @@ TEST_CASE("Steady BDF1 infinite-dt mode removes a nonconstant residual without a
                                  { return CauchyTest::PeriodicQuads(domainMPI, 4); });
         auto &domain = simulation.GetDomain(0);
         DensityWave(domain);
+        domain.Residual(); // Publish the initial spatial residual before measuring convergence.
         const auto before = domain.Diagnostics(config.Domains()[0].settings, {});
         REQUIRE(before[4] > 1e-3);
         REQUIRE(simulation.Advance(.01).accepted); // Irrelevant finite placeholder in steady mode.

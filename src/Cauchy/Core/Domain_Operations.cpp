@@ -140,7 +140,6 @@ namespace DNDS::Cauchy
                           : std::function<void(const BoundaryInputs &)>{};
         return [discrete = _problem.finiteVolume,
                 packets = _execution.interfaces, work = _execution.workspace,
-                observation = _execution.observationWorkspace,
                 mean = _execution.timePPWorkspace, coarse = std::move(coarse),
                 middle = std::move(middle), coupled, coupledStage](const BoundaryInputs &input)
         {
@@ -149,8 +148,6 @@ namespace DNDS::Cauchy
             if (coupled)
                 packets->coupled[size_t(coupledStage)] = published;
             discrete.SetBoundaryInputs(*work, published);
-            if (observation)
-                discrete.SetBoundaryInputs(*observation, published);
             if (mean)
                 discrete.SetBoundaryInputs(*mean, published);
             packets->active = published;

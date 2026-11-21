@@ -4,6 +4,7 @@
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/IO/CGNS.hpp"
 #include "DNDS/IO/OutputDir.hpp"
+#include "DNDS/IO/ContentHash.hpp"
 #include "DNDS/Serializer/HDF5Access.hpp"
 #include <array>
 #include <thread>
@@ -1409,11 +1410,11 @@ namespace DNDS::Geom
                                       hdf5OutSetting.deflateLevel >= 0 && hdf5OutSetting.deflateLevel <= 9,
                                   "invalid VTKHDF chunk/compression settings"); });
         const index chunkSize = index(hdf5OutSetting.chunkSize), deflateLevel = hdf5OutSetting.deflateLevel;
-        index settingsRange[]{chunkSize, deflateLevel, hdf5OutSetting.coll_on_data, hdf5OutSetting.coll_on_meta,
-                              -chunkSize, -deflateLevel, -index(hdf5OutSetting.coll_on_data), -index(hdf5OutSetting.coll_on_meta)};
-        MPI_Allreduce(MPI_IN_PLACE, settingsRange, 8, DNDS_MPI_INDEX, MPI_MIN, commDup);
-        for (int i = 0; i < 4; ++i)
-            DNDS_check_throw_info(settingsRange[i] == -settingsRange[i + 4], "VTKHDF settings differ between ranks");
+        index settingsRange[]{chunkSize, deflateLevel, hdf5OutSetting.coll_on_data, hdf5OutSetting.coll_on_meta, hdf5OutSetting.sharedMesh,
+                              -chunkSize, -deflateLevel, -index(hdf5OutSetting.coll_on_data), -index(hdf5OutSetting.coll_on_meta), -index(hdf5OutSetting.sharedMesh)};
+        MPI_Allreduce(MPI_IN_PLACE, settingsRange, 10, DNDS_MPI_INDEX, MPI_MIN, commDup);
+        for (int i = 0; i < 5; ++i)
+            DNDS_check_throw_info(settingsRange[i] == -settingsRange[i + 5], "VTKHDF settings differ between ranks");
         CurrentOutputFieldCounts(*this, arraySiz, vecArraySiz, arraySizPoint, vecArraySizPoint, commDup);
         auto retained = CurrentOutputRead(*this, commDup);
         auto nativeOutput = NativeMeshOutput::Build(*CurrentNativeState(), outputMPI);
@@ -1478,7 +1479,7 @@ namespace DNDS::Geom
         herr = H5Pset_coll_metadata_write(plist_id, hdf5OutSetting.coll_on_meta), H5SS;
         hid_t file_id = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
         DNDS_assert_info(H5I_INVALID_HID != file_id, "file open failed");
-        herr = H5Pclose(plist_id), H5S_Close;
+        const hid_t meshFileAccess = plist_id;
         DNDS_assert(herr >= 0 && file_id);
 
         hid_t VTKHDF_group_id = H5Gcreate(file_id, "/VTKHDF", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
@@ -1543,21 +1544,75 @@ namespace DNDS::Geom
                         H5T_NATIVE_LLONG, H5T_NATIVE_LLONG, plist_id, dcpl_id,
                         &numberOfConnectivity);
 
-        /************************************************************/
-        // log() << fmt::format("coordsSize {} cellSize {} ", outputNodeCount, outputCellCount);
-        // log() << fmt::format("numberOfNodes {}, numberOfCells {} numberOfCon {}", numberOfNodes, numberOfCells, numberOfConnectivity) << std::endl;
-        H5_WriteDataset(VTKHDF_group_id, "Points", numberOfNodes, vtkNodeOffset, outputNodeCount,
-                        H5T_NATIVE_DOUBLE, H5T_NATIVE_DOUBLE, plist_id, dcpl_id_3arr, outputCoordinates, 3);
-        /************************************************************/
-        DNDS_assert(vtkCell2nodeOffsets.size() == outputCellCount + 1);
-        H5_WriteDataset(VTKHDF_group_id, "Offsets", numberOfCells + 1, vtkCellOffset, outputCellCount + (mpi.rank == mpi.size - 1 ? 1 : 0),
-                        H5T_NATIVE_LLONG, H5T_NATIVE_LLONG, plist_id, dcpl_id, vtkCell2nodeOffsets.data(), -1);
-        H5_WriteDataset(VTKHDF_group_id, "Types", numberOfCells, vtkCellOffset, outputCellCount,
-                        H5T_NATIVE_UINT8, H5T_NATIVE_UINT8, plist_id, dcpl_id, vtkCellType.data(), -1);
-        H5_WriteDataset(VTKHDF_group_id, "Connectivity", vtkCell2NodeGlobalSiz, vtkCell2nodeOffsets.front(), vtkCell2node.size(),
-                        H5T_NATIVE_LLONG, H5T_NATIVE_LLONG, plist_id, dcpl_id, vtkCell2node.data(), -1);
-
-        /************************************************************/
+        const auto writePoints = [&](hid_t group)
+        {
+            H5_WriteDataset(group, "Points", numberOfNodes, vtkNodeOffset, outputNodeCount,
+                            H5T_NATIVE_DOUBLE, H5T_NATIVE_DOUBLE, plist_id, dcpl_id_3arr, outputCoordinates, 3);
+        };
+        const index offsetCount = outputCellCount + (mpi.rank == mpi.size - 1 ? 1 : 0);
+        const auto writeTopology = [&](hid_t group)
+        {
+            H5_WriteDataset(group, "Offsets", numberOfCells + 1, vtkCellOffset, offsetCount,
+                            H5T_NATIVE_LLONG, H5T_NATIVE_LLONG, plist_id, dcpl_id, vtkCell2nodeOffsets.data(), -1);
+            H5_WriteDataset(group, "Types", numberOfCells, vtkCellOffset, outputCellCount,
+                            H5T_NATIVE_UINT8, H5T_NATIVE_UINT8, plist_id, dcpl_id, vtkCellType.data(), -1);
+            H5_WriteDataset(group, "Connectivity", vtkCell2NodeGlobalSiz, vtkCell2nodeOffsets.front(), vtkCell2node.size(),
+                            H5T_NATIVE_LLONG, H5T_NATIVE_LLONG, plist_id, dcpl_id, vtkCell2node.data(), -1);
+        };
+        if (hdf5OutSetting.sharedMesh)
+        {
+            // Each key describes the actual dataset in VTK file order. Points and
+            // topology have independent lifetimes when a mesh deforms.
+            const auto chunkHash = [](uint64_t tag, index offset, const auto *values, size_t count)
+            {
+                return count ? DNDS::IO::ContentHash(DNDS::IO::ContentHash(tag, &offset, sizeof(offset)),
+                                                     values, count * sizeof(*values))
+                             : uint64_t(0);
+            };
+            uint64_t keys[]{chunkHash(0, vtkNodeOffset, outputCoordinates, 3 * outputNodeCount),
+                            chunkHash(1, vtkCellOffset, vtkCell2nodeOffsets.data(), offsetCount) ^
+                                chunkHash(2, vtkCellOffset, vtkCellType.data(), outputCellCount) ^
+                                chunkHash(3, vtkCell2nodeOffsets.front(), vtkCell2node.data(), vtkCell2node.size())};
+            MPI_Allreduce(MPI_IN_PLACE, keys, 2, MPI_UINT64_T, MPI_BXOR, commDup);
+            const auto share = [&](const char *kind, uint64_t key, std::initializer_list<const char *> datasets, auto write)
+            {
+                const auto name = fmt::format("dnds-vtk-{}-{:016x}.h5", kind, key);
+                const auto path = outFile.parent_path() / name;
+                int exists = 0;
+                FieldTransferDetail::LocalStage(outputMPI, [&]
+                                                {
+                    if (mpi.rank == mRank) exists = std::filesystem::is_regular_file(path); });
+                MPI_Bcast(&exists, 1, MPI_INT, mRank, commDup);
+                if (!exists)
+                {
+                    // Unique per snapshot path; publish only a collectively closed file.
+                    const auto temporary = outFile.string() + "." + name + ".partial";
+                    const hid_t file = H5Fcreate(temporary.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, meshFileAccess);
+                    DNDS_assert_info(file >= 0, "could not create shared VTKHDF mesh dataset file");
+                    write(file);
+                    const auto closed = H5Fclose(file);
+                    DNDS_assert_info(closed >= 0, "could not close shared VTKHDF mesh dataset file");
+                    FieldTransferDetail::LocalStage(outputMPI, [&]
+                                                    {
+                        if (mpi.rank == mRank) std::filesystem::rename(temporary, path); });
+                }
+                for (const auto *dataset : datasets)
+                {
+                    const std::string target = std::string("/") + dataset;
+                    const auto linked = H5Lcreate_external(name.c_str(), target.c_str(), VTKHDF_group_id, dataset,
+                                                           H5P_DEFAULT, H5P_DEFAULT);
+                    DNDS_assert_info(linked >= 0, "could not link shared VTKHDF mesh dataset");
+                }
+            };
+            share("points", keys[0], {"Points"}, writePoints);
+            share("topology", keys[1], {"Offsets", "Types", "Connectivity"}, writeTopology);
+        }
+        else
+        {
+            writePoints(VTKHDF_group_id);
+            writeTopology(VTKHDF_group_id);
+        }
+        herr = H5Pclose(meshFileAccess), H5S_Close;
 
         {
             std::vector<double> cellDataBuf(outputCellCount * 3);

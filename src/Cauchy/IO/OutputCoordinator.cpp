@@ -409,7 +409,7 @@ namespace DNDS::Cauchy
                           (output.historyInterval > 0 && domain.Epoch().acceptedStep % uint64_t(output.historyInterval) == 0)))
                           stateBounds = domain.MeasureStateBounds(false);
                       auto &baseline = baselines[size_t(iDomain)];
-                      if (baseline == 0)
+                      if (baseline == 0 && std::isfinite(values[4]))
                           baseline = std::max(values[4], real(1e-300));
                       const auto limit = useLimits
                                              ? limits.at(size_t(iDomain))
@@ -527,7 +527,7 @@ namespace DNDS::Cauchy
                 artifacts.push_back(
                     {{"kind", "checkpoint"},
                      {"path", plan.CheckpointPath(token)},
-                     {"schema", "dndsr.cauchy.checkpoint.v4"}});
+                     {"schema", "dndsr.cauchy.checkpoint.v6"}});
             if (visualization)
                 for (index iDomain = 0; iDomain < domains; ++iDomain)
                 {

@@ -288,6 +288,10 @@ namespace DNDS::Cauchy
         /// a second finite-volume frontend or a second reconstruction pass.
         std::optional<EquationDofs> lowOrderResidual;
         std::optional<R::Array<real>> lowOrderFaceFlux;
+        bool observeSpatialResidual = false;
+        std::optional<EquationDofs> lastSpatialResidual;
+        std::vector<ArrayPublication> lastSpatialRows;
+        void PublishSpatialObservation(const EquationDofs &residual);
         bool boundaryMomentumCurrent = false, boundaryFacialFluxCurrent = false;
         std::optional<MeanGradients> meanGradients;
         bool chemical;

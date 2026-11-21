@@ -284,7 +284,8 @@ unchanged throughout each correction, including its FAS recursion.
 `NonlinearDetail::Iterate` accepts an explicit residual-observation order:
 ordinary stage solves retain before-update observation, while a DITR problem
 can request observation after its two coupled updates. Both use the same norm,
-reference, CFL and cap policy; after-update mode has no iteration-zero stop.
+reference, CFL and cap policy. Round zero evaluates both stage rates at their
+own times and tests the combined stopping residual before any correction.
 
 That choice is now prepared through `UpdatePolicyRegistry`, not selected by an
 outer orchestration branch. `singleStageImplicit` invokes exactly one update
@@ -1523,7 +1524,7 @@ tickets. No time coefficient or history formula is duplicated in orchestration;
 a trial becomes committable only after its final group completes. Steady BDF1
 is `BeginStep(..., steady=true)`, with zero physical mass and source.
 
-Each DITR iteration applies the midpoint correction and then the endpoint correction. Each stage refreshes its rate. The policy observes the method-provided `I+H` residual after both updates and reports one iteration using the common CFL and convergence controls.
+Round zero refreshes the physical RHS at the midpoint and endpoint stage times and checks the coupled residual without correcting either state or growing CFL. Each subsequent DITR iteration applies the midpoint correction and then the endpoint correction. Each stage refreshes its rate. The policy observes the method-provided `I+H` residual after both updates and reports one iteration using the common CFL and convergence controls.
 
 `time.ditr.variant` selects `U2R2` (default) or `U2R1` for reaction-dominated
 stepping. Fraction and theta default to .55 and .9146. See [DITR](DITR.md) for
@@ -1606,17 +1607,13 @@ The Python Domain constructor honors the configured physical time method.
 Stage reports expose the final equation evaluation's reconstruction sweep count
 and relative update. CSV `implicit_final_vr_sweeps`/`implicit_final_vr_update`
 are their maxima across the step's stage reports, distinct from `vr_sweeps`/
-`vr_relative_update` produced by the independent observation workspace. They
+`vr_relative_update` from the finest spatial workspace. They
 are not cumulative VR work counts or maxima over all inner RHS evaluations.
 Polynomial FAS reports the finest residual evaluation's VR, rather than a
 coarse smoother's last call. Failure-only correction-cap diagnostics include
 the actual initial/final component residuals, work counts, pseudo-CFL and this
 stage VR snapshot; accepted state/time/history remain unchanged on rejection.
-Observation reconstruction is seeded afresh from the accepted numerical guess,
-or its preserved backup during a pending/rejected trial. It neither carries its
-own previous output's polynomial forward nor resets a converged boundary
-polynomial to zero. Repeated diagnostics therefore remain deterministic for
-the same accepted numerical state and cannot change the stepping trajectory.
+Observation packs primary fields from the requested means and consumes the latest available finest RHS publication. Reporting never updates a polynomial or owns a second reconstruction workspace. The last evaluated RHS can describe a different iterate than the accepted means during an active or rejected trial.
 Restart without saved coefficients intentionally cold-starts that numerical
 guess, as documented; exact diagnostic/trajectory continuation then need not
 match a warm restart.
@@ -2211,3 +2208,11 @@ Subsequent midpoint and endpoint publications are independent. Exact
 internal DITR checkpoints store and remap both arrays by cell alongside
 the method-owned rates when the selected source policy requires them.
 Older exact checkpoints lacking these arrays cannot resume that combination.
+
+### Spatial diagnostics and whole-step rollback
+
+The nonlinear stopping residual belongs to the time method. The accepted-step report instead combines accepted means with the last available finest spatial residual and wall forces. Visualization packs the requested means and available last-RHS fluxes on the compute stream. File output owns the staged fields. Neither reporting path sweeps VR. Before the first spatial evaluation the spatial residual norm is unavailable (NaN), and the steady residual reference starts at the first available measurement.
+
+The solver submits its defect and local norm reduction directly after the final flux/source rows on the domain compute stream. DITR submits each stage's rate normalization there. The stop gate observes the scalar reduction. The final correction copy is ordered on the same stream as its following RHS. Ordinary MPI, host-observed numerical admissibility, adaptive linear solvers and requested output can still require host synchronization.
+
+A rejected trial is discarded as a whole. By default the next attempt keeps the accepted means and clears the trial polynomial and LVR history. Set `time.exactReconstructionRollback` to retain the accepted polynomial and limiter history for exact retries. This is independent of `output.checkpointReconstruction`, which requests coefficients for an accepted-step restart. An internal exact checkpoint always preserves the active method stages and their reconstructions; it includes the pre-step polynomial only if exact rollback was enabled.

@@ -46,15 +46,19 @@ def _solve_single_stage_group(group):
         group.refresh_interfaces(0, iteration)
         for domain in domains:
             group.observe(domain)
-            if not group.local_terminal(domain):
-                group.advance_stage(domain, 0)
         group.finish_interfaces()
-        if group.finish_iteration():
+        terminal = group.agree_terminal()
+        if not terminal:
+            for domain in domains:
+                if not group.local_terminal(domain):
+                    group.advance_stage(domain, 0)
+        group.publish_iteration(terminal)
+        if terminal:
             return
 
 
 def _solve_ditr_domain_group(group):
-    """Finish every midpoint correction before sampling any endpoint donor."""
+    """Round zero refreshes both RHS values. Later rounds correct and refresh each stage in order."""
     domains = range(group.local_domains)
     while True:
         iteration = group.begin_iteration()

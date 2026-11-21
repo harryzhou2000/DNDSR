@@ -130,8 +130,8 @@ namespace DNDS::Geom
             return result;
         }
 
-        template <class F>
-        void Companions(NativeOwnedMeshData &data, F &&visit)
+        template <class Data, class F>
+        void Companions(Data &data, F &&visit)
         {
             visit("coordinates", EntityKind::Node, data.coords, "float64");
             visit("node_wall_distance", EntityKind::Node, data.nodeWallDist, "float64");
@@ -153,7 +153,7 @@ namespace DNDS::Geom
             return layout.IsVariable() ? -1 : index(layout.Width());
         }
 
-        Json Metadata(NativeOwnedMeshData &data, const MPIInfo &mpi, bool perRank)
+        Json Metadata(const NativeOwnedMeshData &data, const MPIInfo &mpi, bool perRank)
         {
             const auto &q = data.requirements;
             Json result{{"format", "DNDSR.NativeMesh"}, {"version", 2}, {"writer_ranks", mpi.size}, {"per_rank", perRank}, {"dimension", data.dimension}, {"periodic", data.periodic}, {"namespace", data.identity.meshNamespace}, {"requirements", {q.faces, q.inverse, q.edges, q.cellFaceNeighbors, q.wallDistance, q.allFaceCellsLocal}}};
@@ -274,7 +274,13 @@ namespace DNDS::Geom
                                 S::SerializerBaseSSP serializer, const std::string &name)
     {
         Arguments(mpi, serializer, name);
-        auto owned = NativeMeshAssembler::CaptureOwned(source, mpi);
+        WriteNativeMeshArchive(NativeMeshAssembler::CaptureOwned(source, mpi), mpi, std::move(serializer), name);
+    }
+
+    void WriteNativeMeshArchive(const NativeOwnedMeshData &owned, const MPIInfo &mpi,
+                                S::SerializerBaseSSP serializer, const std::string &name)
+    {
+        Arguments(mpi, serializer, name);
         Json metadata;
         std::string encoded;
         ArchiveStage(mpi, [&]

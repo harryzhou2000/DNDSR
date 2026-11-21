@@ -63,7 +63,7 @@ namespace DNDS::Cauchy
         domain._execution.Synchronize();
         std::optional<EquationDofs> reconstruction, previous;
         std::optional<Runtime::Array<real>> limitedVR;
-        if (includeReconstruction &&
+        if (includeReconstruction && (!domain._state.restoreReconstruction || domain._state.reconstructionBackup) &&
             domain._problem.finiteVolume.PolynomialReconstruction())
         {
             const auto &accepted = domain._state.restoreReconstruction

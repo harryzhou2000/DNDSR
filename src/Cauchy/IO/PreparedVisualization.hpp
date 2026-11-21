@@ -19,7 +19,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<Data> _data;
         PreparedVisualization(std::shared_ptr<Geom::UnstructuredMesh>, Runtime::Array<real>,
                               std::vector<std::string>, std::shared_ptr<const BoundaryOutputGeometry>,
-                              std::optional<Runtime::Array<real>>, std::vector<std::string>, real time, int deflate);
+                              std::optional<Runtime::Array<real>>, std::vector<std::string>, real time, int deflate, bool sharedMesh);
 
     public:
         void Write(const std::string &prefix, std::shared_ptr<Runtime::CommunicationContext>) const;

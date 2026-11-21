@@ -195,7 +195,8 @@ namespace DNDS::Cauchy
         }
         {
             auto workspaceStage = progress.Stage("state/workspace");
-            workspace = problem.finiteVolume.BuildWorkspace(state.trial, context.ChemicalWorkers());
+            workspace = problem.finiteVolume.BuildWorkspace(state.trial, context.ChemicalWorkers(),
+                                                            FiniteVolume::WorkspaceOptions{FiniteVolume::RHSKernelPolicy::Auto, problem.finiteVolume.Settings().boundaryFacialFluxes, true});
         }
     }
 }

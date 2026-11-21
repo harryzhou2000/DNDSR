@@ -26,14 +26,14 @@ namespace DNDS::Cauchy
                     const index iteration = group.BeginIteration();
                     group.RefreshInterfaces(0, iteration);
                     for (auto reference : group.domains)
-                    {
-                        auto &domain = reference.get();
-                        domain.Observe();
-                        if (!domain.LocalTerminal())
-                            domain.AdvanceStage(0);
-                    }
+                        reference.get().Observe();
                     group.FinishInterfaces();
-                    complete = group.FinishIteration();
+                    complete = group.AgreeTerminal();
+                    if (!complete)
+                        for (auto reference : group.domains)
+                            if (!reference.get().LocalTerminal())
+                                reference.get().AdvanceStage(0);
+                    group.PublishIteration(complete);
                 }
             }
         };
@@ -56,6 +56,8 @@ namespace DNDS::Cauchy
                 {
                     const index iteration = group.BeginIteration();
                     group.RefreshInterfaces(0, iteration);
+                    // Round zero evaluates both stage rates at their own times before any correction.
+                    // Subsequent visits apply the correction followed by its spatial rate on the same lane.
                     // Correction auxiliary/RHS operators import the packet
                     // event themselves. Keep independent core preparation
                     // ahead of that edge; no policy-wide pre-update wait.

@@ -33,6 +33,7 @@ namespace DNDS::Cauchy
                     CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && _state.timeStepper &&
                     metadata.value("time_method", std::string{}) == _state.timeStepper->Method() &&
                     metadata.value("polynomial_reconstruction", true) == polynomial &&
+                    (!polynomial || !_state.exactReconstructionRollback || metadata.contains("reconstruction_storage")) &&
                     (!metadata.contains("update_policy") || metadata.at("update_policy") == UpdatePolicyMetadata()) &&
                     metadata.value("reconstruction", Json()) == _problem.finiteVolume.ReconstructionMetadata();
         valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);

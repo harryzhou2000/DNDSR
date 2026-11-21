@@ -29,12 +29,13 @@ namespace DNDS::Cauchy
         }
         Data(std::shared_ptr<Geom::UnstructuredMesh> geometry, R::Array<real> values,
              std::vector<std::string> labels, std::shared_ptr<const BoundaryOutputGeometry> surface,
-             std::optional<R::Array<real>> fluxValues, std::vector<std::string> fluxLabels, real when, int deflate)
+             std::optional<R::Array<real>> fluxValues, std::vector<std::string> fluxLabels, real when, int deflate, bool sharedMesh)
             : mesh(std::move(geometry)), read(mesh->AcquireRead(Requirements(*mesh))),
               fields(std::move(values)), names(std::move(labels)), boundary(std::move(surface)),
               flux(std::move(fluxValues)), fluxNames(std::move(fluxLabels)), time(when), settings(mesh->hdf5OutSetting)
         {
             settings.deflateLevel = deflate;
+            settings.sharedMesh = sharedMesh;
             DNDS_check_throw_info(fields.GetDevice() == R::Device::Host(), "visualization requires host fields");
             DNDS_check_throw_info(!flux || (flux->GetDevice() == R::Device::Host() && flux->RowCount() == boundary->rows.RowCount() &&
                                             flux->Layout().Width() == index(fluxNames.size()) + 3),
@@ -44,9 +45,9 @@ namespace DNDS::Cauchy
 
     PreparedVisualization::PreparedVisualization(std::shared_ptr<Geom::UnstructuredMesh> mesh, R::Array<real> fields,
                                                  std::vector<std::string> names, std::shared_ptr<const BoundaryOutputGeometry> boundary,
-                                                 std::optional<R::Array<real>> flux, std::vector<std::string> fluxNames, real time, int deflate)
+                                                 std::optional<R::Array<real>> flux, std::vector<std::string> fluxNames, real time, int deflate, bool sharedMesh)
         : _data(std::make_shared<Data>(std::move(mesh), std::move(fields), std::move(names), std::move(boundary),
-                                       std::move(flux), std::move(fluxNames), time, deflate))
+                                       std::move(flux), std::move(fluxNames), time, deflate, sharedMesh))
     {
     }
 

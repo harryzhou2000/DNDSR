@@ -143,6 +143,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<Workspace> result;
         Metrics().Communication()->LocalStage([&]
                                               { result = std::make_shared<Workspace>(_data, state, std::move(workers), meanOnly, options.captureBoundaryFlux); });
+        result->observeSpatialResidual = options.observeSpatialResidual;
         result->BindHalos(state);
         result->genericFluxOracle = options.rhsKernel == RHSKernelPolicy::Generic;
         if (flow5Profile && state.Device() == R::Device::Host() &&

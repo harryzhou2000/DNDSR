@@ -73,6 +73,7 @@ namespace DNDS::Cauchy
         // Physical config/material metadata still describe the chemical PDE.
         const auto settings = SpatialSettings(inputs.settings, time);
         _sourceStrang = time.sourceSplitting == "strang" && inputs.settings.equation.source == "chemical";
+        _state.exactReconstructionRollback = time.exactReconstructionRollback;
         _reactorControls = time.reactor;
         _positivity = settings.numerics.positivity;
         _state.accepted.RequireSchema(_problem.equation.Schema());
@@ -207,8 +208,7 @@ namespace DNDS::Cauchy
         _state.trialEpoch = _state.epoch;
         _state.trialDt = _steady ? 0 : dt;
         _state.trialEpoch.trial = ++_state.nextTrial;
-        // The polynomial guess is numerical state for explicit fixed-sweep VR
-        // too. Preserve it before either time driver can overwrite the trial.
+        // Both time drivers use the same whole-step rollback policy.
         PreserveReconstructionGuess();
         if (_sourceStrang)
         {
@@ -595,8 +595,8 @@ namespace DNDS::Cauchy
 
     std::array<real, 14> Domain::Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones)
     {
-        const auto snapshot = CaptureStateSnapshot(true);
-        EvaluateObservation(snapshot);
+        _execution.Synchronize();
+        const auto rhs = _problem.finiteVolume.LastSpatialResidual(*_execution.workspace);
         std::array<real, 14> result{};
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
@@ -605,7 +605,7 @@ namespace DNDS::Cauchy
                 _execution.stateDiagnostics.emplace(_problem.finiteVolume.Metrics(), _problem.equation,
                     _execution.ComputeStream().Context(), _execution.ChemicalWorkers());
             result = _execution.stateDiagnostics->Evaluate(_execution.Engine(), _execution.ComputeStream(),
-                snapshot.Means(), *_execution.observationState); });
+                _state.accepted, rhs ? *rhs : _state.accepted); });
         const auto comm = _problem.finiteVolume.Metrics().Communicator();
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(
             MPI::ContiguousView<real>{result.data(), 2}, comm);
@@ -622,12 +622,13 @@ namespace DNDS::Cauchy
             result[13] = MPI::AllreduceValue<MPI::Reduction::Min>(result[13], comm);
         // Report the volume-integrated L2 defect, matching Euler's res0
         // convention rather than a volume-averaged residual.
-        result[4] = std::sqrt(result[4]);
-        const auto force = _problem.finiteVolume.LastBoundaryForce(*_execution.observationWorkspace, forceZones, _execution.ComputeStream());
+        const bool available = MPI::AllreduceValue<MPI::Reduction::Min>(int(bool(rhs)), comm) != 0;
+        result[4] = available ? std::sqrt(result[4]) : std::numeric_limits<real>::quiet_NaN();
+        const auto force = available ? _problem.finiteVolume.LastBoundaryForce(*_execution.workspace, forceZones, _execution.ComputeStream()) : Vector3{};
         for (int d = 0; d < 3; ++d)
             result[5 + d] = force[d];
-        result[8] = _problem.finiteVolume.LastReconstructionIterations(*_execution.observationWorkspace);
-        result[9] = _problem.finiteVolume.LastReconstructionUpdate(*_execution.observationWorkspace);
+        result[8] = _problem.finiteVolume.LastReconstructionIterations(*_execution.workspace);
+        result[9] = _problem.finiteVolume.LastReconstructionUpdate(*_execution.workspace);
         if (!_problem.equation.IsACM() && !_problem.equation.HasMixture() && !_problem.equation.HasRANS() && settings.initialProfile.kind == "isentropicVortex")
         {
             MPI::LocalStage(mpi, [&]
@@ -635,15 +636,11 @@ namespace DNDS::Cauchy
                 if (!_execution.flowError)
                     _execution.flowError.emplace(_problem.finiteVolume, _execution.ComputeStream().Context()); });
             const auto error = _execution.flowError->Evaluate(_execution.Engine(), _execution.ComputeStream(),
-                                                              snapshot.Means(), settings.initialProfile, settings.initialPrimitive, snapshot.Time());
+                                                              _state.accepted, settings.initialProfile, settings.initialPrimitive, _state.time);
             for (int i = 0; i < 3; ++i)
                 result[10 + i] = error[i][0];
         }
         return result;
-    }
-    FiniteVolume::WorkspaceOptions Domain::ObservationWorkspaceOptions() const
-    {
-        return FiniteVolume::WorkspaceOptions(FiniteVolume::RHSKernelPolicy::Auto, _problem.finiteVolume.Settings().boundaryFacialFluxes);
     }
     void Domain::WriteVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
@@ -656,18 +653,9 @@ namespace DNDS::Cauchy
     }
     PreparedVisualization Domain::CaptureVisualization(int hdfDeflateLevel, OutputStaging &staging)
     {
-        const auto snapshot = CaptureStateSnapshot(true);
-        EvaluateObservation(snapshot);
-        return PackObservationVisualization(snapshot.Time(), hdfDeflateLevel, staging);
-    }
-    PreparedVisualization Domain::PackObservationVisualization(real time, int hdfDeflateLevel, OutputStaging &staging)
-    {
-        const auto &fv = _problem.finiteVolume;
-        const auto &state = *_execution.observationInput;
-        const auto &reconstruction = *_execution.observationReconstruction;
-        const auto &workspace = *_execution.observationWorkspace;
-        return fv.PackVisualization(state, reconstruction, workspace, time, hdfDeflateLevel, _execution.ChemicalWorkers(),
-                                    _execution.Engine(), _execution.ComputeStream(), staging);
+        return _problem.finiteVolume.PackVisualization(_state.accepted, *_state.reconstruction, *_execution.workspace, _state.time,
+                                                       hdfDeflateLevel, _execution.ChemicalWorkers(), _execution.Engine(),
+                                                       _execution.ComputeStream(), staging, true);
     }
     void Domain::WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
@@ -682,79 +670,13 @@ namespace DNDS::Cauchy
                                                     (!_problem.finiteVolume.PolynomialReconstruction() || _state.restoreReconstruction) &&
                                                     std::isfinite(_state.progressTime),
                                                 "Cauchy internal visualization has no active implicit trial"); });
-        if (!_execution.observationWorkspace)
-        {
-            MPI::LocalStage(mpi, [&]
-                            {
-                _execution.observationInput.emplace(EquationDofOperations::NewVector(_state.trial));
-                _execution.observationState.emplace(EquationDofOperations::NewVector(_state.trial));
-                _execution.observationInput->Fields().SetName(_problem.name + "/observation/means", DNDS_ALLOCATION_SITE());
-                _execution.observationState->Fields().SetName(_problem.name + "/observation/residual", DNDS_ALLOCATION_SITE()); });
-            _execution.observationWorkspace = _problem.finiteVolume.BuildWorkspace(*_execution.observationInput, _execution.ChemicalWorkers(), ObservationWorkspaceOptions());
-            _execution.observationReconstruction = _problem.finiteVolume.BuildReconstructionState(*_execution.observationInput);
-            if (_execution.interfaces->active)
-                _problem.finiteVolume.SetBoundaryInputs(*_execution.observationWorkspace, *_execution.interfaces->active);
-        }
-        MPI::LocalStage(mpi, [&]
-                        {
-            _execution.Synchronize();
-            EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), *_execution.observationInput, _state.trial);
-            _execution.Synchronize(); });
-        if (_problem.finiteVolume.PolynomialReconstruction())
-            _problem.finiteVolume.RestoreReconstructionGuess(*_execution.observationReconstruction,
-                                                             _problem.finiteVolume.ReconstructionGuess(*_state.reconstruction), {}, _execution.ComputeStream());
-        _problem.finiteVolume.Execute(*_execution.observationInput, *_execution.observationReconstruction,
-                                      *_execution.observationWorkspace, _execution.Context(),
-                                      FiniteVolumeEvaluation::Spatial(*_execution.observationState, _state.progressTime));
-        return PackObservationVisualization(_state.progressTime, hdfDeflateLevel, staging);
+        return _problem.finiteVolume.PackVisualization(_state.trial, *_state.reconstruction, *_execution.workspace, _state.progressTime,
+                                                       hdfDeflateLevel, _execution.ChemicalWorkers(), _execution.Engine(),
+                                                       _execution.ComputeStream(), staging, true);
     }
     DomainStateSnapshot Domain::CaptureStateSnapshot(
         bool includeReconstruction) const
     {
         return DomainStateSnapshot(*this, includeReconstruction);
-    }
-    void Domain::EvaluateObservation(const DomainStateSnapshot &snapshot)
-    {
-        if (!_execution.observationWorkspace)
-        {
-            std::optional<EquationDofs> input;
-            std::optional<EquationDofs> residual;
-            MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
-                            {
-                input.emplace(EquationDofOperations::NewVector(snapshot.Means()));
-                residual.emplace(EquationDofOperations::NewVector(snapshot.Means()));
-                input->Fields().SetName(_problem.name + "/observation/means", DNDS_ALLOCATION_SITE());
-                residual->Fields().SetName(_problem.name + "/observation/residual", DNDS_ALLOCATION_SITE()); });
-            auto workspace = _problem.finiteVolume.BuildWorkspace(*input, _execution.ChemicalWorkers(), ObservationWorkspaceOptions());
-            auto reconstruction = _problem.finiteVolume.BuildReconstructionState(*input);
-            _execution.observationInput = std::move(input);
-            _execution.observationState = std::move(residual);
-            _execution.observationReconstruction = std::move(reconstruction);
-            _execution.observationWorkspace = std::move(workspace);
-            if (_execution.interfaces->active)
-                _problem.finiteVolume.SetBoundaryInputs(*_execution.observationWorkspace, *_execution.interfaces->active);
-        }
-        // Start every observation from the accepted numerical guess, not the
-        // last observation and not a cold zero polynomial. This preserves
-        // output-cadence independence while avoiding a much less converged
-        // boundary reconstruction than the one used by the implicit stage.
-        // A pending/rejected trial owns a different polynomial; its backup is
-        // the accepted guess until publication, just as for checkpoint writing.
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
-                        {
-            _execution.Synchronize();
-            EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), *_execution.observationInput, snapshot.Means());
-            _execution.Synchronize(); });
-        if (_problem.finiteVolume.PolynomialReconstruction())
-        {
-            DNDS_check_throw_info(snapshot.Reconstruction(),
-                                  "observation snapshot lacks polynomial reconstruction");
-            _problem.finiteVolume.RestoreReconstructionGuess(
-                *_execution.observationReconstruction,
-                *snapshot.Reconstruction(), {}, _execution.ComputeStream());
-        }
-        _problem.finiteVolume.Execute(*_execution.observationInput, *_execution.observationReconstruction,
-                                      *_execution.observationWorkspace, _execution.Context(),
-                                      FiniteVolumeEvaluation::Spatial(*_execution.observationState, snapshot.Time()));
     }
 }

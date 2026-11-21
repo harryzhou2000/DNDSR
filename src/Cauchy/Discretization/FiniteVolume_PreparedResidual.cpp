@@ -78,9 +78,12 @@ namespace DNDS::Cauchy
             std::shared_ptr<ReconstructionState> reconstruction;
             R::SessionAccess::Lease workspaceLease, reconstructionLease;
             std::shared_ptr<Workspace::RHSSubmission> flux;
+            std::optional<EquationDofs> observedResidual;
             bool success = false;
         };
         auto held = std::make_shared<Submission>(Submission{work, reconstruction, workspaceLease, reconstructionLease, {}});
+        if (work->observeSpatialResidual)
+            held->observedResidual.emplace(residual.NumericAlias());
         auto active = work->BindReconstruction(*reconstruction);
         work->boundaryMomentumCurrent = work->boundaryFacialFluxCurrent = false;
         try
@@ -111,6 +114,7 @@ namespace DNDS::Cauchy
             if (held->success)
             {
                 w.PublishRHS(held->flux);
+                if (held->observedResidual) w.PublishSpatialObservation(*held->observedResidual);
                 w.PublishQueuedPhases();
                 w.boundaryMomentumCurrent = true;
                 w.boundaryFacialFluxCurrent = w.captureBoundaryFlux;

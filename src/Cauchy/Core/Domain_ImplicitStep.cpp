@@ -105,9 +105,11 @@ namespace DNDS::Cauchy
                     const auto &c = equation.coefficients;
                     _state.progressTime = c.time;
                     SetTimeStage(equation.coupledStage);
+                    NonlinearSolveControl correction{1, cfl};
+                    correction.queuedPublication = true;
                     return multigrid ? multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl, std::cref(rate), _execution.StageDerivative(0))
                                      : solver->CorrectOnce(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time,
-                                                           equation.coupledStage, {1, cfl}, std::cref(rate), _execution.StageDerivative(0));
+                                                           equation.coupledStage, correction, std::cref(rate), _execution.StageDerivative(0));
                 },
                 [solver]
                 { return solver->ReconstructionStats(); },
@@ -165,6 +167,13 @@ namespace DNDS::Cauchy
     {
         if (!_problem.finiteVolume.PolynomialReconstruction())
             return;
+        if (!_state.exactReconstructionRollback)
+        {
+            if (_state.restoreReconstruction)
+                _problem.finiteVolume.ResetReconstruction(*_state.reconstruction, *_execution.workspace, _execution.ComputeStream());
+            _state.restoreReconstruction = true;
+            return;
+        }
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
             if (_state.restoreReconstruction)
@@ -289,13 +298,15 @@ namespace DNDS::Cauchy
                 const auto rate = _state.timeStepper->CachedRate(*_state.stageGroup);
                 DNDS_check_throw_info(rate, "DITR update requires its method rate");
                 NonlinearIterationReport work;
+                NonlinearSolveControl correction{1, iteration.pseudoCFL};
+                correction.queuedPublication = true;
                 if (applyCorrection && coupledStage == 0)
                     work = _coupledMiddle->correct(equation, *rate, iteration.pseudoCFL);
                 else if (applyCorrection)
                     work = _execution.multigrid ? _execution.multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time,
                                                                coupledStage, iteration.pseudoCFL, rate, _execution.StageDerivative(1))
                                       : _execution.implicit->CorrectOnce(_state.trial, equation.resOther, c.inverseDt, c.rhsScale, c.time,
-                                                               coupledStage, {1, iteration.pseudoCFL}, rate, _execution.StageDerivative(1));
+                                                               coupledStage, correction, rate, _execution.StageDerivative(1));
                 NonlinearDetail::AccumulateWork(iteration, work);
                 _state.timeStepper->CompleteEquation(
                     *_state.stageGroup, _state.trial,

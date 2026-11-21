@@ -52,11 +52,6 @@ namespace DNDS::Cauchy
             limit = problem.control.correctionLimit < 0
                         ? settings.iterations
                         : problem.control.correctionLimit;
-            const bool after = policy->Descriptor().observation ==
-                               NonlinearDetail::ResidualObservation::AfterUpdate;
-            DNDS_check_throw_info(!after || limit > 0,
-                                  "post-update residual observation requires at least one update");
-            nextIteration = after ? 1 : 0;
             if (problem.control.resume)
             {
                 DNDS_check_throw_info(problem.control.state &&
@@ -194,7 +189,7 @@ namespace DNDS::Cauchy
                               "nonlinear coupled-stage update is out of order");
         auto &data = *_data;
         const TimelineScope timeline("Cauchy/NonlinearUpdate", data.currentIteration);
-        data.problem.advanceStage(coupledStage, data.report, !data.held);
+        data.problem.advanceStage(coupledStage, data.report, !data.held && (ObservationBeforeUpdate() || data.currentIteration > 0));
         ++data.nextCoupledStage;
         if (data.nextCoupledStage == CoupledStageNumber())
             data.phase = ObservationBeforeUpdate() ? Data::Phase::AwaitFinish
@@ -309,13 +304,13 @@ namespace DNDS::Cauchy
             return;
         }
         data.held = data.localTerminal;
-        if (!data.held)
+        if (!data.held && (ObservationBeforeUpdate() || data.currentIteration > 0))
             data.report.pseudoCFL = std::min(
                 data.settings.maxPseudoCFL,
                 data.report.pseudoCFL * data.settings.pseudoGrowth);
         if (data.problem.control.state)
             data.problem.control.state->pseudoCFL = data.report.pseudoCFL;
-        if (data.problem.control.quiescent)
+        if (reportedIteration > 0 && data.problem.control.quiescent)
         {
             DNDS_check_throw_info(data.problem.control.state,
                                   "quiescent nonlinear observer needs live controller state");
@@ -390,7 +385,7 @@ namespace DNDS::Cauchy
         return _iteration;
     }
 
-    bool NonlinearSolveGroup::FinishIteration()
+    bool NonlinearSolveGroup::AgreeTerminal() const
     {
         int terminal = 1;
         for (auto reference : domains)
@@ -400,11 +395,22 @@ namespace DNDS::Cauchy
         if (communication)
             terminal = MPI::AllreduceValue<MPI::Reduction::Min>(
                 terminal, communication->Communicator());
+        return terminal != 0;
+    }
+
+    void NonlinearSolveGroup::PublishIteration(bool terminal)
+    {
         for (auto reference : domains)
-            reference.get().FinishIteration(terminal != 0);
+            reference.get().FinishIteration(terminal);
         if (!terminal)
             ++_iteration;
-        return terminal != 0;
+    }
+
+    bool NonlinearSolveGroup::FinishIteration()
+    {
+        const bool terminal = AgreeTerminal();
+        PublishIteration(terminal);
+        return terminal;
     }
 
     void NonlinearSolveGroup::RefreshInterfaces(int coupledStage,

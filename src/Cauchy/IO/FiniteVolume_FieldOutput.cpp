@@ -150,7 +150,7 @@ namespace DNDS::Cauchy
     PreparedVisualization FiniteVolume::PackVisualization(const EquationDofs &state, const ReconstructionState &reconstruction,
                                                           const Workspace &workspace, real time, int hdfDeflateLevel,
                                                           const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers,
-                                                          R::EagerEngine &engine, const R::ExecutionStream &stream, OutputStaging &staging) const
+                                                          R::EagerEngine &engine, const R::ExecutionStream &stream, OutputStaging &staging, bool useLastSpatialFlux) const
     {
         const MPIInfo mpi(Metrics().Communicator());
         const auto &equation = _data->equation;
@@ -159,7 +159,7 @@ namespace DNDS::Cauchy
         OutputFields outputFields;
         std::optional<R::Array<real>> boundaryFluxes;
         const bool compatible = workspace.boundaryFacialFluxCurrent && workspace.rhsState &&
-                                workspace.rhsState->Current(state, workspace.incoming, time);
+                                (useLastSpatialFlux || workspace.rhsState->Current(state, workspace.incoming, time));
         const bool capture = MPI::AllreduceValue<MPI::Reduction::Min>(int(compatible), mpi.comm) != 0;
         R::Array<real> hostFields;
         MPI::LocalStage(mpi, [&]
@@ -215,6 +215,6 @@ namespace DNDS::Cauchy
             if (boundaryFluxes)
                 *boundaryFluxes = staging.HostValues(*boundaryFluxes, stream.Context(), "boundaryFlux"); });
         return PreparedVisualization(_data->mesh, std::move(hostFields), std::move(names), std::move(boundary),
-                                     std::move(boundaryFluxes), std::move(fluxNames), time, hdfDeflateLevel);
+                                     std::move(boundaryFluxes), std::move(fluxNames), time, hdfDeflateLevel, _data->settings.visualizationSharedMesh);
     }
 }

@@ -250,14 +250,14 @@ namespace DNDS::Cauchy
                                  OptionalRef<AuxiliaryValues>(*evaluation.auxiliary),
                                  dependency ? OptionalRef<const QueuedEvaluationDependency>(*dependency)
                                             : OptionalRef<const QueuedEvaluationDependency>{},
-                                 evaluation.sourceDerivative);
+                                 evaluation.sourceDerivative, evaluation.submitResidualConsumer);
                 else
                     EvaluateImpl(state, OptionalRef<EquationDofs>(*evaluation.residual),
                                  reconstruction, work, engine, stream, communication,
                                  evaluation.time, {},
                                  dependency ? OptionalRef<const QueuedEvaluationDependency>(*dependency)
                                             : OptionalRef<const QueuedEvaluationDependency>{},
-                                 evaluation.sourceDerivative);
+                                 evaluation.sourceDerivative, evaluation.submitResidualConsumer);
                 return;
             }
         case FiniteVolumeEvaluationMode::ReconstructionOnly:
@@ -288,7 +288,8 @@ namespace DNDS::Cauchy
                                     const Runtime::ExecutionStream &stream,
                                     const Runtime::ExecutionStream &communication, real time,
                                     OptionalRef<AuxiliaryValues> auxiliary,
-                                    OptionalRef<const QueuedEvaluationDependency> dependency, OptionalRef<R::Array<real>> sourceDerivative) const
+                                    OptionalRef<const QueuedEvaluationDependency> dependency, OptionalRef<R::Array<real>> sourceDerivative,
+                                    const std::function<void()> &submitResidualConsumer) const
     {
         const TimelineScope timeline("Cauchy/FV/Evaluate");
         if (!auxiliary && work.rhsAuxiliary)
@@ -779,6 +780,7 @@ namespace DNDS::Cauchy
             submitSpatialRows(rest);
         local([&]
               {
+            if (submitResidualConsumer) submitResidualConsumer();
             schedule.Join();
             work.CheckNumericalStatus(bool(residual));
             if (separateMeanGradient)
@@ -796,6 +798,8 @@ namespace DNDS::Cauchy
             work.PublishDirectGradients(state, true, time);
             for (const auto &record : rhsSubmissions) work.PublishRHS(record);
             work.PublishQueuedPhases(); });
+        if (residual)
+            work.PublishSpatialObservation(*residual);
         work.boundaryMomentumCurrent = bool(residual);
         work.boundaryFacialFluxCurrent = bool(residual) && work.captureBoundaryFlux;
         work.rhsState.emplace(state, boundary, time);

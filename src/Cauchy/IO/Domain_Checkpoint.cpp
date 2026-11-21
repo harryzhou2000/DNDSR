@@ -50,6 +50,7 @@ namespace DNDS::Cauchy
         checkpoint.source.reset();
         checkpoint.destination.reset();
         checkpoint.reconstruction.reset();
+        _problem.finiteVolume.InvalidateSpatialObservation(*_execution.workspace);
         _state.time = checkpoint.time;
         _state.epoch = checkpoint.epoch;
         _state.trialReady = _state.restoreReconstruction = _state.coordinatedPrepared = false;
@@ -69,7 +70,7 @@ namespace DNDS::Cauchy
                                   (!polynomial || (checkpoint.endpointWarm && checkpoint.endpointFinal)) &&
                                   checkpoint.trialEpoch.acceptedStep == _state.epoch.acceptedStep,
                               "internal checkpoint cannot follow the restored accepted state");
-        if (polynomial)
+        if (polynomial && _state.exactReconstructionRollback)
         {
             const auto &acceptedGuess = _problem.finiteVolume.ReconstructionGuess(*_state.reconstruction);
             if (!_state.reconstructionBackup)

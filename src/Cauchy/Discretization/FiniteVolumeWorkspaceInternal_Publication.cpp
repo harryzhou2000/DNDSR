@@ -35,6 +35,18 @@ namespace DNDS::Cauchy
         return true;
     }
 
+    void Workspace::PublishSpatialObservation(const EquationDofs &residual)
+    {
+        if (!observeSpatialResidual)
+            return;
+        // Only the finest reporting workspace retains an alias. Refresh the row
+        // versions even when the same integrator-owned allocation is reused.
+        lastSpatialResidual.emplace(residual.NumericAlias());
+        lastSpatialRows.clear();
+        for (index f = 0; f < residual.PhysicalFieldNumber(); ++f)
+            lastSpatialRows.emplace_back(residual.PhysicalField(f).Owned());
+    }
+
     Workspace::DofPublication::DofPublication(const EquationDofs &values)
     {
         fields.reserve(values.PhysicalFieldNumber());
