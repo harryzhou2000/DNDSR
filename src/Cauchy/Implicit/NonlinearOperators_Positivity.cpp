@@ -6,7 +6,7 @@ namespace DNDS::Cauchy
     using namespace NonlinearOperatorDetail;
     AlphaStatistics NonlinearOperators::PreparePseudoTime(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                           const EquationDofs &mean, EquationDofs &defect, const R::Array<real> &spectral,
-                                                          R::Array<real> &inverse, OptionalRef<R::Array<real>> alpha, NonlinearPseudoTimeControls controls) const
+                                                          R::Array<real> &inverse, OptionalRef<R::Array<real>> alpha, NonlinearPseudoTimeControls controls, OptionalRef<IterationChecks> checks) const
     {
         _data->Check(engine, stream, mean);
         _data->CheckPair(mean, defect);
@@ -38,7 +38,7 @@ namespace DNDS::Cauchy
             // CPU assembly takes immediate read access. Device assembly imports
             // this lane order and validates the inverse step in its own kernel.
             if (stream.Context().device == R::Device::Host())
-                engine.Synchronize();
+                stream.Record().WaitHost();
             return {};
         }
         Inputs inputs;
@@ -76,7 +76,7 @@ namespace DNDS::Cauchy
 #else
         const Unavailable device;
 #endif
-        return _data->Reduce(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device).alpha;
+        return _data->SubmitReduction(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device, {}, checks, IterationPhase::PseudoTime)().alpha;
     }
     void NonlinearOperators::SubmitAgreedRHSAlpha(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                   const R::Array<real> &alpha, R::Array<real> &inverse, EquationDofs &defect, real minimum, AlphaReduction reduction, bool compressRHS) const
@@ -107,7 +107,7 @@ namespace DNDS::Cauchy
     }
     NonlinearCorrectionResult NonlinearOperators::ApplyCorrection(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                                   const EquationDofs &mean, const EquationDofs &increment, EquationDofs &candidate,
-                                                                  SpanView<const uint8_t> active, NonlinearCorrectionControls controls) const
+                                                                  SpanView<const uint8_t> active, NonlinearCorrectionControls controls, OptionalRef<IterationChecks> checks) const
     {
         _data->Check(engine, stream, mean);
         _data->Check(engine, stream, increment);
@@ -153,16 +153,16 @@ namespace DNDS::Cauchy
             }
         };
 #ifdef DNDS_USE_CUDA
-        const auto device = [retained, u, d, y, selection, controls](auto context, auto input, auto output, auto scratch, auto summary)
+        const auto device = [retained, u, d, y, selection, controls, requireFrozen = bool(checks)](auto context, auto input, auto output, auto scratch, auto summary)
         {
             const CUDA::CorrectionParameters parameters{retained->policy.View(), DeviceSelection(selection),
-                                                        controls.scale, controls.relax, controls.compressionPower, controls.positivity, controls.ransRelaxation};
+                                                        controls.scale, controls.relax, controls.compressionPower, controls.positivity, controls.ransRelaxation, requireFrozen};
             CUDA::ApplyCorrection(context, Table(input[u.firstSlot]), Table(input[d.firstSlot]), Table(output[y.firstSlot]), parameters, scratch, summary);
         };
 #else
         const Unavailable device;
 #endif
-        const auto result = _data->Reduce(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device);
+        const auto result = _data->SubmitReduction(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device, {}, checks, IterationPhase::Correction)();
         return {result.alpha, result.frozen};
     }
 }

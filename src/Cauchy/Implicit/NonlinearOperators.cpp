@@ -62,6 +62,12 @@ namespace DNDS::Cauchy
         RequireNumericalSuccess(_data->meanCheck.Evaluate(engine, stream, state), "ValidateMeanState");
     }
 
+    void NonlinearOperators::SubmitMeanCheck(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state, IterationChecks &checks) const
+    {
+        _data->Check(engine, stream, state);
+        _data->meanCheck.Submit(engine, stream, state, checks);
+    }
+
     std::vector<real> NonlinearOperators::AssembleDefect(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                          const EquationDofs &mean, const EquationDofs &residual, const EquationDofs &constant, EquationDofs &output,
                                                          real inverseDt, real rhsScale, SpanView<const uint8_t> active, int normOrder, bool measureNorm) const
@@ -70,7 +76,7 @@ namespace DNDS::Cauchy
     }
     std::function<std::vector<real>()> NonlinearOperators::SubmitDefect(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                                         const EquationDofs &mean, const EquationDofs &residual, const EquationDofs &constant, EquationDofs &output,
-                                                                        real inverseDt, real rhsScale, SpanView<const uint8_t> active, int normOrder, bool measureNorm, std::shared_ptr<NonlinearNormSum> global) const
+                                                                        real inverseDt, real rhsScale, SpanView<const uint8_t> active, int normOrder, bool measureNorm, std::shared_ptr<NonlinearNormSum> global, OptionalRef<IterationChecks> checks) const
     {
         _data->Check(engine, stream, mean);
         _data->Check(engine, stream, residual);
@@ -102,11 +108,11 @@ namespace DNDS::Cauchy
         const Unavailable device;
 #endif
         const bool continuity = measureNorm && accumulation == PhysicalAccumulationKind::ConstantDensityVelocityPressure;
-        auto observe = _data->SubmitReduction(engine, stream, mean.ComponentNumber() + continuity, std::move(inputs), std::move(outputs), host, device, std::move(global));
+        auto observe = _data->SubmitReduction(engine, stream, mean.ComponentNumber() + continuity, std::move(inputs), std::move(outputs), host, device, std::move(global), checks);
         return [observe = std::move(observe)]
         { return observe().norms; };
     }
-    real NonlinearOperators::PressureMean(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state) const
+    std::function<std::vector<real>()> NonlinearOperators::SubmitPressureSum(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state, std::shared_ptr<NonlinearNormSum> global) const
     {
         _data->Check(engine, stream, state);
         DNDS_check_throw_info(state.Schema().AccumulationKind() == PhysicalAccumulationKind::ConstantDensityVelocityPressure,
@@ -132,15 +138,42 @@ namespace DNDS::Cauchy
 #else
         const Unavailable device;
 #endif
-        auto sum = _data->Reduce(engine, stream, 1, std::move(reads), {}, host, device).norms;
+        auto observe = _data->SubmitReduction(engine, stream, 1, std::move(reads), {}, host, device, std::move(global));
+        return [observe = std::move(observe)]
+        { return observe().norms; };
+    }
+    real NonlinearOperators::PressureMean(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state) const
+    {
+        auto sum = SubmitPressureSum(engine, stream, state, {})();
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(MPI::ContiguousView<real>{sum.data(), 2}, _data->geometry.Communicator());
         DNDS_check_throw_info(sum[1] > 0 && std::isfinite(sum[1]) && std::isfinite(sum[0] / sum[1]),
                               "invalid global pressure gauge integral");
         return sum[0] / sum[1];
     }
     void NonlinearOperators::ProjectPressureMean(R::EagerEngine &engine, const R::ExecutionStream &stream,
-                                                 EquationDofs &candidate, real pressureMean) const
+                                                 EquationDofs &candidate, real pressureMean, std::shared_ptr<NonlinearNormSum> global) const
     {
+        if (global)
+        {
+            (void)SubmitPressureSum(engine, stream, candidate, global);
+            const auto &sum = global->Consume(engine, stream);
+            const auto flow = candidate.LocateBlock("flow");
+            R::SubmitArrays(engine, stream, [target = pressureMean, column = flow.firstComponent + 3](auto where, auto integral, auto means)
+                            {
+                                if (where.device == R::Device::Host())
+                                {
+                                    const real offset = integral(0, 1) > 0 ? target - integral(0, 0) / integral(0, 1) : std::numeric_limits<real>::quiet_NaN();
+                                    OMP::ForRows(0, means.RowCount(), [&](index i)
+                                                 { means(i, column) += offset; });
+                                }
+#ifdef DNDS_USE_CUDA
+                                else
+                                    CUDA::ShiftPressure(where, Table(means), target, Table(integral));
+#endif
+                            },
+                            R::ReadAs<R::UniformTableRows>(sum), R::ReadWriteAs<R::UniformTableRows>(candidate.PhysicalField(flow.physicalField).Owned()));
+            return;
+        }
         const real offset = pressureMean - PressureMean(engine, stream, candidate);
         SubmitPressureOffset(engine, stream, candidate, offset);
     }

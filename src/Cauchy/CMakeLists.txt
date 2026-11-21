@@ -130,6 +130,7 @@ set(CPPS
     Implicit/LinearSolver.cpp
     Implicit/LocalAMGPreconditioner.cpp
     Implicit/NonlinearSolve.cpp
+    Implicit/IterationChecks.cpp
     Implicit/NonlinearNormSum.cpp
     Implicit/NonlinearSolver.cpp
     Implicit/NonlinearSolver_State.cpp
@@ -178,7 +179,7 @@ dnds_generate_cauchy_rhs(_cpu_flux_sources _cpu_flux_include _cpu_flux_codegen c
 list(APPEND CPPS ${_cpu_flux_sources})
 if(DNDS_USE_CUDA)
     list(APPEND CPPS Interface/CUDA/InterfacePacketKernels.cu)
-    list(APPEND CPPS Implicit/CUDA/FrozenJacobianKernels.cu)
+    list(APPEND CPPS Implicit/IterationChecks_CUDA.cu Implicit/CUDA/FrozenJacobianKernels.cu)
     list(APPEND CPPS Implicit/CUDA/FiniteVolumeJacobianKernels.cu)
     list(APPEND CPPS Implicit/CUDA/FiniteVolumeJacobianKernels_Faces.cu)
     list(APPEND CPPS Implicit/CUDA/ACMJacobianKernels.cu)

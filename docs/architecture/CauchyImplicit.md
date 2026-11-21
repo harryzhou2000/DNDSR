@@ -2,6 +2,35 @@
 
 Historical case results and earlier capability limits are retained in the [implementation history](https://github.com/harryzhou2000/DNDSR/blob/cfab6865f30aa8ec21a31cbbdeada70e12d9d15b/docs/dev/cauchy_state_implicit_history.md).
 
+## Nonlinear submission and observation
+
+The finest single-stage spatial operator submits reconstruction, flux, source,
+defect assembly, the local norm and the domain sum. The controller receives a
+pending publication. At the stopping decision it observes the scalar results
+and publishes the spatial diagnostics. The domain owns one reduction
+communicator. DITR submits the stopping residual and each active continuity
+norm before reading any of them. The endpoint rate can remain queued across
+residual assembly. The midpoint and endpoint share FV scratch, so midpoint
+publication precedes its reuse. A discarded publication retires its prefix
+before releasing its arrays and session leases.
+
+With `execution.nonlinearReduction="mpi"`, CUDA stages only the scalar vector
+to host for ordinary MPI. MPI progress follows the controller-thread transport
+contract. A single rank elides communication. With `"nccl"`, the reduction
+lane imports the compute event and the norm stays resident until observation.
+These settings select norm transport independently of halo transport.
+
+Single-grid, fixed-count Jacobi uses an ordered first-failure record for
+pseudo-time preparation, matrix inversion, linear finiteness, candidate
+validation and the following flux/source evaluation. It identifies the update,
+stage, operation and available row/point. A failed stage prevents a subsequent
+guarded copy from publishing the candidate. The solver's distributed abort
+policy applies at observation. Set `implicit.immediateNumericalChecks=true`
+to force immediate observation for diagnosis. Residual-controlled iterations,
+GMRES scalar bookkeeping, provider-owned solves, positivity agreement and the
+host assembly of a CPU Jacobian have their own numerical or access boundaries.
+An in-order submission does not imply that an MPI transport is stream-aware.
+
 ## Preconditioner-only AmgX iteration
 
 `implicit.linear.method="amgx"` selects stationary defect correction on the

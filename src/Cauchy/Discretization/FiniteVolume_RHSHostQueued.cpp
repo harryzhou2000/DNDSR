@@ -323,7 +323,7 @@ namespace DNDS::Cauchy
                     const auto wall = outputs[pin->wallFlux];
                     output.boundaryMomentum = {wall.data, wall.offsets, wall.rows, wall.width, wall.stride, wall.sizes, wall.kind, wall.device};
                 }
-                result->fixedDiagnostics = pin->fixed->ApplyFluxBorrowedFatal(input, output, region, time);
+                result->fixedDiagnostics = pin->fixed->ApplyFluxBorrowedFatal(input, output, region, time, std::ref(result->fluxStatus));
             }
             else
             {
@@ -424,7 +424,7 @@ namespace DNDS::Cauchy
                         pin->owner->flux, SpanView<CPU::EquationRHSWorkerScratch>{workers.data(), index(workers.size())},
                         owned.Descriptor(), remote.Descriptor(), output.Descriptor(),
                         lowLayout ? lowLayout->Descriptor() : output.Descriptor(), region);
-                RequireNumericalSuccess(evaluated.status, "queued equation RHS");
+                result->fluxStatus = evaluated.status;
                 result->faceFallbacks = evaluated.value;
             }
             result->completed.store(true, std::memory_order_release); }, std::move(reads), std::move(writes), std::make_tuple(R::ReadAs<R::TableRows>(pin->basis ? owner->reconstruction->SamplingFaceBasis() : owner->deviceEmpty), R::ReadAs<R::TableRows>(pin->basis ? owner->reconstruction->SamplingMoments() : owner->deviceEmpty), R::ReadAs<R::RowLayout>(pin->walls ? owner->wallDistance->FaceValues() : owner->deviceEmpty), R::ReadAs<R::RowLayout>(pin->walls ? owner->wallDistance->CellMeans() : owner->deviceEmpty)));
@@ -438,6 +438,8 @@ namespace DNDS::Cauchy
             return;
         DNDS_check_throw_info(result->completed.load(std::memory_order_acquire) && !result->published,
                               "RHS diagnostics are incomplete or already published");
+        RequireNumericalSuccess(result->fluxStatus, "queued equation RHS");
+        RequireNumericalSuccess(result->sourceStatus, "queued volume source");
         if (result->fixedDiagnostics)
             diagnostics.Merge(*result->fixedDiagnostics);
         else

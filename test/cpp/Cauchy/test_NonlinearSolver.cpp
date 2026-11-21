@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
@@ -36,6 +37,28 @@ static C::NonlinearSolver MakeSolver(const C::FiniteVolume &fv, C::EquationDofs 
     return {fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state), engine, stream, settings,
             A::ComponentSelection(state.ComponentNumber(),
                                   state.Schema().ResolveComponents(settings.implicit.ResolveResidualComponents(settings.equation.system == "incompressibleACM")))};
+}
+TEST_CASE("Fixed-work checks retain the first failed stage and guard mean publication")
+{
+    R::EagerEngine engine(1);
+    auto stream = engine.CreateCPUStream();
+    C::IterationChecks checks(stream);
+    R::Array<DNDS::real> candidate(R::RowLayout::Dense(1, 1)), mean(candidate.Layout());
+    candidate.Write().View()(0, 0) = 7;
+    checks.Begin(3, 0);
+    checks.CopyIfValid(candidate, mean);
+    checks.Observe();
+    REQUIRE(mean.Read().View()(0, 0) == 7);
+    candidate.Write().View()(0, 0) = 11;
+    checks.Begin(4, 0);
+    checks.CaptureHost(C::IterationPhase::Inverse, []
+                       { return DNDS::NumericalStatus{DNDS::NumericalError::InvalidState, 1, 12}; });
+    checks.Begin(4, 1);
+    checks.CaptureHost(C::IterationPhase::Candidate, []
+                       { return DNDS::NumericalStatus{DNDS::NumericalError::InvalidState, 2, 15}; });
+    checks.CopyIfValid(candidate, mean);
+    CHECK_THROWS_WITH_AS(checks.Observe(), doctest::Contains("update 4 stage 0 diagonal inverse"), std::exception);
+    CHECK(mean.Read().View()(0, 0) == 7);
 }
 TEST_CASE("Cell geometry reduces pseudo-time in larger cells across periodic and MPI faces")
 {

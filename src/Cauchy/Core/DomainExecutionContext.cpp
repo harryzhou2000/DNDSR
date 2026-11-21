@@ -1,6 +1,7 @@
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 
@@ -76,6 +77,7 @@ namespace DNDS::Cauchy
         Runtime::EagerEngine engine;
         Runtime::ExecutionStream compute, communication, copy, reduction;
         bool ncclReduction;
+        std::shared_ptr<IterationChecks> checks;
         std::shared_ptr<Runtime::CommunicationContext> reductionContext;
         std::shared_ptr<Runtime::NCCLTransferProvider> reductionProvider;
         std::mutex dependencyMutex;
@@ -141,6 +143,13 @@ namespace DNDS::Cauchy
     }
     const Runtime::ExecutionStream &DomainExecutionContext::ReductionStream() const { return _data->reduction; }
     std::shared_ptr<Runtime::NCCLTransferProvider> DomainExecutionContext::ReductionProvider() const { return _data->reductionProvider; }
+    std::shared_ptr<IterationChecks> DomainExecutionContext::NonlinearChecks() const
+    {
+        if (!_data->checks)
+            _data->checks = std::make_shared<IterationChecks>(_data->compute);
+        return _data->checks;
+    }
+
     Runtime::EagerEngine &DomainExecutionContext::Engine() const
     {
         DNDS_check_throw_info(_data, "empty domain execution context");

@@ -5,6 +5,7 @@
 #include "DNDS/Diagnostics/Timeline.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 
 namespace DNDS::Cauchy
@@ -114,6 +115,11 @@ namespace DNDS::Cauchy
                 for (const auto &rows : JacobianRowBatches(scratch->stencil.View(), owned.RowCount(), scratch->owner->settings.execution.overlap))
                     CUDA::PrepareACMFluxJacobian(where,q,rows,status); }, R::ReadAs<R::TableRows>(field.Owned()), R::ReadAs<R::TableRows>(field.Ghost()), R::ReadAs<R::TableRows>(inversePseudoTime), R::ReadAs<R::TableRows>(*auxiliary.faceSpectralRadius), R::ReadAs<R::TableRows>(incoming), R::ReadAs<R::FixedRows<1>>(output.OffDiagonal().OffsetArray()), R::ReadWriteAs<R::UniformTableRows>(output.Diagonal()), R::WriteAs<R::UniformTableRows>(blocks), R::WriteAs<R::FixedRows<1>>(scratch->rowsStatus));
             scratch->AppendStatus(engine, lane, scratch->rowsStatus);
+            if (context.checks)
+            {
+                context.checks->Capture(IterationPhase::Jacobian, scratch->result);
+                return;
+            }
             lane.Record().WaitHost();
             const auto result = scratch->result.To(R::Device::Host(), lane.Context());
             RequireNumericalSuccess(result.Read().View()(0, 0), "CUDA ACM Jacobian preparation");
@@ -228,12 +234,16 @@ namespace DNDS::Cauchy
                     CUDA::AssembleFrozenJacobian(context, request, rows, {blocks, offsets, parameters.components, rowMajorBlocks}, status); }, R::ReadAs<R::UniformTableRows>(values.means), R::ReadAs<R::TableRows>(values.pressure), R::ReadAs<R::TableRows>(values.pressureDerivative), R::ReadAs<R::TableRows>(values.radius), R::ReadAs<R::TableRows>(values.magnitudes), R::WriteAs<R::UniformTableRows>(blocks), R::ReadAs<R::FixedRows<1>>(output.OffDiagonal().OffsetArray()), R::WriteAs<R::FixedRows<1>>(scratch->assemblyStatus));
             scratch->AppendStatus(engine, stream, scratch->assemblyStatus);
         }
-        // Explicit publication boundary, not a per-kernel wait. The CPU path
-        // is synchronous too. A future queued publication can retain the same
-        // operation records and defer this status decision to the linear solve.
-        stream.Record().WaitHost();
-        const auto result = scratch->result.To(R::Device::Host(), stream.Context());
-        RequireNumericalSuccess(result.Read().View()(0, 0), "device Jacobian preparation");
+        // Fixed-work Jacobi consumes the status in lane order. Immediate callers
+        // observe this preparation before acquiring the published evaluator.
+        if (context.checks)
+            context.checks->Capture(IterationPhase::Jacobian, scratch->result);
+        else
+        {
+            stream.Record().WaitHost();
+            const auto result = scratch->result.To(R::Device::Host(), stream.Context());
+            RequireNumericalSuccess(result.Read().View()(0, 0), "device Jacobian preparation");
+        }
         if (!output.HasAssembledOffDiagonal())
         {
             auto publication = std::make_shared<FrozenJacobianOperator>(output.Space().Pin(), scratch->publicationGeometry,

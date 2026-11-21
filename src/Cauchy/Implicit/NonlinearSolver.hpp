@@ -113,6 +113,7 @@ namespace DNDS::Cauchy
         bool resume = false;
         /// Internal correction followed by an RHS consumer on the same bound stream.
         bool queuedPublication = false;
+        index iterationOrdinal = 0;
     };
     template <class Norms>
     struct BasicNonlinearIterationReport
@@ -188,6 +189,8 @@ namespace DNDS::Cauchy
                         const Algebra::ComponentSelection &residualSelection,
                         std::shared_ptr<const real> pressureGauge = {});
         /// Finest domain's fixed pressure target, reusable on same-volume pMG levels.
+        /// Controller stop boundary for pending fixed-work stage updates.
+        void ObservePendingChecks() const;
         std::shared_ptr<const real> PressureGauge() const;
         NonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                        int stage = 0, NonlinearSolveControl control = {});
@@ -215,6 +218,8 @@ namespace DNDS::Cauchy
         /// must be distinct; caller coordinates state/time/cache usage on ranks.
         /// Normalize an already evaluated integrated residual into a method-owned stage rate.
         void StoreSpatialRate(const EquationDofs &residual, EquationDofs &rate) const;
+        /// Submit the spatial rate and retain its workspace until the controller observes it.
+        std::function<void()> SubmitRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<Runtime::Array<real>> derivative = {}, int stage = -1, index iteration = 0);
         void EvaluateRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<Runtime::Array<real>> derivative = {});
         /// Allocate a caller-owned integrated quadrature source derivative for one retained rate.
         std::optional<Runtime::Array<real>> BuildSourceDerivative(const EquationDofs &state) const;

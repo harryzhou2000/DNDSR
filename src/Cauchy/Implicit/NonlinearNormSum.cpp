@@ -1,4 +1,5 @@
 #include "Cauchy/Implicit/NonlinearNormSum.hpp"
+#include "DNDS/Runtime/Execution/EagerCopy.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -10,7 +11,8 @@ namespace DNDS::Cauchy
         int ranks = 0;
         MPI_Comm_size(comm->Communicator(), &ranks);
         const auto layout = R::RowLayout::Dense(1, count);
-        const bool stage = ranks > 1 && !nccl && computeDevice != R::Device::Host();
+        _ordinaryMPI = ranks > 1 && !nccl;
+        const bool stage = _ordinaryMPI && computeDevice != R::Device::Host();
         _local = stage ? R::Array<real>::FromStorage(layout, R::Buffer::AllocatePinnedHost(size_t(count) * sizeof(real)))
                        : R::Array<real>(layout, computeDevice);
         _local.SetName("nonlinear/norm/local", DNDS_ALLOCATION_SITE());
@@ -39,6 +41,23 @@ namespace DNDS::Cauchy
                 _lane.WaitFor(_completion);
             _completion = _binding->Submit(engine, _lane);
         }
+    }
+    const R::Array<real> &NonlinearNormSum::Consume(R::EagerEngine &engine, const R::ExecutionStream &consumer)
+    {
+        if (_ordinaryMPI)
+            _completion.WaitHost();
+        else if (_binding && !consumer.SameLane(_lane))
+            consumer.WaitFor(_completion);
+        if (consumer.Context().device == _sum.GetDevice())
+            return _sum;
+        if (!_resident)
+        {
+            _resident.emplace(_sum.Layout(), consumer.Context().device);
+            _resident->SetName("nonlinear/reduction/residentResult", DNDS_ALLOCATION_SITE());
+        }
+        auto destination = _resident->Storage();
+        R::CopyAsync(engine, consumer, _sum.Storage(), destination);
+        return *_resident;
     }
     std::vector<real> NonlinearNormSum::Observe() const
     {

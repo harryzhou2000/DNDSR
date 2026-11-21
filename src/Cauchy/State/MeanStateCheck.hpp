@@ -1,4 +1,5 @@
 #pragma once
+#include "DNDS/Core/OptionalRef.hpp"
 
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
@@ -7,6 +8,7 @@
 
 namespace DNDS::Cauchy
 {
+    class IterationChecks;
     /** @brief Owned mean-state acceptance on an explicit execution lane.
      * @details The policy, optional mask and reduction result are retained here;
      * each submitted read retains its state allocations. No MPI or repair is
@@ -19,6 +21,7 @@ namespace DNDS::Cauchy
      */
     class MeanStateCheck
     {
+        NumericalStatus EvaluateImpl(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, OptionalRef<IterationChecks>) const;
         struct Data;
         std::shared_ptr<Data> _data;
 
@@ -27,6 +30,7 @@ namespace DNDS::Cauchy
         /// skips an intentionally unused row; shape/device are checked once.
         MeanStateCheck(Algebra::DofSpace, AdmissibilityPolicy, Runtime::ExecutionContext,
                        std::optional<Runtime::Array<uint8_t>> activeRows = std::nullopt);
+        void Submit(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, IterationChecks &) const;
         NumericalStatus Evaluate(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;
     };
 }

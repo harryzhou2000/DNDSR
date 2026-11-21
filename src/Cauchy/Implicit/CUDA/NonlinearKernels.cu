@@ -58,8 +58,10 @@ namespace DNDS::Cauchy::CUDA
             }
             D::PublishBlock(local, scratch);
         }
-        __global__ void GaugeShift(LinearWriteRows target, real offset)
+        __global__ void GaugeShift(LinearWriteRows target, real offset, LinearReadRows integral)
         {
+            if (integral.data)
+                offset = integral(0, 1) > 0 ? offset - integral(0, 0) / integral(0, 1) : std::numeric_limits<real>::quiet_NaN();
             for (index i = index(blockIdx.x) * blockDim.x + threadIdx.x; i < target.RowCount(); i += index(gridDim.x) * blockDim.x)
                 target(i, 3) += offset;
         }
@@ -172,13 +174,13 @@ namespace DNDS::Cauchy::CUDA
         GaugeSum<<<unsigned(scratch.RowCount()), D::Threads, 0, R::CUDAStream(context)>>>(cells, candidate, scratch);
         D::Finish(context, scratch, result);
     }
-    void ShiftPressure(R::ExecutionContext context, LinearWriteRows target, real offset)
+    void ShiftPressure(R::ExecutionContext context, LinearWriteRows target, real offset, LinearReadRows integral)
     {
         D::CheckInput(context, target.ConstView());
         DNDS_check_throw_info(target.Width() >= 4 && target.Width() <= 6, "CUDA pressure gauge needs an ACM row");
         if (!target.RowCount())
             return;
-        GaugeShift<<<unsigned(NonlinearScratchRows(target.RowCount())), D::Threads, 0, R::CUDAStream(context)>>>(target, offset);
+        GaugeShift<<<unsigned(NonlinearScratchRows(target.RowCount())), D::Threads, 0, R::CUDAStream(context)>>>(target, offset, integral);
         D::CheckLaunch();
     }
     void MeasureMeanState(R::ExecutionContext context, NonlinearCells cells, LinearReadRows mean,

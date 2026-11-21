@@ -5,6 +5,7 @@
 
 namespace DNDS::Cauchy
 {
+    class IterationChecks;
     /// Controller-owned tail of a submitted FV evaluation. Its owning solve
     /// retains the operands and workspace. Consume before reusing either. The
     /// event covers the compute lane and imported transfer publications only.
@@ -14,6 +15,8 @@ namespace DNDS::Cauchy
         std::function<void()> _publish;
 
     public:
+        /// Optional first-failure record owned by this nonlinear segment.
+        std::shared_ptr<IterationChecks> checks;
         SpatialPublication() = default;
         SpatialPublication(const SpatialPublication &) = delete;
         SpatialPublication &operator=(const SpatialPublication &) = delete;

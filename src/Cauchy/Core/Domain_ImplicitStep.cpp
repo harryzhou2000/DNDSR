@@ -4,6 +4,7 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/StepResult.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy
@@ -107,6 +108,7 @@ namespace DNDS::Cauchy
                     SetTimeStage(equation.coupledStage);
                     NonlinearSolveControl correction{1, cfl};
                     correction.queuedPublication = true;
+                    correction.iterationOrdinal = _state.coupledNonlinear->iteration + 1;
                     return multigrid ? multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl, std::cref(rate), _execution.StageDerivative(0))
                                      : solver->CorrectOnce(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time,
                                                            equation.coupledStage, correction, std::cref(rate), _execution.StageDerivative(0));
@@ -254,6 +256,7 @@ namespace DNDS::Cauchy
                               "DITR update policy was not resolved");
         using Observation = std::function<std::vector<real>()>;
         const auto pending = std::make_shared<std::array<Observation, 3>>();
+        const auto endpointPublication = std::make_shared<std::function<void()>>();
         return NonlinearSession::Prepare(
             *_execution.nonlinearSetup, 0,
             {std::move(coupledControl), std::move(initial), _coupledReconstructionTolerance, [this, pending]
@@ -267,8 +270,10 @@ namespace DNDS::Cauchy
                        const auto &rate = _state.timeStepper->CompletedCoupledRate(*_state.stageGroup, stage);
                        (*pending)[stage + 1] = _execution.implicit->SubmitGlobalRateNorm(rate, 2, stage + 1);
                    } },
-             [this, pending](auto &norms)
+             [this, pending, endpointPublication](auto &norms)
              {
+            _execution.implicit->ObservePendingChecks();
+            if (*endpointPublication) std::exchange(*endpointPublication, {})();
             auto sum = std::exchange((*pending)[0], {})();
             if (_algebraicRateComponent >= 0)
                 for (int stage = 0; stage < 2; ++stage)
@@ -285,7 +290,7 @@ namespace DNDS::Cauchy
             const auto a = _coupledMiddle->reconstruction();
             const auto b = _execution.implicit->ReconstructionStats();
             return std::make_pair(std::max(a.first, b.first), std::max(a.second, b.second)); },
-             [this](int coupledStage, auto &iteration, bool applyCorrection)
+             [this, endpointPublication](int coupledStage, auto &iteration, bool applyCorrection)
              {
                 SetTimeStage(coupledStage);
                 ActivateCoupledInterface(coupledStage);
@@ -298,6 +303,7 @@ namespace DNDS::Cauchy
                 NonlinearIterationReport work;
                 NonlinearSolveControl correction{1, iteration.pseudoCFL};
                 correction.queuedPublication = true;
+                    correction.iterationOrdinal = _state.coupledNonlinear->iteration + 1;
                 if (applyCorrection && coupledStage == 0)
                     work = _coupledMiddle->correct(equation, *rate, iteration.pseudoCFL);
                 else if (applyCorrection)
@@ -308,15 +314,17 @@ namespace DNDS::Cauchy
                 NonlinearDetail::AccumulateWork(iteration, work);
                 _state.timeStepper->CompleteEquation(
                     *_state.stageGroup, _state.trial,
-                    [this](EquationDofs &state, EquationDofs &rate, real time,
+                    [this, endpointPublication](EquationDofs &state, EquationDofs &rate, real time,
                            int stage)
                     {
                         if (stage == 0)
                             _coupledMiddle->evaluate(state, rate, time, stage);
                         else
-                            EvaluateImplicitRate(state, rate,
-                                                 *_execution.workspace, time,
-                                                 stage);
+                        {
+                            SetTimeStage(stage);
+                            DNDS_check_throw_info(!*endpointPublication, "unobserved DITR endpoint rate");
+                            *endpointPublication = _execution.implicit->SubmitRate(state, rate, time, _execution.StageDerivative(1), stage, _state.coupledNonlinear->iteration);
+                        }
                     }); },
              {},
              _algebraicRateComponent < 0 ? std::function<real()>{} : [this]

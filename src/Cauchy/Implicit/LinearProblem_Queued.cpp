@@ -174,8 +174,9 @@ namespace DNDS::Cauchy
                                       (!_offDiagonal || !values.Overlaps(_offDiagonal->Values().Storage())),
                                   "queued linear output aliases matrix storage"); });
         if (jacobi)
-            DNDS_check_throw_info(_inverseCurrent && _inverseSourceEpoch == _diagonal.MutationEpoch() &&
-                                      _inverseEpoch == _inverse.MutationEpoch(),
+            DNDS_check_throw_info((_inverseCurrent && _inverseSourceEpoch == _diagonal.MutationEpoch() &&
+                                   _inverseEpoch == _inverse.MutationEpoch()) ||
+                                      (options.pendingInverse && PendingInverseOn(stream)),
                                   "queued Jacobi inverse is missing or invalidated by a submitted write");
         const auto coupled = [](auto &state) -> decltype(auto)
         {

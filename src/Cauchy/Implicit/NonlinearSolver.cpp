@@ -7,6 +7,7 @@
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "Cauchy/Implicit/NonlinearOperators.hpp"
 #include "Cauchy/Implicit/NonlinearNormSum.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/Discretization/SpatialPublication.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
@@ -78,6 +79,7 @@ namespace DNDS::Cauchy
         std::unique_ptr<DofLinearSolver> linear;
         bool resolvedCellOmega;
         bool positivity;
+        std::shared_ptr<IterationChecks> checks;
         std::shared_ptr<const real> pressureGauge;
         AlphaReduction rhsFPPReduction = AlphaReduction::Cell;
         std::optional<R::Array<real>> cellRHSAlpha;
@@ -220,6 +222,10 @@ namespace DNDS::Cauchy
             linear = std::make_unique<DofLinearSolver>(problem, state, [&](auto &field)
                                                        { return discrete.BindHalo(field); }, NonlinearDetail::ResolveLinear(settings, discrete.Metrics().Dimension(), discrete.Equation().IsACM()), execution);
         }
+        OptionalRef<IterationChecks> QueuedChecks() const
+        {
+            return checks ? OptionalRef<IterationChecks>(*checks) : OptionalRef<IterationChecks>{};
+        }
         OptionalRef<R::Array<real>> CorrectionDerivative()
         {
             return sourceDerivative ? OptionalRef<R::Array<real>>(*sourceDerivative) : OptionalRef<R::Array<real>>{};
@@ -228,12 +234,15 @@ namespace DNDS::Cauchy
         {
             FiniteVolume::JacobianContext input{*reconstruction, *workspace, stream};
             input.sourceDerivative = derivative;
+            input.checks = QueuedChecks();
             return input;
         }
         void EvaluateSpatial(EquationDofs &state, real time,
                              R::EagerEngine &fallbackEngine, OptionalRef<R::Array<real>> derivative,
                              std::function<void()> submitResidualConsumer = {}, OptionalRef<SpatialPublication> publication = {})
         {
+            if (settings.immediateNumericalChecks)
+                publication = {};
             if (executionOwner)
             {
                 auto evaluation = FiniteVolumeEvaluation::Spatial(spatial, time, std::ref(auxiliary), derivative);
@@ -280,7 +289,8 @@ namespace DNDS::Cauchy
                                                              cellRHSAlpha ? OptionalRef<R::Array<real>>(*cellRHSAlpha) : OptionalRef<R::Array<real>>{},
                                                              {cfl, settings.positivity.rhsFPPScale, settings.positivity.rhsFPPRelax,
                                                               settings.positivity.compressionPower, positivity && settings.positivity.rhsFPPMode != "none",
-                                                              settings.positivity.rhsFPPMode == "rhs"}); });
+                                                              settings.positivity.rhsFPPMode == "rhs"},
+                                                             positivity ? OptionalRef<IterationChecks>{} : QueuedChecks()); });
             if (positivity && settings.positivity.rhsFPPMode != "none")
             {
                 statistics = AgreeAlphaStatistics(statistics.limited, statistics.minimum, rhsFPPReduction, mpi.comm);
@@ -294,6 +304,8 @@ namespace DNDS::Cauchy
                         // prefix for every backend before entering it.
                         engine.Synchronize(); });
             }
+            if (checks && state.Device() == R::Device::Host())
+                stream.Record().WaitHost();
             return statistics;
         }
         std::vector<real> LinearScales(const EquationDofs &state)
@@ -376,10 +388,18 @@ namespace DNDS::Cauchy
                           context.ComputeStream(), settings, residualSelection,
                           context.ChemicalWorkers(), std::move(pressureGauge))
     {
+        if (!settings.implicit.immediateNumericalChecks && settings.implicit.linear.method == "jacobi" &&
+            settings.implicit.linear.stopping == "fixedCount" && !settings.implicit.multigrid.levels && !_data->positivity)
+            _data->checks = context.NonlinearChecks();
         _data->executionOwner.emplace(std::move(context));
         _data->PrepareLinear(state, settings.execution.overlap);
     }
 
+    void NonlinearSolver::ObservePendingChecks() const
+    {
+        if (_data->checks)
+            _data->checks->Observe();
+    }
     std::shared_ptr<const real> NonlinearSolver::PressureGauge() const
     {
         return _data->pressureGauge;
@@ -417,9 +437,27 @@ namespace DNDS::Cauchy
     }
     void NonlinearSolver::EvaluateRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<R::Array<real>> derivative)
     {
+        SubmitRate(state, rate, time, derivative)();
+    }
+    std::function<void()> NonlinearSolver::SubmitRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<R::Array<real>> derivative, int stage, index iteration)
+    {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
-        auto session = _data->session.Acquire(_nestedSession.lock());
-        auto &data = *_data;
+        struct RateSubmission
+        {
+            std::shared_ptr<Data> data;
+            R::SessionAccess::Lease session;
+            EquationDofs means;
+            SpatialPublication publication;
+            RateSubmission(std::shared_ptr<Data> owner, R::SessionAccess::Lease access, EquationDofs state)
+                : data(std::move(owner)), session(std::move(access)), means(std::move(state)) {}
+        };
+        auto held = std::make_shared<RateSubmission>(_data, _data->session.Acquire(_nestedSession.lock()), state.NumericAlias());
+        if (stage >= 0 && _data->checks)
+        {
+            held->publication.checks = _data->checks;
+            _data->checks->Begin(iteration, stage);
+        }
+        auto &data = *held->data;
         auto engine = data.stream.LockEngine();
         data.Stage([&]
                    {
@@ -427,11 +465,13 @@ namespace DNDS::Cauchy
             state.RequireCompatible(rate);
             for (const auto *input : {&state, &data.spatial})
                 EquationDofOperations::RequireDistinct(*input, rate); });
-        data.EvaluateSpatial(state, time, engine, derivative, [&]
-                             { data.operators.SubmitScaleRate(engine, data.stream, data.spatial, rate, false); });
-        if (!data.executionOwner)
-            engine.Synchronize();
-        data.PublishAuxiliary(state, time);
+        data.EvaluateSpatial(held->means, time, engine, derivative, [&]
+                             { data.operators.SubmitScaleRate(engine, data.stream, data.spatial, rate, false); }, std::ref(held->publication));
+        return [held, time]
+        {
+            held->publication.Observe();
+            held->data->PublishAuxiliary(held->means, time);
+        };
     }
     std::vector<real> NonlinearSolver::MeasureRateNorm(const EquationDofs &rate, int normOrder,
                                                        OptionalRef<const EquationDofs> reference, OptionalRef<const EquationDofs> rawACMRate) const
@@ -521,6 +561,9 @@ namespace DNDS::Cauchy
             OptionalRef<const EquationDofs>{}, control.profile,
             std::move(total));
 
+        active->spatialPublication.checks = data.checks;
+        if (data.checks)
+            data.checks->Begin(control.resume && control.state ? control.state->iteration : 0, stage);
         const auto evaluate = [active]
         {
             auto &data = *active->owner;
@@ -536,7 +579,7 @@ namespace DNDS::Cauchy
             auto &data = *active->owner;
             const index nv = active->state.ComponentNumber();
             data.Stage([&]
-                       { active->spatialPublication.Observe(); });
+                       { if (data.checks) data.checks->Observe(); active->spatialPublication.Observe(); });
             data.PublishAuxiliary(active->state, active->time);
             auto local = std::exchange(active->observeNorms, {})();
 
@@ -556,6 +599,8 @@ namespace DNDS::Cauchy
         const auto advance = [active](auto &report)
         {
             auto &data = *active->owner;
+            if (data.checks)
+                data.checks->Begin(report.iterations + 1, active->stage);
             index rhsLimited = 0;
             real rhsAlpha = 1;
             {
@@ -582,7 +627,7 @@ namespace DNDS::Cauchy
                     active->profile, NonlinearProfile::LinearSolve);
                 const auto scales = data.LinearScales(active->state);
                 report.lastLinear =
-                    data.linear->Solve(data.defect, {}, scales);
+                    data.linear->Solve(data.defect, {}, scales, data.QueuedChecks());
                 report.linearIterations += report.lastLinear.iterations;
                 DNDS_check_throw_info(
                     report.lastLinear.usable,
@@ -630,6 +675,8 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         control.correctionLimit = 1;
         auto session = _data->session.Acquire(_nestedSession.lock());
+        if (_data->checks)
+            _data->checks->Begin(control.iterationOrdinal, stage);
         auto &data = *_data;
         auto engine = data.stream.LockEngine();
         if (control.profile)
@@ -649,7 +696,8 @@ namespace DNDS::Cauchy
                     state.RequireCompatible(*cachedRate);
                     EquationDofOperations::RequireDistinct(data.spatial, *cachedRate);
                 }
-                data.ValidateMeans(state);
+                if (data.checks) data.operators.SubmitMeanCheck(engine, data.stream, state, *data.checks);
+                else data.ValidateMeans(state);
                 state.RequireCompatible(source);
                 EquationDofOperations::RequireDistinct(state, source);
                 selection = Algebra::ComponentSelection(nv, control.updateComponents);
@@ -736,7 +784,7 @@ namespace DNDS::Cauchy
                 {
                     const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::LinearSolve);
                     const auto scales = data.LinearScales(state);
-                    report.lastLinear = data.linear->Solve(data.defect, {}, scales);
+                    report.lastLinear = data.linear->Solve(data.defect, {}, scales, data.QueuedChecks());
                     report.linearIterations += report.lastLinear.iterations;
                     DNDS_check_throw_info(report.lastLinear.usable, "equation implicit linear correction is unusable");
                 }
@@ -757,13 +805,15 @@ namespace DNDS::Cauchy
         }
         // A prescribed correction needs the defect but never makes a stopping decision.
         data.Stage([&]
-                   { data.operators.AssembleDefect(engine, data.stream, state, data.spatial, source, data.defect,
-                                                   mass, rhsScale, activeComponents.HostView(), data.settings.normOrder, false); });
+                   { data.operators.SubmitDefect(engine, data.stream, state, data.spatial, source, data.defect,
+                                                 mass, rhsScale, activeComponents.HostView(), data.settings.normOrder, false, {}, data.QueuedChecks())(); });
         std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = reconstruction();
         report.reconstructionUpdateMeasured = std::isfinite(report.reconstructionRelativeUpdate);
         if (!report.reconstructionUpdateMeasured)
             report.reconstructionRelativeUpdate = 0;
         advance(report);
+        if (data.checks && !(control.queuedPublication && control.iterationOrdinal > 0))
+            data.checks->Observe();
         report.iterations = 1;
         auto &stateSnapshot = *data.nonlinearState;
         stateSnapshot.stage = stage;
@@ -852,7 +902,7 @@ namespace DNDS::Cauchy
             }
             const auto result = data.operators.ApplyCorrection(engine, data.stream, state, increment, data.candidate,
                 {active.data(), index(active.size())}, {scale, data.settings.positivity.incrementRelax,
-                    data.settings.positivity.compressionPower, data.positivity, data.settings.ransRelaxation});
+                    data.settings.positivity.compressionPower, data.positivity, data.settings.ransRelaxation}, data.positivity || !queuedPublication ? OptionalRef<IterationChecks>{} : data.QueuedChecks());
             limited = result.alpha.limited; minimum = result.alpha.minimum; frozen = result.frozen; });
         if (data.resolvedCellOmega &&
             (updateComponents.empty() || std::find(updateComponents.begin(), updateComponents.end(), data.ransFirst + 1) != updateComponents.end()))
@@ -861,7 +911,15 @@ namespace DNDS::Cauchy
         // correction is allowed to change pressure.
         if (data.pressureGauge && (updateComponents.empty() ||
                                    std::find(updateComponents.begin(), updateComponents.end(), 3) != updateComponents.end()))
-            data.operators.ProjectPressureMean(engine, data.stream, data.candidate, *data.pressureGauge);
+            data.operators.ProjectPressureMean(engine, data.stream, data.candidate, *data.pressureGauge,
+                                               queuedPublication && data.checks ? data.NormSlot(4, 2) : nullptr);
+        if (queuedPublication && data.checks && !data.positivity)
+        {
+            data.operators.SubmitMeanCheck(engine, data.stream, data.candidate, *data.checks);
+            for (index f = 0; f < state.PhysicalFieldNumber(); ++f)
+                data.checks->CopyIfValid(data.candidate.PhysicalField(f).Owned(), state.PhysicalField(f).Owned());
+            return {0, 1};
+        }
         // Scalar repair may not unfreeze a masked component, even when density changed.
         const auto validateCandidate = [&]
         {

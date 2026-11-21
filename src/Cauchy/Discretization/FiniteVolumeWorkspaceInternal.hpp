@@ -409,7 +409,8 @@ namespace DNDS::Cauchy
         /// CPU leaves report during execution; CUDA summaries are inspected
         /// only after the caller's final drain. Neither method waits implicitly.
         void BeginNumericalStatus(R::EagerEngine &, const R::ExecutionStream &, bool withRHS);
-        void CheckNumericalStatus(bool withRHS);
+        void CheckNumericalStatus(bool withRHS, bool captured = false);
+        void CaptureDeviceRHSStatus(IterationChecks &, bool source);
         void ValidateSourceDerivative(const R::Array<real> &, const EquationDofs &, const EquationDofs &,
                                       const ReconstructionState &, const R::EagerEngine &) const;
         void StagePreparedStatus(R::EagerEngine &, const R::ExecutionStream &);
@@ -483,6 +484,7 @@ namespace DNDS::Cauchy
                              OptionalRef<const R::Array<real>> incoming = {});
         struct RHSSubmission
         {
+            NumericalStatus fluxStatus{}, sourceStatus{};
             std::optional<RHSKernelDiagnostics> fixedDiagnostics;
             index faceFallbacks = 0;
             CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All;
@@ -539,7 +541,7 @@ namespace DNDS::Cauchy
         void SubmitVolumeSource(R::EagerEngine &, const R::ExecutionStream &,
                                 const EquationDofs &, EquationDofs &result, real time, CFV::ReconstructionRegion region,
                                 std::shared_ptr<PointEvaluator> evaluator = {},
-                                OptionalRef<EquationDofs> lowOrder = {}, OptionalRef<R::Array<real>> sourceDerivative = {});
+                                OptionalRef<EquationDofs> lowOrder = {}, OptionalRef<R::Array<real>> sourceDerivative = {}, std::shared_ptr<RHSSubmission> submission = {});
         bool AddMeanSourceJacobian(
             const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
             DiagonalStorage storage, real scale, PointEvaluator &evaluator,

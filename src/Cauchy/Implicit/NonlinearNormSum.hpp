@@ -14,6 +14,8 @@ namespace DNDS::Cauchy
     class NonlinearNormSum
     {
         Runtime::Array<real> _local, _sum;
+        std::optional<Runtime::Array<real>> _resident;
+        bool _ordinaryMPI = false;
         Runtime::ExecutionStream _lane;
         std::shared_ptr<const Runtime::GlobalReductionBinding> _binding;
         Runtime::StreamEvent _completion;
@@ -32,5 +34,8 @@ namespace DNDS::Cauchy
         /// Ordinary MPI consumes staged host memory through controller progress.
         void Submit(Runtime::EagerEngine &, const Runtime::ExecutionStream &producer);
         std::vector<real> Observe() const;
+        /// Order a device/worker consumer after the reduction. Ordinary MPI is
+        /// progressed and retired on the controller before transferring back.
+        const Runtime::Array<real> &Consume(Runtime::EagerEngine &, const Runtime::ExecutionStream &);
     };
 }

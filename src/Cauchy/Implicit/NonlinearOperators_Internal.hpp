@@ -2,6 +2,7 @@
 
 #include "Cauchy/Implicit/NonlinearOperators.hpp"
 #include "Cauchy/Implicit/NonlinearNormSum.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/Implicit/CPU/NonlinearKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationArrayOperands.hpp"
@@ -73,7 +74,7 @@ namespace DNDS::Cauchy
         template <class Host, class Device>
         std::function<NonlinearOperatorDetail::Result()> SubmitReduction(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream,
                                                                          index components, NonlinearOperatorDetail::Inputs inputs, NonlinearOperatorDetail::Outputs outputs,
-                                                                         Host host, Device device, std::shared_ptr<NonlinearNormSum> global = {})
+                                                                         Host host, Device device, std::shared_ptr<NonlinearNormSum> global = {}, OptionalRef<IterationChecks> checks = {}, IterationPhase phase = IterationPhase::Defect)
         {
             namespace R = Runtime;
             using namespace NonlinearOperatorDetail;
@@ -85,6 +86,13 @@ namespace DNDS::Cauchy
                     retained->workerSums.resize(index(OMP::DistributedThreads()) * (components + 1));
                 R::SubmitArrayBatch(engine, stream, [retained, host](R::ExecutionContext, auto input, auto output)
                                     { host(input, output, *retained); }, std::move(inputs), std::move(outputs));
+                if (checks)
+                {
+                    checks->CaptureHost(phase, [retained]
+                                        { return retained->status && !retained->frozen ? NumericalStatus{NumericalError::InvalidState, 2} : retained->status; });
+                    return []
+                    { return Result{}; };
+                }
                 if (global)
                 {
                     R::SubmitArrays(engine, stream, [retained](auto, auto dst)
@@ -105,6 +113,16 @@ namespace DNDS::Cauchy
                 };
             }
 #ifdef DNDS_USE_CUDA
+            if (checks)
+            {
+                R::SubmitArrayBatch(engine, stream, [device](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
+                                    { device(where, input, output, scratch, value); }, std::move(inputs), std::move(outputs), std::make_tuple(R::WriteAs<R::FixedRows<1>>(partial), R::WriteAs<R::FixedRows<1>>(summary)));
+                auto status = R::Array<NumericalStatus>::FromStorage(R::RowLayout::Dense(1, 1),
+                                                                     summary.Storage().Subspan(offsetof(CUDA::NonlinearSummary, status), sizeof(NumericalStatus)));
+                checks->Capture(phase, status);
+                return []
+                { return Result{}; };
+            }
             if (global)
             {
                 R::SubmitArrayBatch(engine, stream, [device](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)

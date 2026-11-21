@@ -144,7 +144,7 @@ namespace DNDS::Cauchy
         /// Same optional frozen component-scale metric as LinearSolver.
         Linear::LinearIterationReport Solve(const EquationDofs &rhs,
                                             OptionalRef<const EquationDofs> initialGuess = {},
-                                            const std::vector<real> &componentScales = {});
+                                            const std::vector<real> &componentScales = {}, OptionalRef<IterationChecks> checks = {});
         EquationDofs Solution() const;
     };
 }

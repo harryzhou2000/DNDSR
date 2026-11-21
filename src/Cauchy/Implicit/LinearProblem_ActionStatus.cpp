@@ -1,5 +1,6 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #ifdef DNDS_USE_CUDA
 #    include "Cauchy/Discretization/CUDA/FiniteVolumeStateKernels.hpp"
@@ -54,7 +55,7 @@ namespace DNDS::Cauchy
                         { CUDA::ClearNumericalStatus(context, status); }, R::WriteAs<R::FixedRows<1>>(_actionWorkspace->rows));
 #endif
     }
-    void LinearProblemContext::CheckQueuedActions(R::EagerEngine &engine, const R::ExecutionStream &stream) const
+    void LinearProblemContext::CheckQueuedActions(R::EagerEngine &engine, const R::ExecutionStream &stream, OptionalRef<IterationChecks> checks) const
     {
         if (!_actionWorkspace)
             return;
@@ -62,6 +63,11 @@ namespace DNDS::Cauchy
 #ifdef DNDS_USE_CUDA
         R::SubmitArrays(engine, stream, [](R::ExecutionContext context, auto rows, auto partial, auto result)
                         { CUDA::ReduceNumericalStatus(context, rows, {}, partial, result); }, R::ReadAs<R::FixedRows<1>>(_actionWorkspace->rows), R::WriteAs<R::FixedRows<1>>(_actionWorkspace->partial), R::WriteAs<R::FixedRows<1>>(_actionWorkspace->result));
+        if (checks)
+        {
+            checks->Capture(IterationPhase::Linear, _actionWorkspace->result);
+            return;
+        }
         stream.Record().WaitHost();
         const auto host = _actionWorkspace->result.To(R::Device::Host(), stream.Context());
         const auto read = host.Read();

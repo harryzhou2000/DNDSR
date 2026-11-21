@@ -531,6 +531,7 @@ namespace DNDS::Cauchy
         int nIterCellSmoothScale = 15;
         bool roeDissipation = false, collectiveChecks = true;
         bool requireConvergedReconstruction = false;
+        bool immediateNumericalChecks = false;
         bool rejectUnconvergedStages = false;
         ImplicitLinearSettings linear;
         ImplicitSGSSettings sgs;
@@ -570,6 +571,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(relaxation, "Multiplier on each computed correction in (0,1]");
             DNDS_FIELD(roeDissipation, "Use full equation-owned characteristic dissipation; requires block diagonal");
             DNDS_FIELD(collectiveChecks, "Optional solver and Runtime halo safety agreements, default on; false also disables extra halo freshness audits. Routing/protocol and numerical collectives remain. Runtime local launch failure then aborts instead of rank-asymmetric recovery");
+            DNDS_FIELD(immediateNumericalChecks, "Observe numerical status immediately inside fixed-work nonlinear updates for diagnosis");
             DNDS_FIELD(requireConvergedReconstruction, "Require the requested VR tolerance as well as the mean equation target; false preserves Euler-style fixed-sweep acceptance");
             DNDS_FIELD(rejectUnconvergedStages, "Reject a finite admissible stage or coupled DITR solve at its iteration cap; false advances the final iterate like Euler while retaining an unconverged report");
             config.field_section(&T::linear, "linear", "Linear solve controls");

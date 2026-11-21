@@ -1,4 +1,5 @@
 #include "Cauchy/State/MeanStateCheck.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/State/EquationArrayOperands.hpp"
 #include "Cauchy/State/CPU/StatePropertiesKernels.hpp"
 #ifdef DNDS_USE_CUDA
@@ -46,6 +47,14 @@ namespace DNDS::Cauchy
         : _data(std::make_shared<Data>(std::move(space), std::move(policy), context, std::move(activeRows))) {}
     NumericalStatus MeanStateCheck::Evaluate(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state) const
     {
+        return EvaluateImpl(engine, stream, state, {});
+    }
+    void MeanStateCheck::Submit(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state, IterationChecks &checks) const
+    {
+        (void)EvaluateImpl(engine, stream, state, std::ref(checks));
+    }
+    NumericalStatus MeanStateCheck::EvaluateImpl(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state, OptionalRef<IterationChecks> checks) const
+    {
         state.Validate();
         const auto retained = _data;
         const auto policy = retained->policy.View();
@@ -62,6 +71,12 @@ namespace DNDS::Cauchy
                                 {
                 const auto layout = binding.Layout(input);
                 *status = CPU::ValidateMeanState(layout.Descriptor(), retained->policy.View(), active); }, std::move(inputs), Outputs{}, std::make_tuple(R::ReadAs<R::FixedRows<1>>(retained->activeRows)));
+            if (checks)
+            {
+                checks->CaptureHost(IterationPhase::Candidate, [status]
+                                    { return *status; });
+                return {};
+            }
             engine.Synchronize();
             return *status;
         }
@@ -70,6 +85,12 @@ namespace DNDS::Cauchy
                               "CUDA mean-state check requires combined AoS");
         R::SubmitArrayBatch(engine, stream, [retained, binding](auto context, auto input, auto, auto summary, auto active)
                             { CUDA::AdmissibleMeans(context, Table(input[binding.firstSlot]), retained->policy.View(), summary, active); }, std::move(inputs), Outputs{}, std::make_tuple(R::WriteAs<R::FixedRows<1>>(retained->summary), R::ReadAs<R::FixedRows<1>>(retained->activeRows)));
+        if (checks)
+        {
+            auto row = R::Array<index>::FromStorage(R::RowLayout::Dense(1, 1), retained->summary.Storage().Subspan(offsetof(CUDA::StateReductionValue, firstInvalid), sizeof(index)));
+            checks->CaptureInvalidRow(IterationPhase::Candidate, row);
+            return {};
+        }
         engine.Synchronize();
         const auto host = retained->summary.To(R::Device::Host(), stream.Context());
         const auto read = host.Read();

@@ -1,3 +1,4 @@
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/ViscousReconstruction.hpp"
 #include "DNDS/Diagnostics/Timeline.hpp"
@@ -234,6 +235,14 @@ namespace DNDS::Cauchy
         deviceFlux->submittedRegions = 0;
 #else
         DNDS_check_throw_info(false, "CUDA flux execution is not built");
+#endif
+    }
+    void FiniteVolume::Workspace::CaptureDeviceRHSStatus(IterationChecks &checks, bool source)
+    {
+#ifdef DNDS_USE_CUDA
+        DNDS_check_throw_info(deviceFlux && deviceFlux->pending && preparationStatus && preparationStatus->pending,
+                              "RHS status capture requires an open device evaluation");
+        checks.Capture(source ? IterationPhase::Source : IterationPhase::Flux, source ? preparationStatus->result : deviceFlux->result);
 #endif
     }
     void FiniteVolume::Workspace::StagePreparedStatus(R::EagerEngine &engine, const R::ExecutionStream &stream)

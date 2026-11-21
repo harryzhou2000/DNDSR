@@ -183,6 +183,8 @@ namespace DNDS::Cauchy::CUDA
                         }
                     }
                 }
+                if (parameters.requireFrozen && !local.frozen && local.status)
+                    local.status = NumericalStatus{NumericalError::InvalidState, 2, iCell};
                 if (!valid)
                     for (index j = 0; j < mean.Width(); ++j)
                         candidate(iCell, j) = std::numeric_limits<real>::quiet_NaN();

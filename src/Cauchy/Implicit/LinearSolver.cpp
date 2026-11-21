@@ -1,5 +1,6 @@
 #include "Cauchy/Config/LinearProvider.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/Config/CUDAKernelDefaults.hpp"
 #include "DNDS/Diagnostics/Timeline.hpp"
 #include "Cauchy/Implicit/LinearSolverAlgebra.hpp"
@@ -421,10 +422,10 @@ namespace DNDS::Cauchy
                 Stage([&]
                       { schedule.Join(); });
             }
-            void JacobiSweep(const Field &rhs, Field &input, Field &output, bool knownZero)
+            void JacobiSweep(const Field &rhs, Field &input, Field &output, bool knownZero, bool pendingInverse = false)
             {
                 const TimelineScope timeline("Cauchy/Linear/JacobiSweep");
-                const LinearKernelOptions options{settings.cudaJacobiMapping == "componentGroup"};
+                const LinearKernelOptions options{settings.cudaJacobiMapping == "componentGroup", pendingInverse};
                 auto &first = settings.jacobiLocalSweeps == 2 ? forward : output;
                 auto engine = compute.LockEngine();
                 OperatorSchedule schedule(engine, compute, communication, execution.overlap);
@@ -627,7 +628,7 @@ namespace DNDS::Cauchy
             const Field &Solution() const { return gmres ? gmres->Solution() : *solution; }
             Linear::LinearIterationReport Solve(
                 const Field &rhs, OptionalRef<const Field> initialGuess,
-                const std::vector<real> &componentScales)
+                const std::vector<real> &componentScales, OptionalRef<IterationChecks> checks = {})
             {
                 const TimelineScope timeline("Cauchy/Linear/Solve");
                 struct FinishProfile
@@ -656,7 +657,9 @@ namespace DNDS::Cauchy
             if (reductions) reductions->SetInverseScales(inverseComponentScales, compute.Context());
             data.problem->Validate(); rhs.Validate();
             Ops::CheckCompatible(data.old, rhs);
-            CheckIdle(rhs, false);
+            DNDS_check_throw_info(!checks || (data.settings.method == "jacobi" && data.settings.stopping == "fixedCount" && !initialGuess),
+                                  "queued linear checks require a fixed zero-start Jacobi solve");
+            if (!checks) CheckIdle(rhs, false);
             Ops::VisitFields(rhs, [&](const auto &field)
             {
                 DNDS_check_throw_info(!A::Detail::Overlaps(field.Owned().Storage(), data.problem->Diagonal().Storage()) &&
@@ -671,11 +674,14 @@ namespace DNDS::Cauchy
             for (const auto &input : data.inputs)
             {
                 input.field.Validate();
-                CheckIdle(input.field, true);
+                if (!checks) CheckIdle(input.field, true);
                 Ops::RequireDistinct(rhs, input.field);
             }
-            diagonal.emplace(data.problem->Diagonal().Read(data.compute.Context()));
-            offDiagonal.emplace(data.problem->ReadOffDiagonal(data.compute.Context()));
+            if (!checks)
+            {
+                diagonal.emplace(data.problem->Diagonal().Read(data.compute.Context()));
+                offDiagonal.emplace(data.problem->ReadOffDiagonal(data.compute.Context()));
+            }
             if (data.localAMG)
             {
                 auto engine = data.compute.LockEngine();
@@ -706,8 +712,16 @@ namespace DNDS::Cauchy
                 // Numerical preparation observation, shared by inline/worker
                 // and device execution. The Krylov loop never consumes an
                 // unobserved inverse; only compact status crosses from CUDA.
-                engine.Synchronize();
-                data.problem->ObserveDiagonalInverse();
+                if (checks)
+                {
+                    data.problem->QueueInverseCheck(data.compute, *checks);
+                    checks->PublishAfterObservation([matrix = data.problem] { matrix->ObserveDiagonalInverse(); });
+                }
+                else
+                {
+                    engine.Synchronize();
+                    data.problem->ObserveDiagonalInverse();
+                }
                 data.problem->ResetQueuedActionStatus(engine, data.compute);
             } });
                 try
@@ -718,8 +732,9 @@ namespace DNDS::Cauchy
                         // each evaluated action. Failed device rows cannot be
                         // hidden by a later successful kernel or finite scratch.
                         auto engine = data.compute.LockEngine();
-                        data.problem->CheckQueuedActions(engine, data.compute);
-                        engine.Synchronize();
+                        data.problem->CheckQueuedActions(engine, data.compute, checks);
+                        if (!checks)
+                            engine.Synchronize();
                         data.profile.RecordSolve(data.mpi.rank, data.settings, report);
                         return report;
                     };
@@ -801,7 +816,7 @@ namespace DNDS::Cauchy
                             while (report.iterations < data.settings.maxIterations)
                             {
                                 data.JacobiSweep(rhs, current.get(), destination.get(),
-                                                 !initialGuess && report.iterations == 0);
+                                                 !initialGuess && report.iterations == 0, bool(checks));
                                 std::swap(current, destination);
                                 report.jacobiSweeps += data.settings.jacobiLocalSweeps;
                                 report.jacobiInputExchanges += bool(initialGuess) || report.iterations != 0;
@@ -823,7 +838,25 @@ namespace DNDS::Cauchy
                         if (!initialGuess && report.iterations == 0)
                             data.Stage([&]
                                        { algebra.Fill(x, 0); }); // Return a real zero answer if no sweep ran.
-                        report.usable = data.Finite(x);
+                        if (checks)
+                        {
+                            auto engine = data.compute.LockEngine();
+                            if (data.reductions)
+                            {
+                                data.reductions->SubmitFinite(engine, data.compute, Ops::Owned(x));
+                                checks->CaptureFinite(IterationPhase::Linear, data.reductions->Results());
+                            }
+                            else
+                                Ops::VisitFields(x, [&](const auto &field)
+                                                 {
+                                    auto status = std::make_shared<NumericalStatus>();
+                                    R::SubmitArrays(engine, data.compute, [status](auto, auto rows)
+                                        { *status = CPU::RequireFiniteRows(rows, rows.Width()); }, R::Read(field.Owned()));
+                                    checks->CaptureHost(IterationPhase::Linear, [status] { return *status; }); });
+                            report.usable = true; // Provisional until IterationChecks::Observe.
+                        }
+                        else
+                            report.usable = data.Finite(x);
                         report.stop = report.usable ? Linear::LinearStop::FixedCount : Linear::LinearStop::NonFinite;
                         return finish(report); // Residual diagnostics stay unevaluated (NaN).
                     }
@@ -1001,10 +1034,10 @@ namespace DNDS::Cauchy
     }
     Linear::LinearIterationReport DofLinearSolver::Solve(
         const EquationDofs &rhs, OptionalRef<const EquationDofs> initialGuess,
-        const std::vector<real> &componentScales)
+        const std::vector<real> &componentScales, OptionalRef<IterationChecks> checks)
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
         auto session = _data->session.Acquire();
-        return _data->Solve(rhs, initialGuess, componentScales);
+        return _data->Solve(rhs, initialGuess, componentScales, checks);
     }
 }

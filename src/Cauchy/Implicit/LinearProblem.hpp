@@ -17,6 +17,7 @@
 namespace DNDS::Cauchy
 {
     class EquationDofs;
+    class IterationChecks;
     enum class LinearInputLayout
     {
         Native,
@@ -34,6 +35,7 @@ namespace DNDS::Cauchy
     struct LinearKernelOptions
     {
         bool componentGroups = false;
+        bool pendingInverse = false;
     };
     enum class DiagonalStorage
     {
@@ -211,7 +213,7 @@ namespace DNDS::Cauchy
         /// Explicit host numerical decision boundary for queued evaluated
         /// actions. Reduces device status, drains, then reports the first error.
         /// CPU/assembled providers have no additional status workspace.
-        void CheckQueuedActions(Runtime::EagerEngine &, const Runtime::ExecutionStream &) const;
+        void CheckQueuedActions(Runtime::EagerEngine &, const Runtime::ExecutionStream &, OptionalRef<IterationChecks> checks = {}) const;
         /// Explicitly begin a fresh action segment after previous observation.
         /// Ordinary successful actions need no reset; errors remain sticky.
         void ResetQueuedActionStatus(Runtime::EagerEngine &, const Runtime::ExecutionStream &) const;
@@ -304,6 +306,8 @@ namespace DNDS::Cauchy
         /// preparation segment. Only compact status is copied from CUDA.
         /// Solver failures take the normal rank-local abort path.
         void ObserveDiagonalInverse();
+        void QueueInverseCheck(const Runtime::ExecutionStream &, IterationChecks &);
+        bool PendingInverseOn(const Runtime::ExecutionStream &) const;
         /// Stateless matrix action. Core acquires no input ghost lease. Every
         /// output allocation must be distinct from inputs and numeric storage.
         void Apply(const Field &input, Field &output, LinearRegion region = LinearRegion::All) const;

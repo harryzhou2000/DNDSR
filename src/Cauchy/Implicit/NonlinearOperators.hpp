@@ -9,6 +9,7 @@
 namespace DNDS::Cauchy
 {
     class NonlinearNormSum;
+    class IterationChecks;
     struct NonlinearPseudoTimeControls
     {
         real cfl = 1, forecastScale = 1, relax = 1;
@@ -51,11 +52,17 @@ namespace DNDS::Cauchy
     public:
         NonlinearOperators(CFV::FiniteVolumePlan, AdmissibilityPolicy, Runtime::ExecutionContext);
         void ValidateMeans(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;
+        void SubmitMeanCheck(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, IterationChecks &) const;
+
+    private:
+        std::function<std::vector<real>()> SubmitPressureSum(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, std::shared_ptr<NonlinearNormSum>) const;
+
+    public:
         /// Observe the volume-weighted domain mean of the ACM pressure.
         real PressureMean(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;
         /// Shift the candidate by target minus its current domain pressure mean.
         /// Only the scalar reduction is observed on the host.
-        void ProjectPressureMean(Runtime::EagerEngine &, const Runtime::ExecutionStream &, EquationDofs &, real target) const;
+        void ProjectPressureMean(Runtime::EagerEngine &, const Runtime::ExecutionStream &, EquationDofs &, real target, std::shared_ptr<NonlinearNormSum> = {}) const;
         /// Integrated residual, with raw L1 or volume-weighted L2 contributions
         /// followed by volume and, when measuring ACM, the squared spatial
         /// continuity integral independent of stage scaling/history. An empty selection means
@@ -68,7 +75,7 @@ namespace DNDS::Cauchy
         std::function<std::vector<real>()> SubmitDefect(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                                         const EquationDofs &mean, const EquationDofs &residual, const EquationDofs &constant,
                                                         EquationDofs &output, real inverseDt, real rhsScale, SpanView<const uint8_t> selection,
-                                                        int normOrder, bool measureNorm, std::shared_ptr<NonlinearNormSum> global = {}) const;
+                                                        int normOrder, bool measureNorm, std::shared_ptr<NonlinearNormSum> global = {}, OptionalRef<IterationChecks> checks = {}) const;
         /// Raw sums of volume*abs(U_j), then volume. Component normalization
         /// and global agreement are deliberately separate from this operator.
         std::vector<real> MeasureMeanState(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;
@@ -86,13 +93,13 @@ namespace DNDS::Cauchy
         AlphaStatistics PreparePseudoTime(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                           const EquationDofs &mean, EquationDofs &defect, const Runtime::Array<real> &spectral,
                                           Runtime::Array<real> &inverse, OptionalRef<Runtime::Array<real>> alpha,
-                                          NonlinearPseudoTimeControls) const;
+                                          NonlinearPseudoTimeControls, OptionalRef<IterationChecks> checks = {}) const;
         void SubmitAgreedRHSAlpha(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                   const Runtime::Array<real> &alpha, Runtime::Array<real> &inverse, EquationDofs &defect,
                                   real minimum, AlphaReduction, bool compressRHS) const;
         NonlinearCorrectionResult ApplyCorrection(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                                   const EquationDofs &mean, const EquationDofs &increment, EquationDofs &candidate,
-                                                  SpanView<const uint8_t> selection, NonlinearCorrectionControls) const;
+                                                  SpanView<const uint8_t> selection, NonlinearCorrectionControls, OptionalRef<IterationChecks> checks = {}) const;
         void SubmitScaleRate(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                              const EquationDofs &input, EquationDofs &output, bool multiplyVolume) const;
         void SubmitEquation(Runtime::EagerEngine &, const Runtime::ExecutionStream &,

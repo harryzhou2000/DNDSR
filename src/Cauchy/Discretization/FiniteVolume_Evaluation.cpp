@@ -2,6 +2,7 @@
 #include "Cauchy/Discretization/ViscousReconstruction.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/SpatialPublication.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "DNDS/Diagnostics/Timeline.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
@@ -755,14 +756,32 @@ namespace DNDS::Cauchy
         // Publish the direct physical gradients after limiter/PP, once per row.
         // The physical-gradient RHS itself never interprets coefficient data.
         work.SubmitDirectGradients(engine, stream, state, false);
+        const auto checks = publication ? publication->checks : nullptr;
         const auto submitSpatialRows = [&](CFV::ReconstructionRegion region)
         {
             rhsSubmissions.push_back(work.SubmitRHS(engine, stream, state, *residual,
                                                     region, time, {}, OptionalRef<const AuxiliaryValues>(auxiliary), {}, incoming));
+            const auto record = rhsSubmissions.back();
+            if (checks)
+            {
+                if (record)
+                    checks->CaptureHost(IterationPhase::Flux, [record]
+                                        { return record->fluxStatus; });
+                else
+                    work.CaptureDeviceRHSStatus(*checks, false);
+            }
             // Flux initializes these residual rows; the volume term accumulates
             // into them before handing execution to a different region.
             work.SubmitVolumeSource(engine, stream, state, *residual, time, region, {},
-                                    work.lowOrderResidual ? OptionalRef<EquationDofs>(*work.lowOrderResidual) : OptionalRef<EquationDofs>{}, sourceDerivative);
+                                    work.lowOrderResidual ? OptionalRef<EquationDofs>(*work.lowOrderResidual) : OptionalRef<EquationDofs>{}, sourceDerivative, record);
+            if (checks)
+            {
+                if (record)
+                    checks->CaptureHost(IterationPhase::Source, [record]
+                                        { return record->sourceStatus; });
+                else
+                    work.CaptureDeviceRHSStatus(*checks, true);
+            }
         };
         if (overlap && residual)
             submitSpatialRows(CFV::ReconstructionRegion::Core);
@@ -776,12 +795,12 @@ namespace DNDS::Cauchy
             submitSpatialRows(rest);
         if (submitResidualConsumer)
             local(submitResidualConsumer);
-        auto publish = [this, &work, &state, &reconstruction, residual, auxiliary, time, boundary,
+        auto publish = [this, &work, &state, &reconstruction, residual, auxiliary, time, boundary, checks,
                         separateMeanGradient, gradientAuxiliary, rhsSubmissions = std::move(rhsSubmissions),
                         characteristicSubmission, gradientPositivitySubmission, preparation = std::move(auxiliaryPreparation),
                         binding = std::move(activeReconstruction), session, reconstructionSession]() mutable
         {
-            work.CheckNumericalStatus(bool(residual));
+            work.CheckNumericalStatus(bool(residual), residual && checks);
             if (separateMeanGradient)
                 CheckMeanGradientBoundary(*work.meanGradients);
             if (work.positivity)

@@ -92,7 +92,7 @@ namespace DNDS::Cauchy
             constexpr auto all = CFV::ReconstructionRegion::All;
             held->flux = work->SubmitRHS(engine, stream, state, residual, all, time, {}, auxiliary, {}, incoming);
             work->SubmitVolumeSource(engine, stream, state, residual, time, all, {},
-                                     work->lowOrderResidual ? OptionalRef<EquationDofs>(*work->lowOrderResidual) : OptionalRef<EquationDofs>{}, sourceDerivative);
+                                     work->lowOrderResidual ? OptionalRef<EquationDofs>(*work->lowOrderResidual) : OptionalRef<EquationDofs>{}, sourceDerivative, held->flux);
             work->StagePreparedStatus(engine, stream);
             // Retirement distinguishes successful device completion from a rejected
             // or failed prefix. The following cleanup runs on either outcome.

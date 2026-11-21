@@ -167,6 +167,7 @@ namespace DNDS::Cauchy
     /// Cell-centered discretization with explicit backend placement. Preparation retains immutable geometry,
     /// incidence, quadrature and polynomial data. Each simultaneous residual
     /// requires a distinct Workspace. No solver clock/history/IO policy here.
+    class IterationChecks;
     class SpatialPublication;
     class FiniteVolume
     {
@@ -285,6 +286,7 @@ namespace DNDS::Cauchy
             std::optional<Runtime::ExecutionStream> stream;
             /// Unscaled integrated source contribution returned alongside the correction rate.
             OptionalRef<const Runtime::Array<real>> sourceDerivative;
+            OptionalRef<IterationChecks> checks;
             explicit JacobianContext(Workspace &scratch) : workspace(scratch) {}
             JacobianContext(const ReconstructionState &state, Workspace &scratch)
                 : workspace(scratch), reconstruction(state) {}
@@ -604,7 +606,7 @@ namespace DNDS::Cauchy
             explicit RHSOperator(std::shared_ptr<const ReadData> read) : _read(std::move(read)) {}
             template <FailurePolicy policy>
             RHSKernelDiagnostics ApplyFluxImpl(const RHSReadViews &input, const RHSWriteViews &output,
-                                               CFV::ReconstructionRegion region, real time) const;
+                                               CFV::ReconstructionRegion region, real time, OptionalRef<NumericalStatus> status = {}) const;
             template <FailurePolicy policy>
             void AddSourceImpl(const RHSReadViews &input, const RHSWriteViews &output,
                                CFV::ReconstructionRegion region, real time) const;
@@ -626,7 +628,7 @@ namespace DNDS::Cauchy
             /// volume sources remain a separate equation operator. Kernel
             /// invariant and disabled-fallback failures abort directly.
             RHSKernelDiagnostics ApplyFluxBorrowedFatal(const RHSReadViews &input, const RHSWriteViews &output,
-                                                        CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+                                                        CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0, OptionalRef<NumericalStatus> status = {}) const;
             /// Overwrite selected residual rows with integrated face flux only.
             /// Optional faceFlux follows the documented canonical face order.
             RHSKernelDiagnostics ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,

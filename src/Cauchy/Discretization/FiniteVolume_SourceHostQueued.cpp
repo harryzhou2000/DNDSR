@@ -10,7 +10,7 @@ namespace DNDS::Cauchy
     void FiniteVolume::Workspace::SubmitVolumeSource(
         R::EagerEngine &engine, const R::ExecutionStream &stream,
         const EquationDofs &state, EquationDofs &result, real time, CFV::ReconstructionRegion region,
-        std::shared_ptr<PointEvaluator> evaluator, OptionalRef<EquationDofs> lowOrder, OptionalRef<R::Array<real>> sourceDerivative)
+        std::shared_ptr<PointEvaluator> evaluator, OptionalRef<EquationDofs> lowOrder, OptionalRef<R::Array<real>> sourceDerivative, std::shared_ptr<RHSSubmission> submission)
     {
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == owner->metrics.Device() && std::isfinite(time),
                               "source submission stream, placement or time differs");
@@ -153,7 +153,7 @@ namespace DNDS::Cauchy
             pin->derivativeSlot = index(outputs.size());
             outputs.push_back(R::WriteAs<R::UniformTableRows>(*sourceDerivative));
         }
-        R::SubmitArrayBatch(engine, stream, [pin, rows, region](R::ExecutionContext, auto inputs, auto outputs, auto offsets, auto weights, auto lengths, auto wallCells)
+        R::SubmitArrayBatch(engine, stream, [pin, rows, region, submission](R::ExecutionContext, auto inputs, auto outputs, auto offsets, auto weights, auto lengths, auto wallCells)
                             {
             const TimelineScope execution("Cauchy/CPU/VolumeSource", int(region));
             // Reserve a chemistry worker only after predecessors execute.
@@ -216,15 +216,18 @@ namespace DNDS::Cauchy
                 request.ransMean = {{inputs[pin->meanSlots[location.physicalField]], location.firstComponent, location.componentNumber},
                                    {{}, location.firstComponent, location.componentNumber}};
             }
+            NumericalStatus status;
             if (pin->evaluator)
-                RequireNumericalSuccess(CPU::EvaluateVolumeSource(request, pin->owner->equation, *pin->evaluator), "queued volume source");
+                status = CPU::EvaluateVolumeSource(request, pin->owner->equation, *pin->evaluator);
             else
             {
                 auto workers = MakeCPUPointWorkers<CPU::SourceWorkerScratch>(pin->owner->equation, pin->workers,
                     pin->propertyRequest, pin->components);
-                RequireNumericalSuccess(CPU::EvaluateVolumeSource(request, pin->owner->equation,
-                    SpanView<CPU::SourceWorkerScratch>{workers.data(), index(workers.size())}), "queued volume source");
-            } }, std::move(inputs), std::move(outputs), std::make_tuple(R::ReadAs<R::FixedRows<1>>(sourceOffsets), R::ReadAs<R::FixedRows<1>>(sourceWeights), R::ReadAs<R::RowLayout>(ransFirst >= 0 ? owner->ransCellLength : owner->deviceEmpty), R::ReadAs<R::RowLayout>(pin->walls ? owner->wallDistance->CellValues() : owner->deviceEmpty)));
+                status = CPU::EvaluateVolumeSource(request, pin->owner->equation,
+                    SpanView<CPU::SourceWorkerScratch>{workers.data(), index(workers.size())});
+            }
+            if (submission) submission->sourceStatus = status;
+            else RequireNumericalSuccess(status, "queued volume source"); }, std::move(inputs), std::move(outputs), std::make_tuple(R::ReadAs<R::FixedRows<1>>(sourceOffsets), R::ReadAs<R::FixedRows<1>>(sourceWeights), R::ReadAs<R::RowLayout>(ransFirst >= 0 ? owner->ransCellLength : owner->deviceEmpty), R::ReadAs<R::RowLayout>(pin->walls ? owner->wallDistance->CellValues() : owner->deviceEmpty)));
         EndQueuedPhase(engine, stream, timing);
     }
 }

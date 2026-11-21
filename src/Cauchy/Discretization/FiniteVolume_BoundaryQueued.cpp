@@ -15,13 +15,18 @@ namespace DNDS::Cauchy
         if (withRHS)
             ResetDeviceFluxStatus(engine, stream);
     }
-    void FiniteVolume::Workspace::CheckNumericalStatus(bool withRHS)
+    void FiniteVolume::Workspace::CheckNumericalStatus(bool withRHS, bool captured)
     {
         if (owner->metrics.Device() == R::Device::Host())
             return;
-        CheckPreparationStatus();
-        if (withRHS)
-            CheckDeviceFluxStatus();
+        if (captured)
+            RetirePreparedStatus(false);
+        else
+        {
+            CheckPreparationStatus();
+            if (withRHS)
+                CheckDeviceFluxStatus();
+        }
         for (const auto &field : fields)
         {
             if (field.reconstruction)

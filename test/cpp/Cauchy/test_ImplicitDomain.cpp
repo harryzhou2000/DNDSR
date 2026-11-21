@@ -50,7 +50,19 @@ TEST_CASE("Periodic ACM physical step transports velocity and preserves the pres
     settings.numerics.flux = "rusanov";
     settings.implicit.jacobianAction = "assembled";
     settings.implicit.diagonal = "block";
-    SUBCASE("single grid") {}
+    SUBCASE("single grid with queued fixed-work checks")
+    {
+        settings.implicit.linear.method = "jacobi";
+        settings.implicit.linear.stopping = "fixedCount";
+        settings.implicit.linear.iterations = 4;
+    }
+    SUBCASE("single grid with immediate diagnostic checks")
+    {
+        settings.implicit.linear.method = "jacobi";
+        settings.implicit.linear.stopping = "fixedCount";
+        settings.implicit.linear.iterations = 4;
+        settings.implicit.immediateNumericalChecks = true;
+    }
     SUBCASE("same-cell FAS with a gradient coarse level")
     {
         settings.numerics.reconstruction = "variational";

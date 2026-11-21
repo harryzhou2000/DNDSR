@@ -1,6 +1,7 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Cauchy/Implicit/CPU/LinearProblemKernels.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "DNDS/Algebra/BatchedSVD.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #ifdef DNDS_USE_CUDA
@@ -131,6 +132,16 @@ namespace DNDS::Cauchy
 #endif
         }
         retained->inverseEpoch = _inverse.MutationEpoch();
+    }
+    bool LinearProblemContext::PendingInverseOn(const R::ExecutionStream &stream) const
+    {
+        return _inversePending && _inverseWorkspace && _inverseWorkspace->context.stream == stream.Context().stream &&
+               _inverseWorkspace->sourceEpoch == _diagonal.MutationEpoch() && _inverseWorkspace->inverseEpoch == _inverse.MutationEpoch();
+    }
+    void LinearProblemContext::QueueInverseCheck(const R::ExecutionStream &stream, IterationChecks &checks)
+    {
+        DNDS_check_throw_info(PendingInverseOn(stream), "queued inverse check requires its unchanged producer lane");
+        checks.Capture(IterationPhase::Inverse, _inverseWorkspace->summary);
     }
     void LinearProblemContext::ObserveDiagonalInverse()
     {

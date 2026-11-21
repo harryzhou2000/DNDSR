@@ -38,6 +38,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<const BoundaryInputs> incoming;
     };
     struct ExecutionSettings;
+    class IterationChecks;
 
     /// @brief Shared owner of one domain's backend execution resources.
     ///
@@ -81,6 +82,7 @@ namespace DNDS::Cauchy
         /// Collective setup shared by every stage and pMG level of this domain.
         std::shared_ptr<Runtime::CommunicationContext> ReductionContext(const std::shared_ptr<Runtime::CommunicationContext> &parent) const;
         const Runtime::ExecutionStream &ReductionStream() const;
+        std::shared_ptr<IterationChecks> NonlinearChecks() const;
         std::shared_ptr<Runtime::NCCLTransferProvider> ReductionProvider() const;
         /// @brief Optional shared chemistry worker capacity.
         const std::optional<Physics::Chemistry::ChemicalWorkerPool> &ChemicalWorkers() const;

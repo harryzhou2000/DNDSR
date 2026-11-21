@@ -104,12 +104,17 @@ namespace DNDS::Cauchy
     }
 
     RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyFluxBorrowedFatal(const RHSReadViews &input, const RHSWriteViews &output,
-                                                                           CFV::ReconstructionRegion region, real time) const
+                                                                           CFV::ReconstructionRegion region, real time, OptionalRef<NumericalStatus> result) const
     {
-        auto diagnostics = ApplyFluxImpl<FailurePolicy::Abort>(input, output, region, time);
+        auto diagnostics = ApplyFluxImpl<FailurePolicy::Abort>(input, output, region, time, result);
         const auto &settings = _read->data->settings.numerics;
         if (!((settings.faceFallback && !settings.positivity) || diagnostics.FaceFallbacks() == 0))
-            std::abort();
+        {
+            if (!result)
+                std::abort();
+            if (*result)
+                *result = NumericalStatus{NumericalError::InvalidState};
+        }
         return diagnostics;
     }
 
@@ -122,7 +127,7 @@ namespace DNDS::Cauchy
     template <FiniteVolume::RHSOperator::FailurePolicy policy>
     RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyFluxImpl(
         const RHSReadViews &input, const RHSWriteViews &output,
-        CFV::ReconstructionRegion region, real time) const
+        CFV::ReconstructionRegion region, real time, OptionalRef<NumericalStatus> result) const
     {
         return WithRHSFailurePolicy<policy == FailurePolicy::Abort>([&]
                                                                     {
@@ -137,8 +142,10 @@ namespace DNDS::Cauchy
             for (index worker = 0; worker < threads; ++worker)
                 diagnostics.emplace_back(request.forceSlots);
             std::vector<NumericalStatus> status(size_t(threads), NumericalStatus{});
-            RequireNumericalSuccess(CPU::EvaluateFlowFlux(request, _read->data->equation, _read->data->flux,
-                input, output, region, {{diagnostics.data(), threads}, {status.data(), threads}}), "EvaluateFlowFlux");
+            const auto evaluated = CPU::EvaluateFlowFlux(request, _read->data->equation, _read->data->flux,
+                input, output, region, {{diagnostics.data(), threads}, {status.data(), threads}});
+            if (result) *result = evaluated;
+            else RequireNumericalSuccess(evaluated, "EvaluateFlowFlux");
             for (index worker = 1; worker < threads; ++worker)
                 diagnostics[0].Merge(diagnostics[worker]);
             return std::move(diagnostics[0]); });

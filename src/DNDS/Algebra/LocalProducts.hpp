@@ -79,6 +79,8 @@ namespace DNDS::Algebra
                            const Runtime::Array<real> &x, const Runtime::Array<real> &y, index slot);
         void SubmitFinite(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                           const Runtime::Array<real> &x, index slot = 0);
+        /// Resident scalar results. Order consumption before another use of this slot.
+        const Runtime::Array<real> &Results() const { return _result; }
         /// Explicit host observation after the caller drains the producing
         /// lane. Copies only the small result buffer; does not synchronize MPI.
         std::vector<real> ReadResults(index count, Runtime::ExecutionContext) const;
