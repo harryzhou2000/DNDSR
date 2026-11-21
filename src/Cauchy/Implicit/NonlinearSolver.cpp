@@ -6,6 +6,8 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "Cauchy/Implicit/NonlinearOperators.hpp"
+#include "Cauchy/Implicit/NonlinearNormSum.hpp"
+#include "Cauchy/Discretization/SpatialPublication.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
@@ -103,6 +105,8 @@ namespace DNDS::Cauchy
             std::shared_ptr<NonlinearProfile> profile;
             std::unique_ptr<NonlinearDetail::PhaseTimer> total;
 
+            SpatialPublication spatialPublication; // Retires before its borrowed solve state.
+
             ActiveSolve(std::shared_ptr<Data> data,
                         R::SessionAccess::Lease access, EquationDofs &stateIn,
                         const EquationDofs &sourceIn, real massIn,
@@ -181,6 +185,34 @@ namespace DNDS::Cauchy
             RunLocalStage(mpi, settings.collectiveChecks,
                           std::forward<F>(run), "equation nonlinear local phase failed");
         }
+        std::shared_ptr<R::CommunicationContext> normContext;
+        std::shared_ptr<R::NCCLTransferProvider> normProvider;
+        R::ExecutionStream normLane;
+        std::map<std::pair<int, index>, std::shared_ptr<NonlinearNormSum>> normSlots;
+        std::shared_ptr<NonlinearNormSum> NormSlot(int slot, index count)
+        {
+            if (!normContext)
+            {
+                const auto parent = discrete.Metrics().Communication();
+                if (executionOwner)
+                {
+                    normContext = executionOwner->ReductionContext(parent);
+                    normLane = executionOwner->ReductionStream();
+                    normProvider = executionOwner->ReductionProvider();
+                }
+                else
+                {
+                    normContext = R::CommunicationContext::Duplicate(parent->Communicator(), parent->ChecksCollectivePreflight());
+                    auto engine = stream.LockEngine();
+                    normLane = engine.CreateCPUStream();
+                }
+            }
+            auto &record = normSlots[{slot, count}];
+            if (!record)
+                record = std::make_shared<NonlinearNormSum>(count, normContext, normLane, normProvider, stream.Context().device);
+            DNDS_check_throw_info(record.unique(), "previous nonlinear norm observation still owns this slot");
+            return record;
+        }
         void PrepareLinear(EquationDofs &state, bool overlap)
         {
             LinearExecution execution{overlap, settings.collectiveChecks};
@@ -200,19 +232,18 @@ namespace DNDS::Cauchy
         }
         void EvaluateSpatial(EquationDofs &state, real time,
                              R::EagerEngine &fallbackEngine, OptionalRef<R::Array<real>> derivative,
-                             std::function<void()> submitResidualConsumer = {})
+                             std::function<void()> submitResidualConsumer = {}, OptionalRef<SpatialPublication> publication = {})
         {
             if (executionOwner)
             {
                 auto evaluation = FiniteVolumeEvaluation::Spatial(spatial, time, std::ref(auxiliary), derivative);
                 evaluation.submitResidualConsumer = std::move(submitResidualConsumer);
-                discrete.Execute(state, *reconstruction, *workspace, *executionOwner, std::move(evaluation));
+                discrete.ExecuteImpl(state, *reconstruction, *workspace, *executionOwner, std::move(evaluation), publication);
             }
             else
             {
-                discrete.Evaluate(state, spatial, *reconstruction, *workspace, auxiliary, fallbackEngine, stream, time, derivative);
-                if (submitResidualConsumer)
-                    submitResidualConsumer();
+                discrete.EvaluateImpl(state, std::ref(spatial), *reconstruction, *workspace, fallbackEngine, stream, stream, time,
+                                      std::ref(auxiliary), {}, derivative, submitResidualConsumer, publication);
             }
         }
         void PublishAuxiliary(const EquationDofs &state, real time)
@@ -411,6 +442,14 @@ namespace DNDS::Cauchy
         return _data->operators.MeasureRateNorm(engine, _data->stream, rate, normOrder, reference, rawACMRate);
     }
 
+    std::function<std::vector<real>()> NonlinearSolver::SubmitGlobalRateNorm(const EquationDofs &rate, int normOrder, int slot,
+                                                                             OptionalRef<const EquationDofs> reference, OptionalRef<const EquationDofs> rawACMRate) const
+    {
+        auto engine = _data->stream.LockEngine();
+        auto global = _data->NormSlot(slot, rate.ComponentNumber() + 1 + bool(rawACMRate));
+        return _data->operators.SubmitRateNorm(engine, _data->stream, rate, normOrder, reference, rawACMRate, std::move(global));
+    }
+
     NonlinearSession NonlinearSolver::Start(
         EquationDofs &state, const EquationDofs &source, real mass,
         real rhsScale, real time, int stage, NonlinearSolveControl control,
@@ -486,20 +525,21 @@ namespace DNDS::Cauchy
         {
             auto &data = *active->owner;
             auto engine = data.stream.LockEngine();
+            auto global = data.NormSlot(0, active->state.ComponentNumber() + 1 + data.discrete.Equation().IsACM());
             data.EvaluateSpatial(active->state, active->time, engine, data.CorrectionDerivative(), [&]
                                  { active->observeNorms = data.operators.SubmitDefect(engine, data.stream, active->state, data.spatial,
                                                                                       active->source, data.defect, active->mass, active->rhsScale, active->activeComponents.HostView(),
-                                                                                      data.settings.normOrder, true); });
-            data.PublishAuxiliary(active->state, active->time);
+                                                                                      data.settings.normOrder, true, std::move(global)); }, std::ref(active->spatialPublication));
         };
         const auto measure = [active](auto &norms)
         {
             auto &data = *active->owner;
             const index nv = active->state.ComponentNumber();
+            data.Stage([&]
+                       { active->spatialPublication.Observe(); });
+            data.PublishAuxiliary(active->state, active->time);
             auto local = std::exchange(active->observeNorms, {})();
-            MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-                MPI::ContiguousView<real>{local.data(), local.size()},
-                data.mpi.comm);
+
             RequireStageVolume(local[size_t(nv)], active->stage);
             if (local.size() == size_t(nv + 2))
                 active->continuityRatio = std::sqrt(local.back() / local[size_t(nv)]) / data.settings.algebraicRateTolerance;

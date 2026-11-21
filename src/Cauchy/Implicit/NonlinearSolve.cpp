@@ -212,17 +212,17 @@ namespace DNDS::Cauchy
                 if (data.problem.control.profile)
                     ++data.problem.control.profile->residualEvaluations;
             }
-            std::tie(data.report.reconstructionIterations,
-                     data.report.reconstructionRelativeUpdate) =
-                data.problem.reconstruction();
-            data.report.reconstructionUpdateMeasured =
-                std::isfinite(data.report.reconstructionRelativeUpdate);
-            if (!data.report.reconstructionUpdateMeasured)
-                data.report.reconstructionRelativeUpdate = 0;
             {
                 const NonlinearDetail::PhaseTimer timer(
                     data.problem.control.profile, NonlinearProfile::Convergence);
                 data.problem.measure(data.report.residual);
+                std::tie(data.report.reconstructionIterations,
+                         data.report.reconstructionRelativeUpdate) =
+                    data.problem.reconstruction();
+                data.report.reconstructionUpdateMeasured =
+                    std::isfinite(data.report.reconstructionRelativeUpdate);
+                if (!data.report.reconstructionUpdateMeasured)
+                    data.report.reconstructionRelativeUpdate = 0;
                 data.convergence.Observe(data.report.residual);
                 data.report.initialResidual = data.convergence.Initial();
                 data.report.referenceResidual = data.convergence.Reference();

@@ -8,6 +8,7 @@
 
 namespace DNDS::Cauchy
 {
+    class NonlinearNormSum;
     struct NonlinearPseudoTimeControls
     {
         real cfl = 1, forecastScale = 1, relax = 1;
@@ -67,7 +68,7 @@ namespace DNDS::Cauchy
         std::function<std::vector<real>()> SubmitDefect(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                                         const EquationDofs &mean, const EquationDofs &residual, const EquationDofs &constant,
                                                         EquationDofs &output, real inverseDt, real rhsScale, SpanView<const uint8_t> selection,
-                                                        int normOrder, bool measureNorm) const;
+                                                        int normOrder, bool measureNorm, std::shared_ptr<NonlinearNormSum> global = {}) const;
         /// Raw sums of volume*abs(U_j), then volume. Component normalization
         /// and global agreement are deliberately separate from this operator.
         std::vector<real> MeasureMeanState(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;
@@ -79,6 +80,9 @@ namespace DNDS::Cauchy
         std::vector<real> MeasureRateNorm(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                           const EquationDofs &rate, int normOrder, OptionalRef<const EquationDofs> reference = {},
                                           OptionalRef<const EquationDofs> rawACMRate = {}) const;
+        std::function<std::vector<real>()> SubmitRateNorm(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                                          const EquationDofs &rate, int normOrder, OptionalRef<const EquationDofs> reference,
+                                                          OptionalRef<const EquationDofs> rawACMRate, std::shared_ptr<NonlinearNormSum> global) const;
         AlphaStatistics PreparePseudoTime(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                           const EquationDofs &mean, EquationDofs &defect, const Runtime::Array<real> &spectral,
                                           Runtime::Array<real> &inverse, OptionalRef<Runtime::Array<real>> alpha,

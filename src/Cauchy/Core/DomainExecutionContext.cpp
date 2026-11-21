@@ -4,6 +4,7 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 
+#include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include <mutex>
 
 namespace DNDS::Cauchy
@@ -73,7 +74,10 @@ namespace DNDS::Cauchy
     {
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         Runtime::EagerEngine engine;
-        Runtime::ExecutionStream compute, communication, copy;
+        Runtime::ExecutionStream compute, communication, copy, reduction;
+        bool ncclReduction;
+        std::shared_ptr<Runtime::CommunicationContext> reductionContext;
+        std::shared_ptr<Runtime::NCCLTransferProvider> reductionProvider;
         std::mutex dependencyMutex;
         std::shared_ptr<EvaluationPublication> publication;
 
@@ -86,7 +90,9 @@ namespace DNDS::Cauchy
                          : nullptr),
               compute(CreateDomainStream(engine, settings)),
               communication(CreateDomainStream(engine, settings)),
-              copy(CreateDomainStream(engine, settings))
+              copy(CreateDomainStream(engine, settings)),
+              reduction(settings.device == "cuda" && settings.nonlinearReduction == "mpi" ? engine.CreateCPUStream() : communication),
+              ncclReduction(settings.nonlinearReduction == "nccl")
         {
             DNDS_check_throw_info(settings.device == "cpu" || !workers,
                                   "CUDA perfect-gas context cannot retain CPU chemistry workers");
@@ -123,6 +129,18 @@ namespace DNDS::Cauchy
     {
     }
 
+    std::shared_ptr<Runtime::CommunicationContext> DomainExecutionContext::ReductionContext(const std::shared_ptr<Runtime::CommunicationContext> &parent) const
+    {
+        if (!_data->reductionContext)
+        {
+            _data->reductionContext = Runtime::CommunicationContext::Duplicate(parent->Communicator(), parent->ChecksCollectivePreflight());
+            if (_data->ncclReduction)
+                _data->reductionProvider = Runtime::NCCLTransferProvider::Create(_data->reductionContext, _data->compute.Context().device);
+        }
+        return _data->reductionContext;
+    }
+    const Runtime::ExecutionStream &DomainExecutionContext::ReductionStream() const { return _data->reduction; }
+    std::shared_ptr<Runtime::NCCLTransferProvider> DomainExecutionContext::ReductionProvider() const { return _data->reductionProvider; }
     Runtime::EagerEngine &DomainExecutionContext::Engine() const
     {
         DNDS_check_throw_info(_data, "empty domain execution context");

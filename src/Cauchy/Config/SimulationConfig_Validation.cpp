@@ -413,6 +413,7 @@ namespace DNDS::Cauchy
         require(!cuda, "backend cuda requires a CUDA-enabled build");
 #endif
         require(s.execution.layout == "aos" || s.execution.layout == "soa" || s.execution.layout == "aosoa32", "flow layout " + s.execution.layout);
+        require(s.execution.nonlinearReduction == "mpi" || (cuda && s.execution.nonlinearReduction == "nccl"), "nonlinear reduction " + s.execution.nonlinearReduction);
         require(s.execution.communication == "mpi-direct", "transport " + s.execution.communication);
         require(s.execution.communicationExecution == "caller" || s.execution.communicationExecution == "worker", "communication execution " + s.execution.communicationExecution);
         if (s.execution.communicationExecution == "worker")

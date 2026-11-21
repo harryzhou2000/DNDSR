@@ -70,7 +70,7 @@ namespace DNDS::Cauchy
     }
     std::function<std::vector<real>()> NonlinearOperators::SubmitDefect(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                                         const EquationDofs &mean, const EquationDofs &residual, const EquationDofs &constant, EquationDofs &output,
-                                                                        real inverseDt, real rhsScale, SpanView<const uint8_t> active, int normOrder, bool measureNorm) const
+                                                                        real inverseDt, real rhsScale, SpanView<const uint8_t> active, int normOrder, bool measureNorm, std::shared_ptr<NonlinearNormSum> global) const
     {
         _data->Check(engine, stream, mean);
         _data->Check(engine, stream, residual);
@@ -102,7 +102,7 @@ namespace DNDS::Cauchy
         const Unavailable device;
 #endif
         const bool continuity = measureNorm && accumulation == PhysicalAccumulationKind::ConstantDensityVelocityPressure;
-        auto observe = _data->SubmitReduction(engine, stream, mean.ComponentNumber() + continuity, std::move(inputs), std::move(outputs), host, device);
+        auto observe = _data->SubmitReduction(engine, stream, mean.ComponentNumber() + continuity, std::move(inputs), std::move(outputs), host, device, std::move(global));
         return [observe = std::move(observe)]
         { return observe().norms; };
     }
@@ -168,6 +168,12 @@ namespace DNDS::Cauchy
                                                           const EquationDofs &rate, int normOrder, OptionalRef<const EquationDofs> reference,
                                                           OptionalRef<const EquationDofs> rawACMRate) const
     {
+        return SubmitRateNorm(engine, stream, rate, normOrder, reference, rawACMRate, {})();
+    }
+    std::function<std::vector<real>()> NonlinearOperators::SubmitRateNorm(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                                                          const EquationDofs &rate, int normOrder, OptionalRef<const EquationDofs> reference,
+                                                                          OptionalRef<const EquationDofs> rawACMRate, std::shared_ptr<NonlinearNormSum> global) const
+    {
         _data->Check(engine, stream, rate);
         if (reference)
         {
@@ -205,7 +211,9 @@ namespace DNDS::Cauchy
 #else
         const Unavailable device;
 #endif
-        return _data->Reduce(engine, stream, rate.ComponentNumber() + bool(raw), std::move(inputs), {}, host, device).norms;
+        auto observe = _data->SubmitReduction(engine, stream, rate.ComponentNumber() + bool(raw), std::move(inputs), {}, host, device, std::move(global));
+        return [observe = std::move(observe)]
+        { return observe().norms; };
     }
     void NonlinearOperators::SubmitScaleRate(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                              const EquationDofs &input, EquationDofs &output, bool multiply) const

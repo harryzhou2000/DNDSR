@@ -167,6 +167,7 @@ namespace DNDS::Cauchy
     /// Cell-centered discretization with explicit backend placement. Preparation retains immutable geometry,
     /// incidence, quadrature and polynomial data. Each simultaneous residual
     /// requires a distinct Workspace. No solver clock/history/IO policy here.
+    class SpatialPublication;
     class FiniteVolume
     {
         friend class ConnectedPressureGauge;
@@ -981,13 +982,16 @@ namespace DNDS::Cauchy
         std::shared_ptr<Workspace> BuildWorkspaceImpl(EquationDofs &state,
                                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                                                       bool meanOnly, WorkspaceOptions options = WorkspaceOptions()) const;
+        friend class NonlinearSolver;
+        void ExecuteImpl(EquationDofs &, ReconstructionState &, Workspace &, DomainExecutionContext &,
+                         FiniteVolumeEvaluation, OptionalRef<SpatialPublication>) const;
         void EvaluateImpl(EquationDofs &state, OptionalRef<EquationDofs> residual,
                           ReconstructionState &reconstruction, Workspace &workspace, Runtime::EagerEngine &engine,
                           const Runtime::ExecutionStream &compute,
                           const Runtime::ExecutionStream &communication, real time,
                           OptionalRef<AuxiliaryValues> auxiliary = {},
                           OptionalRef<const QueuedEvaluationDependency> dependency = {}, OptionalRef<Runtime::Array<real>> sourceDerivative = {},
-                          const std::function<void()> &submitResidualConsumer = {}) const;
+                          const std::function<void()> &submitResidualConsumer = {}, OptionalRef<SpatialPublication> publication = {}) const;
         void ValidateEquationSourceJacobian(const EquationDofs &state,
                                             const JacobianContext &context, real time) const;
         bool AddEquationSourceJacobian(const EquationDofs &state,

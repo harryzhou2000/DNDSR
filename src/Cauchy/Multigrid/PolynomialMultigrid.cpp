@@ -401,8 +401,8 @@ namespace DNDS::Cauchy
                 const bool acm = fine.Equation().IsACM();
                 const auto accumulate = [&]
                 {
-                    sum = fineSolver.MeasureRateNorm(source, settings.normOrder, std::cref(value),
-                                                     acm ? OptionalRef<const State>(fineRate->rate) : OptionalRef<const State>{});
+                    sum = fineSolver.SubmitGlobalRateNorm(source, settings.normOrder, 0, std::cref(value),
+                                                          acm ? OptionalRef<const State>(fineRate->rate) : OptionalRef<const State>{})();
                 };
                 // Only the diagnostic preflight is optional. The residual
                 // norm below is a mathematical collective in both modes.
@@ -411,8 +411,6 @@ namespace DNDS::Cauchy
                     MPI::LocalStage(mpi, accumulate);
                 else
                     accumulate();
-                MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-                    MPI::ContiguousView<real>{sum.data(), sum.size()}, mpi.comm);
                 const real volume = sum[norms.size()];
                 DNDS_check_throw_info(volume > 0 && std::isfinite(volume), "invalid FAS global volume");
                 if (acm)

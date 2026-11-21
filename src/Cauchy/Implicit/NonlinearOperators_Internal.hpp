@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Implicit/NonlinearOperators.hpp"
+#include "Cauchy/Implicit/NonlinearNormSum.hpp"
 #include "Cauchy/Implicit/CPU/NonlinearKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationArrayOperands.hpp"
@@ -72,7 +73,7 @@ namespace DNDS::Cauchy
         template <class Host, class Device>
         std::function<NonlinearOperatorDetail::Result()> SubmitReduction(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream,
                                                                          index components, NonlinearOperatorDetail::Inputs inputs, NonlinearOperatorDetail::Outputs outputs,
-                                                                         Host host, Device device)
+                                                                         Host host, Device device, std::shared_ptr<NonlinearNormSum> global = {})
         {
             namespace R = Runtime;
             using namespace NonlinearOperatorDetail;
@@ -84,6 +85,18 @@ namespace DNDS::Cauchy
                     retained->workerSums.resize(index(OMP::DistributedThreads()) * (components + 1));
                 R::SubmitArrayBatch(engine, stream, [retained, host](R::ExecutionContext, auto input, auto output)
                                     { host(input, output, *retained); }, std::move(inputs), std::move(outputs));
+                if (global)
+                {
+                    R::SubmitArrays(engine, stream, [retained](auto, auto dst)
+                                    { std::copy(retained->norms.begin(), retained->norms.end(), dst.Row(0)); }, R::Write(global->Local()));
+                    global->Submit(engine, stream);
+                    return [retained, global]
+                    {
+                        retained->norms = global->Observe();
+                        RequireNumericalSuccess(retained->status, "nonlinear norm");
+                        return std::move(*retained);
+                    };
+                }
                 return [retained, done = stream.Record()]
                 {
                     done.WaitHost();
@@ -92,6 +105,25 @@ namespace DNDS::Cauchy
                 };
             }
 #ifdef DNDS_USE_CUDA
+            if (global)
+            {
+                R::SubmitArrayBatch(engine, stream, [device](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
+                                    { device(where, input, output, scratch, value); }, std::move(inputs), std::move(outputs), std::make_tuple(R::WriteAs<R::FixedRows<1>>(partial), R::WriteAs<R::FixedRows<1>>(global->deviceSummary)));
+                static_assert(offsetof(CUDA::NonlinearSummary, norms) == 0);
+                auto destination = global->Local().Storage();
+                DNDS_check_throw_info(destination.Bytes() <= sizeof(CUDA::NonlinearSummary::norms), "nonlinear norm exceeds summary capacity");
+                auto source = global->deviceSummary.Storage().Subspan(0, destination.Bytes());
+                R::CopyAsync(engine, stream, source, destination);
+                global->Submit(engine, stream);
+                return [global]
+                {
+                    Result result;
+                    result.norms = global->Observe();
+                    auto host = global->deviceSummary.To(R::Device::Host());
+                    RequireNumericalSuccess(host.Read().View()(0, 0).status, "nonlinear norm");
+                    return result;
+                };
+            }
             // A pending observation owns its pinned scalar record. When it has
             // been consumed the next iteration can reuse the same allocation.
             if (!stagedSummary || !stagedSummary.unique())

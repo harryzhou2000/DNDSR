@@ -148,10 +148,8 @@ namespace DNDS::Cauchy
     }
     real Domain::AlgebraicRateRMS(const EquationDofs &rate) const
     {
-        const auto values = _execution.implicit->MeasureRateNorm(rate, 2);
+        const auto values = _execution.implicit->SubmitGlobalRateNorm(rate, 2)();
         std::array<real, 2> sums{values.at(_algebraicRateComponent), values.back()};
-        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-            MPI::ContiguousView<real>{sums.data(), sums.size()}, Communicator());
         DNDS_check_throw_info(sums[1] > 0 && std::isfinite(sums[1]), "invalid domain volume for algebraic rate check");
         return std::sqrt(sums[0] / sums[1]);
     }
@@ -254,27 +252,27 @@ namespace DNDS::Cauchy
                                   "restored DITR convergence components differ");
         DNDS_check_throw_info(_execution.nonlinearSetup,
                               "DITR update policy was not resolved");
+        using Observation = std::function<std::vector<real>()>;
+        const auto pending = std::make_shared<std::array<Observation, 3>>();
         return NonlinearSession::Prepare(
             *_execution.nonlinearSetup, 0,
-            {std::move(coupledControl), std::move(initial), _coupledReconstructionTolerance, [this]
+            {std::move(coupledControl), std::move(initial), _coupledReconstructionTolerance, [this, pending]
              { _state.timeStepper->AssembleStoppingResidual(
                    *_state.stageGroup, _state.trial,
-                   *_execution.coupledResidual); },
-             [this, mpi](auto &norms)
+                   *_execution.coupledResidual);
+               (*pending)[0] = _execution.implicit->SubmitGlobalRateNorm(*_execution.coupledResidual, _implicitControls.normOrder);
+               if (_algebraicRateComponent >= 0)
+                   for (int stage = 0; stage < 2; ++stage)
+                   {
+                       const auto &rate = _state.timeStepper->CompletedCoupledRate(*_state.stageGroup, stage);
+                       (*pending)[stage + 1] = _execution.implicit->SubmitGlobalRateNorm(rate, 2, stage + 1);
+                   } },
+             [this, pending](auto &norms)
              {
-            std::vector<real> sum;
-            MPI::LocalStage(mpi, [&]
-            {
-                sum = _execution.implicit->MeasureRateNorm(*_execution.coupledResidual, _implicitControls.normOrder);
-                if (_algebraicRateComponent >= 0)
-                    for (int stage = 0; stage < 2; ++stage)
-                    {
-                        const auto &rate = _state.timeStepper->CompletedCoupledRate(*_state.stageGroup, stage);
-                        sum.push_back(_execution.implicit->MeasureRateNorm(rate, 2).at(_algebraicRateComponent));
-                    }
-            });
-            MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-                MPI::ContiguousView<real>{sum.data(), sum.size()}, mpi.comm);
+            auto sum = std::exchange((*pending)[0], {})();
+            if (_algebraicRateComponent >= 0)
+                for (int stage = 0; stage < 2; ++stage)
+                    sum.push_back(std::exchange((*pending)[stage + 1], {})().at(_algebraicRateComponent));
             const real volume = sum[norms.size()];
             DNDS_check_throw_info(std::isfinite(volume) && volume > 0, "invalid DITR global volume");
             if (_algebraicRateComponent >= 0)

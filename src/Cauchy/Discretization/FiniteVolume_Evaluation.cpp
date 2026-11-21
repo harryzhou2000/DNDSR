@@ -1,6 +1,7 @@
 #include "Cauchy/Discretization/BoundaryFluxInput.hpp"
 #include "Cauchy/Discretization/ViscousReconstruction.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Discretization/SpatialPublication.hpp"
 #include "DNDS/Diagnostics/Timeline.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
@@ -94,10 +95,10 @@ namespace DNDS::Cauchy
             }
             if (dependency)
             {
-                schedule.PublishAfter(dependency->completion, [&]
+                schedule.PublishAfter(dependency->completion, [plan = *this, publish = dependency->publish, boundary, time]
                                       {
-                dependency->publish();
-                ValidateBoundaryPublication(*boundary, time); });
+                publish();
+                plan.ValidateBoundaryPublication(*boundary, time); });
                 if (preparation)
                 {
                     preparation->BindBoundary(*boundary);
@@ -233,6 +234,12 @@ namespace DNDS::Cauchy
                                DomainExecutionContext &context,
                                FiniteVolumeEvaluation evaluation) const
     {
+        ExecuteImpl(state, reconstruction, work, context, std::move(evaluation), {});
+    }
+    void FiniteVolume::ExecuteImpl(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work,
+                                   DomainExecutionContext &context, FiniteVolumeEvaluation evaluation,
+                                   OptionalRef<SpatialPublication> publication) const
+    {
         auto &engine = context.Engine();
         const auto &stream = context.ComputeStream();
         const auto &communication = context.CommunicationStream();
@@ -250,14 +257,14 @@ namespace DNDS::Cauchy
                                  OptionalRef<AuxiliaryValues>(*evaluation.auxiliary),
                                  dependency ? OptionalRef<const QueuedEvaluationDependency>(*dependency)
                                             : OptionalRef<const QueuedEvaluationDependency>{},
-                                 evaluation.sourceDerivative, evaluation.submitResidualConsumer);
+                                 evaluation.sourceDerivative, evaluation.submitResidualConsumer, publication);
                 else
                     EvaluateImpl(state, OptionalRef<EquationDofs>(*evaluation.residual),
                                  reconstruction, work, engine, stream, communication,
                                  evaluation.time, {},
                                  dependency ? OptionalRef<const QueuedEvaluationDependency>(*dependency)
                                             : OptionalRef<const QueuedEvaluationDependency>{},
-                                 evaluation.sourceDerivative, evaluation.submitResidualConsumer);
+                                 evaluation.sourceDerivative, evaluation.submitResidualConsumer, publication);
                 return;
             }
         case FiniteVolumeEvaluationMode::ReconstructionOnly:
@@ -289,7 +296,7 @@ namespace DNDS::Cauchy
                                     const Runtime::ExecutionStream &communication, real time,
                                     OptionalRef<AuxiliaryValues> auxiliary,
                                     OptionalRef<const QueuedEvaluationDependency> dependency, OptionalRef<R::Array<real>> sourceDerivative,
-                                    const std::function<void()> &submitResidualConsumer) const
+                                    const std::function<void()> &submitResidualConsumer, OptionalRef<SpatialPublication> publication) const
     {
         const TimelineScope timeline("Cauchy/FV/Evaluate");
         if (!auxiliary && work.rhsAuxiliary)
@@ -329,17 +336,6 @@ namespace DNDS::Cauchy
         std::vector<std::shared_ptr<Workspace::RHSSubmission>> rhsSubmissions;
         std::shared_ptr<Workspace::CharacteristicSubmission> characteristicSubmission;
         std::shared_ptr<Workspace::GradientPositivitySubmission> gradientPositivitySubmission;
-        const auto finishAuxiliary = [&]
-        {
-            if (auxiliaryPreparation)
-            {
-                if (gradientAuxiliary)
-                    FinishMeanGradientAuxValues(state, *auxiliary, *work.meanGradients, *auxiliaryPreparation);
-                else
-                    auxiliaryPreparation->Finish(*auxiliary);
-                auxiliaryPreparation.reset();
-            }
-        };
         local([&]
               {
             DNDS_check_throw_info(work.owner == _data && reconstruction.owner == _data &&
@@ -518,10 +514,10 @@ namespace DNDS::Cauchy
             sweep(CFV::ReconstructionRegion::Core);
         if (dependency)
         {
-            schedule.PublishAfter(dependency->completion, [&]
+            schedule.PublishAfter(dependency->completion, [plan = *this, publish = dependency->publish, boundary, time]
                                   {
-                dependency->publish();
-                ValidateBoundaryPublication(*boundary, time); });
+                publish();
+                plan.ValidateBoundaryPublication(*boundary, time); });
             if (needsAuxiliaryPreparation)
             {
                 // Binding declares known allocations now; the one-round slot
@@ -778,10 +774,13 @@ namespace DNDS::Cauchy
         work.SubmitDirectGradients(engine, stream, state, true);
         if (residual)
             submitSpatialRows(rest);
-        local([&]
-              {
-            if (submitResidualConsumer) submitResidualConsumer();
-            schedule.Join();
+        if (submitResidualConsumer)
+            local(submitResidualConsumer);
+        auto publish = [this, &work, &state, &reconstruction, residual, auxiliary, time, boundary,
+                        separateMeanGradient, gradientAuxiliary, rhsSubmissions = std::move(rhsSubmissions),
+                        characteristicSubmission, gradientPositivitySubmission, preparation = std::move(auxiliaryPreparation),
+                        binding = std::move(activeReconstruction), session, reconstructionSession]() mutable
+        {
             work.CheckNumericalStatus(bool(residual));
             if (separateMeanGradient)
                 CheckMeanGradientBoundary(*work.meanGradients);
@@ -791,26 +790,41 @@ namespace DNDS::Cauchy
             if (_data->settings.CheckHaloFreshness())
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                     reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch);
-            finishAuxiliary();
-            if (characteristicSubmission) work.PublishCharacteristics(characteristicSubmission);
-            if (gradientPositivitySubmission) work.PublishGradientPositivity(gradientPositivitySubmission);
+            if (preparation)
+            {
+                if (gradientAuxiliary)
+                    FinishMeanGradientAuxValues(state, *auxiliary, *work.meanGradients, *preparation);
+                else
+                    preparation->Finish(*auxiliary);
+            }
+            if (characteristicSubmission)
+                work.PublishCharacteristics(characteristicSubmission);
+            if (gradientPositivitySubmission)
+                work.PublishGradientPositivity(gradientPositivitySubmission);
             work.PublishDirectGradients(state, false, time);
             work.PublishDirectGradients(state, true, time);
-            for (const auto &record : rhsSubmissions) work.PublishRHS(record);
-            work.PublishQueuedPhases(); });
-        if (residual)
-            work.PublishSpatialObservation(*residual);
-        work.boundaryMomentumCurrent = bool(residual);
-        work.boundaryFacialFluxCurrent = bool(residual) && work.captureBoundaryFlux;
-        work.rhsState.emplace(state, boundary, time);
-        if (reconstruction.coefficients)
-        {
-            work.rhsCoefficients.emplace(reconstruction.FinalizedValues());
-            if (reconstruction.distinctFinalized && _data->equation.Viscous() && FiniteVolumeDetail::UsesUnlimitedViscousReconstruction(_data->settings))
-                work.rhsUnlimitedViscousCoefficients.emplace(reconstruction.WarmValues());
-        }
-        if (separateMeanGradient || gradientAuxiliary)
-            work.centerGradientInput.emplace(state, boundary, time);
+            for (const auto &record : rhsSubmissions)
+                work.PublishRHS(record);
+            work.PublishQueuedPhases();
+            if (residual)
+                work.PublishSpatialObservation(*residual);
+            work.boundaryMomentumCurrent = bool(residual);
+            work.boundaryFacialFluxCurrent = bool(residual) && work.captureBoundaryFlux;
+            work.rhsState.emplace(state, boundary, time);
+            if (reconstruction.coefficients)
+            {
+                work.rhsCoefficients.emplace(reconstruction.FinalizedValues());
+                if (reconstruction.distinctFinalized && _data->equation.Viscous() && FiniteVolumeDetail::UsesUnlimitedViscousReconstruction(_data->settings))
+                    work.rhsUnlimitedViscousCoefficients.emplace(reconstruction.WarmValues());
+            }
+            if (separateMeanGradient || gradientAuxiliary)
+                work.centerGradientInput.emplace(state, boundary, time);
+        };
+        if (publication)
+            publication->Set(schedule.RecordCompute(), std::move(publish));
+        else
+            local([&]
+                  { schedule.Join(); publish(); });
     }
 
 }

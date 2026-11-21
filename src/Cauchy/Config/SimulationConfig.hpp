@@ -111,6 +111,7 @@ namespace DNDS::Cauchy
         std::string fieldGrouping = "coupled";
         std::string transferPreflight = "collective";
         std::string communicationExecution = "caller";
+        std::string nonlinearReduction = "mpi";
         /// Automatic or explicit CFV CUDA sweep policy. Quantized variants keep solution
         /// coefficients in FP64; only already-inverted sweep maps/products
         /// change precision. CPU and existing solver defaults remain FP64.
@@ -136,6 +137,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(layout, "Physical flow table: aos, soa, aosoa32");
             DNDS_FIELD(fieldGrouping, "equationBlocks: separate flow/RANS/species fields; coupled: one physical table with the same logical blocks");
             DNDS_FIELD(communication, "Payload transport");
+            DNDS_FIELD(nonlinearReduction, "Nonlinear norm transport: mpi (controller-progressed) or nccl (CUDA)");
             DNDS_FIELD(transferPreflight, "MPI launch validation: collective (default) or abortOnFailure (local checks, fatal MPI abort, no per-launch global agreement); setup remains collective");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(communicationExecution, "MPI payload execution: caller (default) or worker (CPU Direct/HostPacked, requires MPI_THREAD_MULTIPLE)");

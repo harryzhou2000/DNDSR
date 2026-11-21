@@ -130,6 +130,7 @@ set(CPPS
     Implicit/LinearSolver.cpp
     Implicit/LocalAMGPreconditioner.cpp
     Implicit/NonlinearSolve.cpp
+    Implicit/NonlinearNormSum.cpp
     Implicit/NonlinearSolver.cpp
     Implicit/NonlinearSolver_State.cpp
     Implicit/ACMPressureGauge.cpp

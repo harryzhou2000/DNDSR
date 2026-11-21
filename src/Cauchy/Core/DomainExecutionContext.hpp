@@ -7,6 +7,12 @@
 #include <functional>
 #include <optional>
 
+namespace DNDS::Runtime
+{
+    class CommunicationContext;
+    class NCCLTransferProvider;
+}
+
 namespace DNDS::Cauchy
 {
     struct BoundaryInputs;
@@ -72,6 +78,10 @@ namespace DNDS::Cauchy
         /// @brief Context-owned snapshot/copy lane. Producers and subsequent
         /// writers order their dependencies explicitly; this is not a host sync.
         const Runtime::ExecutionStream &CopyStream() const;
+        /// Collective setup shared by every stage and pMG level of this domain.
+        std::shared_ptr<Runtime::CommunicationContext> ReductionContext(const std::shared_ptr<Runtime::CommunicationContext> &parent) const;
+        const Runtime::ExecutionStream &ReductionStream() const;
+        std::shared_ptr<Runtime::NCCLTransferProvider> ReductionProvider() const;
         /// @brief Optional shared chemistry worker capacity.
         const std::optional<Physics::Chemistry::ChemicalWorkerPool> &ChemicalWorkers() const;
         /// @brief Explicit quiescent boundary for every retained lane and

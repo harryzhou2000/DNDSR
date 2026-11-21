@@ -224,6 +224,10 @@ namespace DNDS::Cauchy
         /// backend operator; domain MPI reduction remains with the controller.
         std::vector<real> MeasureRateNorm(const EquationDofs &rate, int normOrder,
                                           OptionalRef<const EquationDofs> reference = {}, OptionalRef<const EquationDofs> rawACMRate = {}) const;
+        /// Queue the domain sum along with its local producer. Distinct slots
+        /// allow DITR to submit both stage constraints before host observation.
+        std::function<std::vector<real>()> SubmitGlobalRateNorm(const EquationDofs &, int normOrder, int slot = 0,
+                                                                OptionalRef<const EquationDofs> reference = {}, OptionalRef<const EquationDofs> rawACMRate = {}) const;
         /// Frozen auxiliary publication from the last rate/operator evaluation.
         /// A subsequent cached correction preserves it; after a mean update it
         /// describes the previous linearization, not the updated state. Read-only
