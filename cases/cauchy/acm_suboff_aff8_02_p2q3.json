@@ -53,7 +53,6 @@
   "output": {
     "prefix": "data/outUnsteady/Cauchy/SUBOFF_AFF8_02/P2/run",
     "forceZones": [3, 4, 5, 6], "checkpointInterval": 0, "visualizationInterval": 0,
-    "diagnostics": {"allocations": false, "allocationWarmupSteps": 0},
     "implicit": {"consoleInterval": 1, "historyInterval": 1, "checkpointInterval": 2000, "visualizationInterval": 4000}
   }
 }

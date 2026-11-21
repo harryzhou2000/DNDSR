@@ -120,7 +120,8 @@ namespace DNDS::Cauchy
                 asynchronous = std::make_unique<AsyncOutput>(simulation);
             if (!continueOutput)
                 Record(0, 0, {}, false, false, true);
-            MaybeReportAllocations();
+            if (output.diagnostics.allocationWarmupSteps >= 0)
+                MaybeReportAllocations();
             // Publish callbacks only after fallible output/resource setup.
             // A failed constructor has no Data destructor to withdraw them.
             InstallObservers();
@@ -165,7 +166,8 @@ namespace DNDS::Cauchy
         void MaybeReportAllocations()
         {
             if (output.diagnostics.allocations && !allocationReportWritten &&
-                simulation.Step() >= uint64_t(output.diagnostics.allocationWarmupSteps))
+                (output.diagnostics.allocationWarmupSteps < 0 ||
+                 simulation.Step() >= uint64_t(output.diagnostics.allocationWarmupSteps)))
             {
                 ReportAllocations(OutputPlan::StepToken(simulation.Step()));
                 allocationReportWritten = true;
@@ -321,6 +323,12 @@ namespace DNDS::Cauchy
             // Emit progress at the existing quiescent nonlinear boundary
             // before staging any output or entering file I/O.
             progress[size_t(iDomain)]->FlushIterations(checkpoint || visualization);
+            if (output.diagnostics.allocations && !allocationReportWritten &&
+                output.diagnostics.allocationWarmupSteps < 0 && completedIteration > 0)
+            {
+                ReportAllocations(OutputPlan::InternalToken(step, nonlinear.stage, completedIteration));
+                allocationReportWritten = true;
+            }
             if (!checkpoint && !visualization)
                 return;
             const bool writer = simulation.Placement().DomainRank(iDomain) == 0;

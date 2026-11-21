@@ -1,12 +1,31 @@
 # Runtime allocation diagnostics
 
-The Cauchy frontend enables tracking before mesh construction when
-`output.diagnostics.allocations=true`. `allocationWarmupSteps` defaults to one
-accepted step. Reports are `prefix-memory-R<rank>-S<step>.txt` and
-`prefix-memory-R<rank>-final.txt`, emitted at host output boundaries without a
+The Cauchy frontend enables tracking before mesh construction by default.
+With the default `output.diagnostics.allocationWarmupSteps=-1`, the first
+completed nonlinear update writes `prefix-memory-R<rank>-S<step>_<stage>_<iteration>.txt`.
+This captures lazy reconstruction and linear-solver workspaces during long steady solves.
+Explicit stepping writes the working-set report at the first accepted step.
+Zero selects output initialization and positive values select an accepted step,
+using `prefix-memory-R<rank>-S<step>.txt`. Final output also writes
+`prefix-memory-R<rank>-final.txt`. Set `output.diagnostics.allocations=false`
+to disable these files. Reports use existing host output boundaries without a
 new collective. These are process-local totals, so colocated domains share the
 same accounting. Injected meshes allocated before enabling tracking are not
 retroactively discovered; enable tracking before constructing them.
+
+For polynomial reconstruction, `Cauchy/reconstruction/warm` holds the
+iterative coefficient guess and `Cauchy/reconstruction/workspace` holds
+the sweep temporary and prepared boundary values. A separate observation
+workspace can have the same labels. `<domain>/reconstructionBackup`
+preserves the accepted coefficient guess while a trial step is in progress.
+
+With native AmgX storage, `Cauchy/linear/offDiagonal/values` and
+`Cauchy/linear/nativeAmgxValues` label the same finest-level allocation.
+It contains off-diagonal blocks followed by diagonal blocks. AmgX borrows
+those values. Its coarse matrices, indices, inverses and cycle workspaces
+are reported separately by `DNDS_AMGX_FLOW_DIAGNOSTICS=1`; enable
+`AMGX_TRACK_ALLOCATIONS=1` before startup for allocator live and peak counts.
+The allocator and hierarchy reports overlap.
 
 Enable `Runtime::AllocationDiagnostics::Enable()` before solver setup. The
 process-local registry observes subsequent Buffer allocations/imports; it does

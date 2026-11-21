@@ -777,8 +777,8 @@ namespace DNDS::Cauchy
     };
     struct DiagnosticOutputSettings
     {
-        bool allocations = false;
-        index allocationWarmupSteps = 1;
+        bool allocations = true;
+        index allocationWarmupSteps = -1;
         bool perRank = false;
         std::string level = "info";
         index maxBytes = 64 * 1024 * 1024;
@@ -786,7 +786,7 @@ namespace DNDS::Cauchy
         DNDS_DECLARE_CONFIG(DiagnosticOutputSettings)
         {
             DNDS_FIELD(allocations, "Track Runtime allocations from simulation setup and write rank-local memory reports after warm-up and at final output");
-            DNDS_FIELD(allocationWarmupSteps, "Accepted steps before the working-set report; zero reports immediately after output initialization");
+            DNDS_FIELD(allocationWarmupSteps, "Default -1 reports after the first completed nonlinear update or explicit step; zero reports at output initialization; positive values select an accepted step");
             DNDS_FIELD(perRank, "Write one rotating operational diagnostic file per global rank");
             DNDS_FIELD(level, "Operational diagnostic level: trace, debug, info, warn, error, critical or off");
             DNDS_FIELD(maxBytes, "Per-rank diagnostic rotation size in bytes");

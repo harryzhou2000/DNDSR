@@ -91,7 +91,7 @@ namespace DNDS::Cauchy
           _placement(comm, _config.RankGroups()),
           _domains(size_t(_placement.DomainNumber())), _setupTimings(_domains.size())
     {
-        // Opt-in before mesh/field setup. Do not disable diagnostics belonging
+        // Start tracking before mesh/field setup. Do not disable diagnostics belonging
         // to another live simulation in this process.
         if (_config.Output().diagnostics.allocations)
             Runtime::AllocationDiagnostics::Enable();

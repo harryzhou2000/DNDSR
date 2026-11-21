@@ -37,7 +37,6 @@
   "output": {
     "prefix": "data/outUnsteady/Cauchy/SUBOFF_P1_AMGX/run",
     "forceZones": [3, 4, 5, 6], "checkpointInterval": 0, "visualizationInterval": 0,
-    "diagnostics": {"allocations": false, "allocationWarmupSteps": 0},
     "implicit": {"consoleInterval": 1, "historyInterval": 1, "checkpointInterval": 2000, "visualizationInterval": 4000}
   }
 }
