@@ -234,7 +234,8 @@ namespace DNDS
             serializerP->GoToPath(cwd);
         }
 
-        struct ReadSerializerMetaResult : t_base::ReadSerializerMetaResult
+        using t_read_meta_base = typename t_base::ReadSerializerMetaResult;
+        struct ReadSerializerMetaResult : t_read_meta_base
         {
             std::string derived_type;
             rowsize row_dynamic{0};

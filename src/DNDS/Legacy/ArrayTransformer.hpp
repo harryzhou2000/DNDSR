@@ -22,6 +22,7 @@
 #include "DNDS/Core/Errors.hpp"
 #include "DNDS/MPI/IndexMapping.hpp"
 #include "DNDS/Diagnostics/Profiling.hpp"
+#include <cstddef>
 #include <utility>
 #include "DNDS/Legacy/VectorUtils.hpp"
 
@@ -1029,7 +1030,7 @@ namespace DNDS
                 PullReqVec = MPIReqHolder::create();
                 PullReqVec->resize(nReqs, (MPI_REQUEST_NULL)), PullStatVec.resize(nReqs);
                 nRecvPullReq = 0;
-                for (typename decltype(pPullTypeVec)::element_type::size_type ip = 0; ip < pPullTypeVec->size(); ip++)
+                for (std::size_t ip = 0; ip < pPullTypeVec->size(); ip++)
                 {
                     auto dtypeInfo = (*pPullTypeVec)[ip];
                     MPI_int rankOther = dtypeInfo.first;
@@ -1040,7 +1041,7 @@ namespace DNDS
                     // std::cout << *(real *)(dataGhost.data() + 8 * 0) << std::endl;
                     // cascade from father
                 }
-                for (typename decltype(pPullTypeVec)::element_type::size_type ip = 0; ip < pPushTypeVec->size(); ip++)
+                for (std::size_t ip = 0; ip < pPushTypeVec->size(); ip++)
                 {
                     auto dtypeInfo = (*pPushTypeVec)[ip];
                     MPI_int rankOther = dtypeInfo.first;

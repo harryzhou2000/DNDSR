@@ -422,6 +422,16 @@ endif()
 # -------------------------------------------------------------------
 if (MPI_CXX_FOUND)
     set(DNDS_EXTERNAL_INCLUDES ${MPI_CXX_INCLUDE_DIRS} ${DNDS_EXTERNAL_INCLUDES})
+    # FindMPI can report no includes when mpicxx is the C++ compiler. NVCC
+    # does not inherit that wrapper's implicit mpi.h search directory.
+    if(DNDS_USE_CUDA AND NOT MPI_CXX_INCLUDE_DIRS)
+        find_path(_dnds_mpi_header_dir mpi.h
+                  PATHS ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES}
+                  NO_DEFAULT_PATH NO_CACHE)
+        if(_dnds_mpi_header_dir)
+            list(PREPEND DNDS_EXTERNAL_INCLUDES "$<$<COMPILE_LANGUAGE:CUDA>:${_dnds_mpi_header_dir}>")
+        endif()
+    endif()
     message(STATUS "MPI_CXX_INCLUDE_DIRS ${MPI_CXX_INCLUDE_DIRS}")
 endif()
 
