@@ -69,14 +69,16 @@ namespace DNDS::Runtime
         try
         {
             auto result = Array<T, L>::FromStorage(std::move(layout), values);
-            values.ReleaseOn(stream.Context());
+            if (values.CanReleaseOrdered(stream.Context()))
+                values.ReleaseOn(stream.Context());
             return result;
         }
         catch (...)
         {
             // Keep one allocation owner until metadata/handle construction
             // succeeds, so failure can also free in the allocation stream.
-            values.ReleaseOn(stream.Context());
+            if (values.CanReleaseOrdered(stream.Context()))
+                values.ReleaseOn(stream.Context());
             throw;
         }
     }
@@ -90,12 +92,14 @@ namespace DNDS::Runtime
         try
         {
             auto result = Array<T>::FromSharedStorage(storage->WithValues(fresh, sizeof(T)));
-            fresh.ReleaseOn(stream.Context());
+            if (fresh.CanReleaseOrdered(stream.Context()))
+                fresh.ReleaseOn(stream.Context());
             return result;
         }
         catch (...)
         {
-            fresh.ReleaseOn(stream.Context());
+            if (fresh.CanReleaseOrdered(stream.Context()))
+                fresh.ReleaseOn(stream.Context());
             throw;
         }
     }

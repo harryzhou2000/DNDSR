@@ -21,7 +21,7 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(Detail::IndependentBuffers(source, destination) &&
                                   source.Bytes() == destination.Bytes(),
                               "eager copy requires independent nonoverlapping equal-size buffers");
-        DNDS_check_throw_info(gpu == (context.device.space == MemorySpace::CUDA) &&
+        DNDS_check_throw_info(gpu == (context.device != Device::Host()) &&
                                   (srcDevice == Device::Host() || srcDevice == context.device) &&
                                   (dstDevice == Device::Host() || dstDevice == context.device),
                               "eager copy placement mismatch");

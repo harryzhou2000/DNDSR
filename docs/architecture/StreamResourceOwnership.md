@@ -57,3 +57,19 @@ without an owner. Their explicitly named backend loan adapter encapsulates
 that handle, but cannot manufacture native ownership. Those existing foreign
 contracts require the external caller to retain the actual stream through use.
 They are not used by native solver/orchestration paths.
+
+### SYCL eager execution
+
+With `DNDS_USE_SYCL`, pass `CreateSYCLLauncher(device)` to
+`EagerEngine::CreateStream`. Each lane owns an in-order queue in Runtime's
+one context per selected device. Recording a prefix batches the launch
+captures and access retirements. Importing that prefix into another lane on
+the same device submits a native event dependency. CPU observation releases
+the captures after the prefix completes. A pending portable MPI event still
+requires an explicit controller wait before submission to a device lane.
+
+The SYCL DOF algebra implements fill, copy, scale, AXPY, linear combination
+and local component or dot reductions for float and double fields. Reductions
+sum in row order. USM allocation and zero initialization take place during
+setup. Select the device images at configure time with
+`DNDS_SYCL_KERNEL_FLAGS`, using matching targets for the SYCL migration test.

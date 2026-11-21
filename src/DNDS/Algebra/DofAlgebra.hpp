@@ -3,6 +3,9 @@
 #include "DNDS/Algebra/DofField.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#ifdef DNDS_USE_SYCL
+#    include "DNDS/Runtime/Execution/SYCLLauncher.hpp"
+#endif
 #include "DNDS/Core/OMP.hpp"
 #include <cmath>
 #include <array>
@@ -76,6 +79,12 @@ namespace DNDS::Algebra
         void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const float>, Runtime::ArrayView<const float>, Runtime::ArrayView<double>);
         void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const double>, Runtime::ArrayView<const double>, Runtime::ArrayView<double>);
 
+#ifdef DNDS_USE_SYCL
+        template <class T>
+        void ApplySYCL(Runtime::ExecutionContext, Pointwise, Runtime::ArrayView<T>, Runtime::ArrayView<const T>, Runtime::ArrayView<const T>, double, double);
+        template <class T>
+        void ReduceSYCL(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const T>, Runtime::ArrayView<const T>, Runtime::ArrayView<double>);
+#endif
         template <class T>
         void Apply(Runtime::ExecutionContext context, Pointwise operation, Runtime::ArrayView<T> output,
                    Runtime::ArrayView<const T> x = {}, Runtime::ArrayView<const T> y = {}, double a = 0, double b = 0)
@@ -86,6 +95,11 @@ namespace DNDS::Algebra
                 ApplyCUDA(context, operation, output, x, y, a, b);
                 return;
             }
+#ifdef DNDS_USE_SYCL
+            if (context.device.space == Runtime::MemorySpace::SYCL)
+                return ApplySYCL(context, operation, output, x, y, a, b);
+#endif
+            DNDS_check_throw_info(context.device == Runtime::Device::Host(), "unavailable algebra backend");
             ApplyHostRows(operation, output, x, y, a, b);
         }
         template <class T>
@@ -98,6 +112,11 @@ namespace DNDS::Algebra
                 ReduceCUDA(context, operation, x, y, result);
                 return;
             }
+#ifdef DNDS_USE_SYCL
+            if (context.device.space == Runtime::MemorySpace::SYCL)
+                return ReduceSYCL(context, operation, x, y, result);
+#endif
+            DNDS_check_throw_info(context.device == Runtime::Device::Host(), "unavailable reduction backend");
             const double identity = operation == Reduction::Min ? std::numeric_limits<double>::infinity() : operation == Reduction::Max ? -std::numeric_limits<double>::infinity()
                                                                                                                                         : 0;
             const auto accumulate = [&](index begin, index end, auto sums)
@@ -182,6 +201,10 @@ namespace DNDS::Algebra
 #ifdef DNDS_USE_CUDA
                 if (device.space == Runtime::MemorySpace::CUDA)
                     return engine.CreateStream(std::make_shared<Runtime::CUDALauncher>(device.ordinal));
+#endif
+#ifdef DNDS_USE_SYCL
+                if (device.space == Runtime::MemorySpace::SYCL)
+                    return engine.CreateStream(Runtime::CreateSYCLLauncher(device));
 #endif
                 DNDS_check_throw_info(false, "immediate DOF algebra backend is unavailable");
                 return Runtime::ExecutionStream{};

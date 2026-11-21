@@ -2,6 +2,8 @@
 #include "doctest.h"
 #include "NativeMeshOverlapFixture.hpp"
 #include "DNDS/Runtime/Execution/SYCLQueue.hpp"
+#include "DNDS/Runtime/Execution/EagerCopy.hpp"
+#include "DNDS/Algebra/DofAlgebra.hpp"
 
 namespace R = DNDS::Runtime;
 namespace G = DNDS::Geom;
@@ -9,6 +11,31 @@ using I = DNDS::index;
 
 static DNDS::MPIInfo mpi;
 static R::SYCLTarget target;
+
+TEST_CASE("SYCL eager arithmetic exports ordered prefixes across Runtime lanes")
+{
+    namespace A = DNDS::Algebra;
+    const auto device = R::SelectSYCLDevice(target);
+    R::EagerEngine engine(1, std::make_shared<R::AccessTrackingContext>());
+    auto producer = engine.CreateStream(R::CreateSYCLLauncher(device));
+    auto consumer = engine.CreateStream(R::CreateSYCLLauncher(device));
+    A::DofSpace space(17);
+    A::DofField<double, 2> y(space, 2, 3, device);
+    R::Array<double> observation(R::RowLayout::Dense(17, 2, 3));
+    {
+        A::DofField<double, 2> x(space, 2, 3, device);
+        A::Fill(engine, producer, x, 2.);
+        consumer.WaitFor(producer.Record());
+        A::Copy(engine, consumer, y, x);
+        A::Axpy(engine, consumer, y, 3., x);
+    }
+    const auto norm = A::DotLocal(engine, consumer, y, y);
+    auto buffer = observation.Storage();
+    R::CopyAsync(engine, consumer, y.Owned().Storage(), buffer);
+    engine.Close();
+    CHECK(norm.Get() == 17 * 2 * 64);
+    CHECK(observation.Read().View()(16, 1) == 8);
+}
 
 TEST_CASE("SYCL queue and allocation owners cover table, strided and ragged rows")
 {
