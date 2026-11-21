@@ -148,6 +148,9 @@ namespace DNDS::Cauchy
             result->middleHistory = restoreCellArray("internal_middle_limited_vr_history", 2);
         }
         result->nonlinear = NonlinearSolveState::FromJson(metadata.at("nonlinear_state"));
+        if (result->nonlinear.terminal && !result->ditr && result->time.method != "bdf1" && result->time.method != "bdf2")
+            DNDS_check_throw_info(metadata.value("terminal_dirk_rate_saved", false),
+                                  "older terminal DIRK checkpoint lacks the observed stage rate; use a step checkpoint or means-only restart");
         const auto &epoch = metadata.at("trial_epoch");
         result->trialEpoch.acceptedStep = epoch.at("accepted_step").get<uint64_t>();
         result->trialEpoch.trial = epoch.at("trial").get<uint64_t>();

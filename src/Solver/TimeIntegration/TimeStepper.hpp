@@ -324,6 +324,16 @@ namespace DNDS::ODE
                          : OptionalRef<const Field>{};
         }
 
+        /// DIRK owns a persistent rate for each stage. The terminal nonlinear
+        /// observer fills this slot before any exact internal checkpoint.
+        OptionalRef<Field> ImplicitStageRate(const StageGroup &group, const Field &trial)
+        {
+            ValidateGroup(group, trial);
+            if (_dirk && group.implicit)
+                return std::ref(_dirk->Rate(_nextStage));
+            return {};
+        }
+
         /// Finish one update's mathematical dependency publication. DITR
         /// refreshes the corrected stage rate; DIRK needs its final rate only
         /// when CompleteGroup is called after convergence.

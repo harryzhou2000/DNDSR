@@ -2216,3 +2216,11 @@ The nonlinear stopping residual belongs to the time method. The accepted-step re
 The solver submits its defect and local norm reduction directly after the final flux/source rows on the domain compute stream. DITR submits each stage's rate normalization there. The stop gate observes the scalar reduction. The final correction copy is ordered on the same stream as its following RHS. Ordinary MPI, host-observed numerical admissibility, adaptive linear solvers and requested output can still require host synchronization.
 
 A rejected trial is discarded as a whole. By default the next attempt keeps the accepted means and clears the trial polynomial and LVR history. Set `time.exactReconstructionRollback` to retain the accepted polynomial and limiter history for exact retries. This is independent of `output.checkpointReconstruction`, which requests coefficients for an accepted-step restart. An internal exact checkpoint always preserves the active method stages and their reconstructions; it includes the pre-step polynomial only if exact rollback was enabled.
+
+An implicit DIRK stage normalizes its terminal integrated spatial residual by
+cell volume into the method-owned rate slot before the internal checkpoint
+callback. Completing that stage reads the saved rate for any algebraic check.
+The explicit initial DIRK stage still requires its first spatial evaluation.
+A Strang post-transport chemical half-step changes the means without refreshing
+transport fluxes or advancing VR. Historical exact terminal DIRK checkpoints
+predating the saved rate require a means-only import or a step checkpoint.

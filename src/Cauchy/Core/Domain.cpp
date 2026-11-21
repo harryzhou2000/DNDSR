@@ -408,6 +408,18 @@ namespace DNDS::Cauchy
         SetTimeStage(_state.stageGroup->stage);
         auto control = ProgressControl();
         control.resume = _state.internalResume;
+        if (auto rate = _state.timeStepper->ImplicitStageRate(*_state.stageGroup, _state.trial))
+            control.quiescent = [this, rate, observer = std::move(control.quiescent)](const NonlinearSolveState &cursor)
+            {
+                if (cursor.terminal)
+                {
+                    const auto residual = _problem.finiteVolume.LastSpatialResidual(*_execution.workspace);
+                    DNDS_check_throw_info(residual, "terminal DIRK observation lacks its finest spatial residual");
+                    _execution.implicit->StoreSpatialRate(*residual, *rate);
+                }
+                if (observer)
+                    observer(cursor);
+            };
         return _execution.multigrid
                    ? _execution.multigrid->PrepareSolve(
                          *_execution.nonlinearSetup, equation.resOther,
@@ -480,7 +492,10 @@ namespace DNDS::Cauchy
                 *_state.stageGroup, _state.trial,
                 [this, &result](auto &state, auto &rate, real time, int stage)
                 {
-                    EvaluateImplicitRate(state, rate, *_execution.workspace, time, stage);
+                    // Implicit stages already saved the terminal observed rate. Only the
+                    // explicit first stage needs its first spatial evaluation here.
+                    if (!_state.stageGroup->implicit)
+                        EvaluateImplicitRate(state, rate, *_execution.workspace, time, stage);
                     if (_algebraicRateComponent >= 0)
                         result = ValidateAlgebraicRate(rate, stage == 0 ? "explicit initial stage" : "completed implicit stage");
                 });

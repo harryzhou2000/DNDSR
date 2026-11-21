@@ -378,6 +378,12 @@ namespace DNDS::Cauchy
     {
         return _data->discrete.BuildSourceDerivative(state);
     }
+    void NonlinearSolver::StoreSpatialRate(const EquationDofs &residual, EquationDofs &rate) const
+    {
+        auto engine = _data->stream.LockEngine();
+        _data->operators.SubmitScaleRate(engine, _data->stream, residual, rate, false);
+        _data->stream.Record().WaitHost();
+    }
     void NonlinearSolver::EvaluateRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<R::Array<real>> derivative)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");

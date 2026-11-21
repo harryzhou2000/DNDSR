@@ -213,6 +213,8 @@ namespace DNDS::Cauchy
         /// retain that publication for a subsequent cached CorrectOnce.
         /// Pointwise volume normalization writes owned values only. State/rate
         /// must be distinct; caller coordinates state/time/cache usage on ranks.
+        /// Normalize an already evaluated integrated residual into a method-owned stage rate.
+        void StoreSpatialRate(const EquationDofs &residual, EquationDofs &rate) const;
         void EvaluateRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<Runtime::Array<real>> derivative = {});
         /// Allocate a caller-owned integrated quadrature source derivative for one retained rate.
         std::optional<Runtime::Array<real>> BuildSourceDerivative(const EquationDofs &state) const;

@@ -156,6 +156,7 @@ namespace DNDS::Cauchy
                       {"restart_scope", "exact_internal"},
                       {"update_policy", acceptedSnapshot.UpdatePolicy()},
                       {"nonlinear_state", state.ToJson()},
+                      {"terminal_dirk_rate_saved", state.terminal},
                       {"trial_epoch", trialEpoch},
                       {"trial_dt", _state.trialDt},
                       {"progress_time", _state.progressTime},

@@ -1384,7 +1384,7 @@ TEST_CASE("Means-only restart selects the steady trial or the accepted transient
 TEST_CASE("Exact internal checkpoints resume BDF DIRK and DITR nonlinear iterations")
 {
     const auto metadata = C::Json{{"test", "exact internal nonlinear continuation"}};
-    for (const std::string method : {"bdf2", "esdirk4", "ditr", "ditr-sa-quadrature"})
+    for (const std::string method : {"bdf2", "esdirk4", "esdirk4-terminal", "ditr", "ditr-sa-quadrature"})
     {
         CAPTURE(method);
         const auto path = Path("cauchy-internal-" + method + "-");
@@ -1398,7 +1398,9 @@ TEST_CASE("Exact internal checkpoints resume BDF DIRK and DITR nonlinear iterati
         settings.implicit.absoluteTolerance = 0;
         C::TimeSettings time;
         const bool quadratureSA = method == "ditr-sa-quadrature";
-        time.method = quadratureSA ? "ditr" : method;
+        const bool terminalDIRK = method == "esdirk4-terminal";
+        time.method = quadratureSA ? "ditr" : terminalDIRK ? "esdirk4"
+                                                           : method;
         if (quadratureSA)
         {
             settings.equation.transport = "NewtonianFourier";
@@ -1420,7 +1422,7 @@ TEST_CASE("Exact internal checkpoints resume BDF DIRK and DITR nonlinear iterati
         bool written = false;
         uninterrupted.SetQuiescentObserver([&](const C::NonlinearSolveState &state)
                                            {
-            if (!written && !state.terminal)
+            if (!written && state.terminal == terminalDIRK)
             {
                 uninterrupted.WriteInternalCheckpoint(path, metadata, state);
                 written = true;
