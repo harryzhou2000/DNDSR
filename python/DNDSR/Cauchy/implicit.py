@@ -44,8 +44,7 @@ def _solve_single_stage_group(group):
     while True:
         iteration = group.begin_iteration()
         group.refresh_interfaces(0, iteration)
-        for domain in domains:
-            group.observe(domain)
+        group.observe_all()
         group.finish_interfaces()
         terminal = group.agree_terminal()
         if not terminal:
@@ -67,8 +66,7 @@ def _solve_ditr_domain_group(group):
             for domain in domains:
                 group.advance_stage(domain, stage)
             group.finish_interfaces()
-        for domain in domains:
-            group.observe(domain)
+        group.observe_all()
         if group.finish_iteration():
             return
 

@@ -8,7 +8,11 @@ The finest single-stage spatial operator submits reconstruction, flux, source,
 defect assembly, the local norm and the domain sum. The controller receives a
 pending publication. At the stopping decision it observes the scalar results
 and publishes the spatial diagnostics. The domain owns one reduction
-communicator. DITR submits the stopping residual and each active continuity
+communicator. The native and Python group policies call `ObserveAll`
+(`observe_all()` in Python). It submits every local domain's norm before it
+observes the first one. The pressure datum shared across connected ACM
+domains is projected after all corrections and observations for that iteration,
+before iteration checkpoint publication. DITR submits the stopping residual and each active continuity
 norm before reading any of them. The endpoint rate can remain queued across
 residual assembly. The midpoint and endpoint share FV scratch, so midpoint
 publication precedes its reuse. A discarded publication retires its prefix

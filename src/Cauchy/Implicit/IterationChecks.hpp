@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Core/NumericalStatus.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 
 namespace DNDS::Cauchy
@@ -38,6 +39,9 @@ namespace DNDS::Cauchy
     public:
         explicit IterationChecks(Runtime::ExecutionStream);
         void Begin(index iteration, int stage);
+        /// Synchronous CPU arithmetic may already know the outcome. A fixed-work
+        /// caller latches a failure in producer order; immediate callers report it here.
+        static bool CheckHost(OptionalRef<IterationChecks>, IterationPhase, NumericalStatus, const char *operation);
         /// Latch the first failing local operation. The scalar producer can
         /// immediately reuse its own scratch on this lane.
         void Capture(IterationPhase, const Runtime::Array<NumericalStatus> &);

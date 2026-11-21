@@ -506,7 +506,7 @@ namespace DNDS::Cauchy
         /// Publish one CPU region's diagnostics after successful execution.
         /// Empty CUDA records are harmless; CheckDeviceFluxStatus is the
         /// device segment's numerical-failure observation boundary.
-        void PublishRHS(const std::shared_ptr<RHSSubmission> &);
+        void PublishRHS(const std::shared_ptr<RHSSubmission> &, bool statusCaptured = false);
         void ApplyFixedFlowRHS(const EquationDofs &state, EquationDofs &result,
                                CFV::ReconstructionRegion region, real time,
                                OptionalRef<const AuxiliaryValues> auxiliary,
@@ -545,7 +545,7 @@ namespace DNDS::Cauchy
         bool AddMeanSourceJacobian(
             const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
             DiagonalStorage storage, real scale, PointEvaluator &evaluator,
-            OptionalRef<const EquationFVDetail::MeanLinearizationOutput> linearization = {}, bool rowMajorBlocks = false) const;
+            OptionalRef<const EquationFVDetail::MeanLinearizationOutput> linearization = {}, bool rowMajorBlocks = false, OptionalRef<IterationChecks> checks = {}) const;
         void PrepareVolumeSource(const EquationDofs &state,
                                  OptionalRef<EquationDofs> result,
                                  PointEvaluator &evaluator, real time = 0,

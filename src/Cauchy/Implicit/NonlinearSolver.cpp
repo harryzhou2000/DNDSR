@@ -239,20 +239,18 @@ namespace DNDS::Cauchy
         }
         void EvaluateSpatial(EquationDofs &state, real time,
                              R::EagerEngine &fallbackEngine, OptionalRef<R::Array<real>> derivative,
-                             std::function<void()> submitResidualConsumer = {}, OptionalRef<SpatialPublication> publication = {})
+                             SpatialPublication &publication, std::function<void()> submitResidualConsumer = {})
         {
-            if (settings.immediateNumericalChecks)
-                publication = {};
             if (executionOwner)
             {
                 auto evaluation = FiniteVolumeEvaluation::Spatial(spatial, time, std::ref(auxiliary), derivative);
                 evaluation.submitResidualConsumer = std::move(submitResidualConsumer);
-                discrete.ExecuteImpl(state, *reconstruction, *workspace, *executionOwner, std::move(evaluation), publication);
+                discrete.ExecuteImpl(state, *reconstruction, *workspace, *executionOwner, std::move(evaluation), std::ref(publication));
             }
             else
             {
                 discrete.EvaluateImpl(state, std::ref(spatial), *reconstruction, *workspace, fallbackEngine, stream, stream, time,
-                                      std::ref(auxiliary), {}, derivative, submitResidualConsumer, publication);
+                                      std::ref(auxiliary), {}, derivative, submitResidualConsumer, std::ref(publication));
             }
         }
         void PublishAuxiliary(const EquationDofs &state, real time)
@@ -439,7 +437,11 @@ namespace DNDS::Cauchy
     {
         SubmitRate(state, rate, time, derivative)();
     }
-    std::function<void()> NonlinearSolver::SubmitRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<R::Array<real>> derivative, int stage, index iteration)
+    std::function<void()> NonlinearSolver::SubmitRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<R::Array<real>> derivative)
+    {
+        return SubmitCoupledRate(state, rate, time, derivative, -1, 0);
+    }
+    std::function<void()> NonlinearSolver::SubmitCoupledRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<R::Array<real>> derivative, int stage, index iteration)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         struct RateSubmission
@@ -465,8 +467,10 @@ namespace DNDS::Cauchy
             state.RequireCompatible(rate);
             for (const auto *input : {&state, &data.spatial})
                 EquationDofOperations::RequireDistinct(*input, rate); });
-        data.EvaluateSpatial(held->means, time, engine, derivative, [&]
-                             { data.operators.SubmitScaleRate(engine, data.stream, data.spatial, rate, false); }, std::ref(held->publication));
+        data.EvaluateSpatial(held->means, time, engine, derivative, held->publication, [&]
+                             { data.operators.SubmitScaleRate(engine, data.stream, data.spatial, rate, false); });
+        if (data.settings.immediateNumericalChecks)
+            held->publication.Observe();
         return [held, time]
         {
             held->publication.Observe();
@@ -569,10 +573,12 @@ namespace DNDS::Cauchy
             auto &data = *active->owner;
             auto engine = data.stream.LockEngine();
             auto global = data.NormSlot(0, active->state.ComponentNumber() + 1 + data.discrete.Equation().IsACM());
-            data.EvaluateSpatial(active->state, active->time, engine, data.CorrectionDerivative(), [&]
+            data.EvaluateSpatial(active->state, active->time, engine, data.CorrectionDerivative(), active->spatialPublication, [&]
                                  { active->observeNorms = data.operators.SubmitDefect(engine, data.stream, active->state, data.spatial,
                                                                                       active->source, data.defect, active->mass, active->rhsScale, active->activeComponents.HostView(),
-                                                                                      data.settings.normOrder, true, std::move(global)); }, std::ref(active->spatialPublication));
+                                                                                      data.settings.normOrder, true, std::move(global)); });
+            if (data.settings.immediateNumericalChecks)
+                active->spatialPublication.Observe();
         };
         const auto measure = [active](auto &norms)
         {
@@ -725,7 +731,9 @@ namespace DNDS::Cauchy
         {
             if (!cachedRate)
             {
-                data.EvaluateSpatial(state, time, engine, data.CorrectionDerivative());
+                SpatialPublication publication;
+                data.EvaluateSpatial(state, time, engine, data.CorrectionDerivative(), publication);
+                publication.Observe();
                 data.PublishAuxiliary(state, time);
                 return;
             }
@@ -789,7 +797,7 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(report.lastLinear.usable, "equation implicit linear correction is unusable");
                 }
                 const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::Correction);
-                const auto result = ApplyCorrectionImpl(state, data.linear->Solution(), data.settings.relaxation, selection.Indices(), control.queuedPublication);
+                const auto result = ApplyCorrectionImpl(state, data.linear->Solution(), data.settings.relaxation, selection.Indices(), control.queuedPublication || bool(data.checks));
                 if (data.positivity)
                 {
                     report.rhsLimited += rhsLimited; report.minimumRHSAlpha = std::min(report.minimumRHSAlpha, rhsAlpha);
@@ -981,7 +989,9 @@ namespace DNDS::Cauchy
                 for (const auto *input : {&state, &value, &data.spatial})
                     EquationDofOperations::RequireDistinct(*input, *rate);
             } });
-        data.EvaluateSpatial(state, time, engine, derivative);
+        SpatialPublication publication;
+        data.EvaluateSpatial(state, time, engine, derivative, publication);
+        publication.Observe();
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {

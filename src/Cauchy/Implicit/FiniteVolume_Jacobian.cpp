@@ -1,3 +1,4 @@
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/Implicit/JacobianRowBatches.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "DNDS/Diagnostics/Timeline.hpp"
@@ -223,12 +224,13 @@ namespace DNDS::Cauchy
             PrepareDeviceJacobian(state, auxiliary, inversePseudoTime, output, controls, time, *context);
             return;
         }
+        const auto checks = context ? context->checks : OptionalRef<IterationChecks>{};
         const bool acm = _data->equation.IsACM();
         if (!acm && controls.roeDissipation && sourceWorkspace && HasRoeJacobianKernel(*sourceWorkspace))
         {
             DNDS_check_throw_info(!workers && state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
                                   "flow5 Roe Jacobian specialization received an extended physical state");
-            PrepareFlow5Jacobian(state.CoupledField(), auxiliary, inversePseudoTime, output, controls, time);
+            PrepareFlow5Jacobian(state.CoupledField(), auxiliary, inversePseudoTime, output, controls, time, checks);
             return;
         }
         output.Validate();
@@ -317,9 +319,9 @@ namespace DNDS::Cauchy
                                               controls.residualScale, evaluator, {}, output.RowMajorBlocks());
                 }
                 for (const auto &rows : JacobianRowBatches(stencil.View(), owned, _data->settings.execution.overlap))
-                    RequireNumericalSuccess(CPU::PrepareACMFluxJacobian(
-                                                {physics, stencil.View(), {_data->boundaryConditions.data(), index(_data->boundaryConditions.size())}, layout.View(), tau.View<R::UniformTableRows>(), radius.View<R::UniformTableRows>(), walls ? walls->HostView().cellMean : decltype(WallDistanceView::cellMean){}, diagonal.View<R::UniformTableRows>(), off->ArrayView(), controls.physicalMass, controls.residualScale, active, ResolveEquationPhysicsProfile(_data->equation), controls.scalarBoundaryDerivative, _data->motion.At(time).KernelParameters(), incomingFace, rows}),
-                                            "assemble ACM Jacobian");
+                    if (!IterationChecks::CheckHost(checks, IterationPhase::Jacobian, CPU::PrepareACMFluxJacobian({physics, stencil.View(), {_data->boundaryConditions.data(), index(_data->boundaryConditions.size())}, layout.View(), tau.View<R::UniformTableRows>(), radius.View<R::UniformTableRows>(), walls ? walls->HostView().cellMean : decltype(WallDistanceView::cellMean){}, diagonal.View<R::UniformTableRows>(), off->ArrayView(), controls.physicalMass, controls.residualScale, active, ResolveEquationPhysicsProfile(_data->equation), controls.scalarBoundaryDerivative, _data->motion.At(time).KernelParameters(), incomingFace, rows}),
+                                                    "assemble ACM Jacobian"))
+                        break;
             }
             catch (...)
             {
@@ -395,15 +397,14 @@ namespace DNDS::Cauchy
         request.rowMajorBlocks = output.RowMajorBlocks();
         try
         {
-            RequireNumericalSuccess(CPU::InitializeCompressibleFluxJacobian(request), "initialize equation Jacobian");
+            const bool initialized = IterationChecks::CheckHost(checks, IterationPhase::Jacobian, CPU::InitializeCompressibleFluxJacobian(request), "initialize equation Jacobian");
             bool ownedPropertiesPrepared = false;
-            if ((chemical || rans) && sourceWorkspace)
+            if (initialized && (chemical || rans) && sourceWorkspace)
                 ownedPropertiesPrepared = AddEquationSourceJacobian(state, *context, *diagonal,
                                                                     output.DiagonalMode(), controls.residualScale, pointWorkers.front().evaluator, std::cref(request.linearization), output.RowMajorBlocks());
-            RequireNumericalSuccess(CPU::PrepareCompressibleFluxJacobian(request, _data->boundaryPoint,
-                                                                         {pointWorkers.data(), index(pointWorkers.size())}, ownedPropertiesPrepared,
-                                                                         JacobianRowBatches(request.stencil, owned, bool(off) && _data->settings.execution.overlap)),
-                                    "complete equation Jacobian");
+            if (initialized)
+                IterationChecks::CheckHost(checks, IterationPhase::Jacobian, CPU::PrepareCompressibleFluxJacobian(request, _data->boundaryPoint, {pointWorkers.data(), index(pointWorkers.size())}, ownedPropertiesPrepared, JacobianRowBatches(request.stencil, owned, bool(off) && _data->settings.execution.overlap)),
+                                           "complete equation Jacobian");
         }
         catch (...)
         {

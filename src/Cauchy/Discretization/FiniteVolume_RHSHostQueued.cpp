@@ -432,12 +432,19 @@ namespace DNDS::Cauchy
         return result;
     }
 
-    void FiniteVolume::Workspace::PublishRHS(const std::shared_ptr<RHSSubmission> &result)
+    void FiniteVolume::Workspace::PublishRHS(const std::shared_ptr<RHSSubmission> &result, bool statusCaptured)
     {
         if (!result)
             return;
         DNDS_check_throw_info(result->completed.load(std::memory_order_acquire) && !result->published,
                               "RHS diagnostics are incomplete or already published");
+        if (statusCaptured && (!result->fluxStatus || !result->sourceStatus))
+        {
+            // A coupled midpoint may retire scratch before the group observes
+            // its first failure. Discard partial diagnostics in that interval.
+            result->published = true;
+            return;
+        }
         RequireNumericalSuccess(result->fluxStatus, "queued equation RHS");
         RequireNumericalSuccess(result->sourceStatus, "queued volume source");
         if (result->fixedDiagnostics)

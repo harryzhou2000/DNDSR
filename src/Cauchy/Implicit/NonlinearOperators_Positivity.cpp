@@ -37,7 +37,7 @@ namespace DNDS::Cauchy
                 } }, R::ReadAs<R::UniformTableRows>(spectral), R::ReadAs<R::UniformTableRows>(smoothScale), R::WriteAs<R::UniformTableRows>(inverse));
             // CPU assembly takes immediate read access. Device assembly imports
             // this lane order and validates the inverse step in its own kernel.
-            if (stream.Context().device == R::Device::Host())
+            if (!checks && stream.Context().device == R::Device::Host())
                 stream.Record().WaitHost();
             return {};
         }

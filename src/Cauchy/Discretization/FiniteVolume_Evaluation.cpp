@@ -823,7 +823,7 @@ namespace DNDS::Cauchy
             work.PublishDirectGradients(state, false, time);
             work.PublishDirectGradients(state, true, time);
             for (const auto &record : rhsSubmissions)
-                work.PublishRHS(record);
+                work.PublishRHS(record, bool(checks));
             work.PublishQueuedPhases();
             if (residual)
                 work.PublishSpatialObservation(*residual);

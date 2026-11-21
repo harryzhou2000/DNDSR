@@ -11,6 +11,17 @@ namespace DNDS::Cauchy
     {
         _first.SetName("nonlinear/checks/firstFailure", DNDS_ALLOCATION_SITE());
     }
+    bool IterationChecks::CheckHost(OptionalRef<IterationChecks> checks, IterationPhase phase, NumericalStatus status, const char *operation)
+    {
+        if (status)
+            return true;
+        if (checks)
+            checks->CaptureHost(phase, [status]
+                                { return status; });
+        else
+            RequireNumericalSuccess(status, operation);
+        return false;
+    }
     void IterationChecks::Begin(index iteration, int stage)
     {
         _stage = stage;

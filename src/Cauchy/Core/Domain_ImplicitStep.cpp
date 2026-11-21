@@ -99,8 +99,11 @@ namespace DNDS::Cauchy
                 multigrid = std::make_shared<PolynomialMultigrid>(
                     mesh, _problem.finiteVolume, middle, *solver, _execution.Context(), settings);
             return DomainCoupledStageOperator{
-                [this, solver](auto &state, auto &rate, real time, int stage)
-                { SetTimeStage(stage); solver->EvaluateRate(state, rate, time, _execution.StageDerivative(0)); },
+                [this, solver](auto &state, auto &rate, real time, int stage, index iteration)
+                {
+                    SetTimeStage(stage);
+                    solver->SubmitCoupledRate(state, rate, time, _execution.StageDerivative(0), stage, iteration)();
+                },
                 [this, solver, multigrid](const auto &equation, const auto &rate, real cfl)
                 {
                     const auto &c = equation.coefficients;
@@ -314,16 +317,16 @@ namespace DNDS::Cauchy
                 NonlinearDetail::AccumulateWork(iteration, work);
                 _state.timeStepper->CompleteEquation(
                     *_state.stageGroup, _state.trial,
-                    [this, endpointPublication](EquationDofs &state, EquationDofs &rate, real time,
+                    [this, endpointPublication, ordinal = applyCorrection ? correction.iterationOrdinal : iteration.iterations](EquationDofs &state, EquationDofs &rate, real time,
                            int stage)
                     {
                         if (stage == 0)
-                            _coupledMiddle->evaluate(state, rate, time, stage);
+                            _coupledMiddle->evaluate(state, rate, time, stage, ordinal);
                         else
                         {
                             SetTimeStage(stage);
                             DNDS_check_throw_info(!*endpointPublication, "unobserved DITR endpoint rate");
-                            *endpointPublication = _execution.implicit->SubmitRate(state, rate, time, _execution.StageDerivative(1), stage, _state.coupledNonlinear->iteration);
+                            *endpointPublication = _execution.implicit->SubmitCoupledRate(state, rate, time, _execution.StageDerivative(1), stage, ordinal);
                         }
                     }); },
              {},

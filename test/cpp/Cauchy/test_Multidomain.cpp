@@ -472,6 +472,10 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
             CAPTURE(omega);
             C::Json input{{"domains", Domains(split)}, {"time", {{"method", !split && omega == 0 ? "esdirk2" : "ssprk3"}}}, {"defaults", {{"initialPrimitive", {1, .1, .2, .03, 1}}, {"initialProfile", {{"kind", "isentropicVortex"}, {"strength", .5}, {"period", 10}}}, {"boundaries", {{"101", {{"kind", "interface"}}}}}, {"numerics", {{"reconstruction", "variational"}, {"flux", "rusanov"}, {"limiter", "none"}, {"positivity", false}, {"reconstructionIterations", 12}, {"cfv", {{"maxOrder", 3}, {"intOrder", 5}, {"jacobiRelax", .8}, {"boundaryDerivativeWeights", {1, 0, 0, 0}}}}}}}}, {"interfaces", C::Json::array({{{"donor", "outer"}, {"receiver", "disk"}, {"donorZone", 101}, {"receiverZone", 101}, {"maxGap", .02}}, {{"donor", "disk"}, {"receiver", "outer"}, {"donorZone", 101}, {"receiverZone", 101}, {"maxGap", .02}}})}};
             input["domains"][1]["overrides"] = {{"motion", {{"angularVelocity", {0, 0, omega}}, {"center", {5, 5, 0}}}}};
+            // This branch requests an exact accepted checkpoint after an
+            // intentionally rejected trial. Preserve its warm coefficients.
+            if (!split && omega != 0)
+                input["time"]["exactReconstructionRollback"] = true;
             const auto factory = [](I iDomain, const auto &, const auto &domainMPI)
             { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, 12, 32); };
             const auto sparseConfig = C::SimulationConfig::ResolveCollective(input, mpi.comm);

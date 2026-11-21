@@ -25,8 +25,7 @@ namespace DNDS::Cauchy
                 {
                     const index iteration = group.BeginIteration();
                     group.RefreshInterfaces(0, iteration);
-                    for (auto reference : group.domains)
-                        reference.get().Observe();
+                    group.ObserveAll();
                     group.FinishInterfaces();
                     complete = group.AgreeTerminal();
                     if (!complete)
@@ -70,8 +69,7 @@ namespace DNDS::Cauchy
                         reference.get().AdvanceStage(1);
                     group.FinishInterfaces();
 
-                    for (auto reference : group.domains)
-                        reference.get().Observe();
+                    group.ObserveAll();
                     complete = group.FinishIteration();
                 }
             }

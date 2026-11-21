@@ -2,6 +2,8 @@
 #include "doctest.h"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Implicit/IterationChecks.hpp"
+#include "Cauchy/Implicit/NonlinearNormSum.hpp"
+#include <future>
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
@@ -38,6 +40,51 @@ static C::NonlinearSolver MakeSolver(const C::FiniteVolume &fv, C::EquationDofs 
             A::ComponentSelection(state.ComponentNumber(),
                                   state.Schema().ResolveComponents(settings.implicit.ResolveResidualComponents(settings.equation.system == "incompressibleACM")))};
 }
+TEST_CASE("The nonlinear norm submits its domain sum while the worker producer is pending")
+{
+    R::EagerEngine engine(1);
+    auto compute = engine.CreateCPUStream(), communication = engine.CreateCPUStream();
+    auto context = R::CommunicationContext::Duplicate(mpi.comm, false);
+    C::NonlinearNormSum norm(1, context, communication, {}, R::Device::Host());
+    std::promise<void> release;
+    auto gate = release.get_future().share();
+    std::atomic<bool> timedOut{false};
+    R::SubmitArrays(engine, compute, [gate, &timedOut](auto, auto values)
+                    {
+                        timedOut = gate.wait_for(std::chrono::seconds(3)) != std::future_status::ready;
+                        values(0, 0) = mpi.rank + 1; }, R::Write(norm.Local()));
+    norm.Submit(engine, compute);
+    release.set_value();
+    const auto sum = norm.Observe();
+    CHECK_FALSE(timedOut.load());
+    CHECK(sum.at(0) == mpi.size * (mpi.size + 1) / 2);
+}
+
+TEST_CASE("A spatial rate submission and observation leave an unrelated worker lane pending")
+{
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.positivity = false;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
+    auto field = fv.Metrics().BuildField(5);
+    InitializeFlow5(fv, field, {1, .1, 0, 0, 1});
+    auto state = Bind(fv, field), rate = Bind(fv, fv.Metrics().BuildField(5));
+    R::EagerEngine engine(2);
+    auto compute = engine.CreateCPUStream(), independent = engine.CreateCPUStream();
+    auto solver = MakeSolver(fv, state, engine, compute, settings);
+    std::promise<void> release;
+    auto gate = release.get_future().share();
+    std::atomic<bool> timedOut{false};
+    engine.Submit(independent, [gate, &timedOut](auto)
+                  { timedOut = gate.wait_for(std::chrono::seconds(3)) != std::future_status::ready; });
+    auto observation = solver.SubmitRate(state, rate, 0);
+    observation();
+    release.set_value();
+    independent.Record().WaitHost();
+    CHECK_FALSE(timedOut.load());
+}
+
 TEST_CASE("Fixed-work checks retain the first failed stage and guard mean publication")
 {
     R::EagerEngine engine(1);

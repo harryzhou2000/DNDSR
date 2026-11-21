@@ -207,10 +207,8 @@ namespace DNDS::Cauchy
                     if (session)
                         group.domains.emplace_back(*session);
                 std::shared_ptr<CoordinatedInterfaceRefresh> publication;
-                int activeStage = 0;
                 group.refreshInterfaces = [&](int coupledStage, index iteration)
                 {
-                    activeStage = coupledStage;
                     if (!_interfaces ||
                         !_interfaces->RefreshEveryNonlinearIteration())
                         return;
@@ -227,9 +225,13 @@ namespace DNDS::Cauchy
                     if (publication)
                         publication->Finish();
                     publication.reset();
-                    if (_pressureGauge)
-                        _pressureGauge->ProjectStage(activeStage);
                 };
+                if (_pressureGauge)
+                    group.projectPressure = [&]
+                    {
+                        for (int stage = 0; stage < description.coupledStages; ++stage)
+                            _pressureGauge->ProjectStage(stage);
+                    };
                 // Exactly one dispatch. The selected policy owns its entire
                 // nonlinear loop and orders interface/domain sweeps itself.
                 SolveNonlinearGroup(group);

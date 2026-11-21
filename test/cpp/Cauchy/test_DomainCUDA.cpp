@@ -1,6 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Implicit/IterationChecks.hpp"
+#include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/IO/AsyncOutput.hpp"
 #include "CartesianFixture.hpp"
@@ -15,6 +18,29 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
 static DNDS::MPIInfo mpi;
+
+TEST_CASE("CUDA candidate publication honors the earliest failed update on its lane")
+{
+    R::EagerEngine engine;
+    const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    const auto device = stream.Context().device;
+    C::IterationChecks checks(stream);
+    R::Array<DNDS::real> host(R::RowLayout::Dense(1, 1));
+    host.Write().View()(0, 0) = 3;
+    auto means = host.To(device);
+    host.Write().View()(0, 0) = 5;
+    auto candidate = host.To(device);
+    R::Array<I> firstInvalid(host.Layout());
+    firstInvalid.Write().View()(0, 0) = 42;
+    auto row = firstInvalid.To(device);
+    checks.Begin(6, 0);
+    checks.CaptureInvalidRow(C::IterationPhase::Candidate, row);
+    checks.Begin(6, 1);
+    checks.CaptureFinite(C::IterationPhase::Linear, candidate);
+    checks.CopyIfValid(candidate, means);
+    CHECK_THROWS_WITH_AS(checks.Observe(), doctest::Contains("update 6 stage 0 candidate"), std::exception);
+    CHECK(means.To(R::Device::Host()).Read().View()(0, 0) == 3);
+}
 
 TEST_CASE("ACM device correction matches CPU on flow4 and mechanical SA and SST")
 {
@@ -90,6 +116,13 @@ TEST_CASE("ACM device correction matches CPU on flow4 and mechanical SA and SST"
             const bool cpu = std::string_view(mapping) == "cpu";
             // Compare the regional device update against a whole-domain CPU correction.
             settings.execution.overlap = !cpu;
+            // The CTest rank mapper gives each process a distinct device. A
+            // manual two-rank/one-card run still exercises staged MPI.
+            settings.execution.nonlinearReduction =
+                !cpu && std::string_view(mapping) == "ctaSegments" && mpi.size > 1 &&
+                        std::getenv("DNDS_TEST_GPU_UUID") && R::NCCLTransferProvider::Available()
+                    ? "nccl"
+                    : "mpi";
             settings.execution.device = cpu ? "cpu" : "cuda";
             settings.execution.kernels.rhsMapping = cpu ? "auto" : mapping;
             settings.execution.reconstructionKernel = !cpu && polynomial ? "fp64Pipelined" : "fp64";

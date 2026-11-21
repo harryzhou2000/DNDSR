@@ -1,3 +1,4 @@
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
@@ -38,7 +39,7 @@ namespace DNDS::Cauchy
     /// can also be published for the flux matrix in this pass.
     bool FiniteVolume::Workspace::AddMeanSourceJacobian(const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
                                                         DiagonalStorage storage, real scale, PointEvaluator &evaluator,
-                                                        OptionalRef<const MeanLinearizationOutput> linearization, bool rowMajorBlocks) const
+                                                        OptionalRef<const MeanLinearizationOutput> linearization, bool rowMajorBlocks, OptionalRef<IterationChecks> checks) const
     {
         if (sourceOffsets.RowCount() == 0)
             return false;
@@ -104,8 +105,7 @@ namespace DNDS::Cauchy
             request.linearization = *linearization;
         const R::MetadataBuffer<EquationBlockReadView> blockMetadata(blocks);
         request.blocks = blockMetadata.HostView();
-        RequireNumericalSuccess(PrepareSourceJacobianCPU(request, owner->equation, evaluator), "mean source Jacobian");
-        return true;
+        return IterationChecks::CheckHost(checks, IterationPhase::Jacobian, PrepareSourceJacobianCPU(request, owner->equation, evaluator), "mean source Jacobian");
     }
 
     void FiniteVolume::Workspace::PrepareVolumeSource(const EquationDofs &state,

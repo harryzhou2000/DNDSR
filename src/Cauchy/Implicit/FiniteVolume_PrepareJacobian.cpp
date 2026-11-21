@@ -1,3 +1,4 @@
+#include "Cauchy/Implicit/IterationChecks.hpp"
 #include "Cauchy/Implicit/JacobianRowBatches.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
@@ -90,7 +91,7 @@ namespace DNDS::Cauchy
 
     void FiniteVolume::PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
                                             const R::Array<real> &inversePseudoTime, LinearProblemContext &output,
-                                            JacobianPreparation controls, real time) const
+                                            JacobianPreparation controls, real time, OptionalRef<IterationChecks> checks) const
     {
         const Algebra::ComponentSelection selection(5, controls.updateComponents);
         std::array<bool, 5> active{};
@@ -237,7 +238,8 @@ namespace DNDS::Cauchy
         request.selected = !selection.All();
         request.active = active;
         for (const auto &rows : JacobianRowBatches(request.stencil, d.RowCount(), bool(blocks) && _data->settings.execution.overlap))
-            RequireNumericalSuccess(CPU::PrepareCompressibleFluxJacobian(request, _data->equation.Gas(), _data->flux, rows), "PrepareCompressibleFluxJacobian");
+            if (!IterationChecks::CheckHost(checks, IterationPhase::Jacobian, CPU::PrepareCompressibleFluxJacobian(request, _data->equation.Gas(), _data->flux, rows), "PrepareCompressibleFluxJacobian"))
+                break;
         magnitudeWrite.reset();
         diagonal.reset();
         if (evaluated)

@@ -78,7 +78,7 @@ namespace DNDS::Cauchy
     /// by Domain/time-method storage; these callables are synchronous borrows.
     struct DomainCoupledStageOperator
     {
-        EquationTimeStepper::Evaluate evaluate;
+        std::function<void(EquationDofs &, EquationDofs &, real, int stage, index iteration)> evaluate;
         std::function<NonlinearIterationReport(
             const ODE::CoupledStageEquation<EquationDofs> &,
             const EquationDofs &, real)>

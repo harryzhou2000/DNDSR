@@ -15,6 +15,7 @@ namespace DNDS::Cauchy
             Idle,
             Updating,
             Observing,
+            AwaitObservation,
             ReadyForUpdate,
             AwaitFinish,
             Complete
@@ -198,20 +199,27 @@ namespace DNDS::Cauchy
             data.phase = Data::Phase::Updating;
     }
 
-    void NonlinearSession::Observe()
+    void NonlinearSession::SubmitObservation()
     {
         DNDS_check_throw_info(_data && _data->phase == Data::Phase::Observing,
+                              "nonlinear residual submission is out of order");
+        auto &data = *_data;
+        const NonlinearDetail::PhaseTimer timer(data.problem.control.profile, NonlinearProfile::Residual);
+        data.problem.evaluate();
+        if (data.problem.control.profile)
+            ++data.problem.control.profile->residualEvaluations;
+        data.phase = Data::Phase::AwaitObservation;
+    }
+
+    void NonlinearSession::Observe()
+    {
+        if (_data && _data->phase == Data::Phase::Observing)
+            SubmitObservation();
+        DNDS_check_throw_info(_data && _data->phase == Data::Phase::AwaitObservation,
                               "nonlinear residual observation is out of order");
         auto &data = *_data;
         {
             const TimelineScope timeline("Cauchy/Nonlinear/ObserveResidual");
-            {
-                const NonlinearDetail::PhaseTimer timer(
-                    data.problem.control.profile, NonlinearProfile::Residual);
-                data.problem.evaluate();
-                if (data.problem.control.profile)
-                    ++data.problem.control.profile->residualEvaluations;
-            }
             {
                 const NonlinearDetail::PhaseTimer timer(
                     data.problem.control.profile, NonlinearProfile::Convergence);
@@ -385,6 +393,16 @@ namespace DNDS::Cauchy
         return _iteration;
     }
 
+    void NonlinearSolveGroup::ObserveAll()
+    {
+        // Each local domain owns its norm communicator. Submit in stable
+        // domain order so other domains can make progress during observation.
+        for (auto domain : domains)
+            domain.get().SubmitObservation();
+        for (auto domain : domains)
+            domain.get().Observe();
+    }
+
     bool NonlinearSolveGroup::AgreeTerminal() const
     {
         int terminal = 1;
@@ -400,6 +418,8 @@ namespace DNDS::Cauchy
 
     void NonlinearSolveGroup::PublishIteration(bool terminal)
     {
+        if (projectPressure)
+            projectPressure();
         for (auto reference : domains)
             reference.get().FinishIteration(terminal);
         if (!terminal)

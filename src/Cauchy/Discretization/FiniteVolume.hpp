@@ -972,7 +972,7 @@ namespace DNDS::Cauchy
         /// Jacobian resolver. It is not a second public state API.
         void PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
                                   const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
-                                  JacobianPreparation controls, real time) const;
+                                  JacobianPreparation controls, real time, OptionalRef<IterationChecks> checks) const;
         /// @see docs/architecture/CauchyDispatch.md (CUDA flux Jacobian).
         void PrepareDeviceJacobian(const EquationDofs &, const AuxiliaryValues &, const Runtime::Array<real> &inversePseudoTime,
                                    LinearProblemContext &, JacobianPreparation, real time, const JacobianContext &) const;

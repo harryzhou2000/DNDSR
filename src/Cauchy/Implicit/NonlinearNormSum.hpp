@@ -16,7 +16,7 @@ namespace DNDS::Cauchy
         Runtime::Array<real> _local, _sum;
         std::optional<Runtime::Array<real>> _resident;
         bool _ordinaryMPI = false;
-        Runtime::ExecutionStream _lane;
+        Runtime::ExecutionStream _lane, _resultLane;
         std::shared_ptr<const Runtime::GlobalReductionBinding> _binding;
         Runtime::StreamEvent _completion;
 

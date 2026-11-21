@@ -77,6 +77,6 @@ namespace DNDS::Cauchy
         }
         auto &work = context.workspace.get();
         auto workspaceSession = work.session.Acquire();
-        return work.AddMeanSourceJacobian(state, diagonal, storage, scale, evaluator, linearization, rowMajorBlocks);
+        return work.AddMeanSourceJacobian(state, diagonal, storage, scale, evaluator, linearization, rowMajorBlocks, context.checks);
     }
 }

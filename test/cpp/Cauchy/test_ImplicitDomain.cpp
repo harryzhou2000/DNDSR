@@ -50,8 +50,9 @@ TEST_CASE("Periodic ACM physical step transports velocity and preserves the pres
     settings.numerics.flux = "rusanov";
     settings.implicit.jacobianAction = "assembled";
     settings.implicit.diagonal = "block";
-    SUBCASE("single grid with queued fixed-work checks")
+    SUBCASE("worker-backed single grid with queued fixed-work checks")
     {
+        settings.execution.hostThreads = 2;
         settings.implicit.linear.method = "jacobi";
         settings.implicit.linear.stopping = "fixedCount";
         settings.implicit.linear.iterations = 4;

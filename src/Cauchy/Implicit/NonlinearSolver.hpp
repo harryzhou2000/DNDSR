@@ -219,7 +219,10 @@ namespace DNDS::Cauchy
         /// Normalize an already evaluated integrated residual into a method-owned stage rate.
         void StoreSpatialRate(const EquationDofs &residual, EquationDofs &rate) const;
         /// Submit the spatial rate and retain its workspace until the controller observes it.
-        std::function<void()> SubmitRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<Runtime::Array<real>> derivative = {}, int stage = -1, index iteration = 0);
+        std::function<void()> SubmitRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<Runtime::Array<real>> derivative = {});
+        /// DITR supplies its stage and update ordinal. The callback retires shared
+        /// scratch. The domain calls ObservePendingChecks at the group stop.
+        std::function<void()> SubmitCoupledRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<Runtime::Array<real>> derivative, int stage, index iteration);
         void EvaluateRate(EquationDofs &state, EquationDofs &rate, real time, OptionalRef<Runtime::Array<real>> derivative = {});
         /// Allocate a caller-owned integrated quadrature source derivative for one retained rate.
         std::optional<Runtime::Array<real>> BuildSourceDerivative(const EquationDofs &state) const;

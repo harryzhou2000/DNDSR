@@ -34,6 +34,7 @@ namespace DNDS::Cauchy
     }
     void NonlinearNormSum::Submit(R::EagerEngine &engine, const R::ExecutionStream &producer)
     {
+        _resultLane = _binding ? _lane : producer;
         _completion = producer.Record();
         if (_binding)
         {
@@ -46,7 +47,7 @@ namespace DNDS::Cauchy
     {
         if (_ordinaryMPI)
             _completion.WaitHost();
-        else if (_binding && !consumer.SameLane(_lane))
+        else if (!consumer.SameLane(_resultLane))
             consumer.WaitFor(_completion);
         if (consumer.Context().device == _sum.GetDevice())
             return _sum;

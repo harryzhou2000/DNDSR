@@ -81,6 +81,11 @@ namespace DNDS::Cauchy::Bindings
         {
             g.Get().FinishInterfaces();
         }, Released{})
+            .def("observe_all",
+                 [](const PythonGroup &g)
+        {
+            g.Get().ObserveAll();
+        }, Released{})
             .def("observe",
                  [](const PythonGroup &g, size_t domain)
         {

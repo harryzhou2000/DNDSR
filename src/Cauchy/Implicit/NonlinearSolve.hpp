@@ -43,6 +43,7 @@ namespace DNDS::Cauchy
         /// Execute one policy-named correction. Calls are ordered from zero.
         void AdvanceStage(int coupledStage);
         /// Evaluate and globally reduce this domain's stopping residual.
+        void SubmitObservation();
         void Observe();
         /// Publish this round. `coordinatedTerminal` is agreed by the
         /// simulation over all participating domain sessions.
@@ -78,10 +79,16 @@ namespace DNDS::Cauchy
         bool collectiveChecks = false;
         std::function<void(int coupledStage, index iteration)> refreshInterfaces;
         std::function<void()> finishInterfaces;
+        /// Apply a shared pressure datum only after every domain has consumed
+        /// the residual and finished its correction. Packet import alone must
+        /// never mutate the means frozen by a pending spatial evaluation.
+        std::function<void()> projectPressure;
 
         /// Begin one round and validate local cursors. Optional cross-rank
         /// diagnostics obey the Cauchy collective-check master switch.
         index BeginIteration();
+        /// Queue each local domain before observing the first.
+        void ObserveAll();
         /// Agree termination, then publish every domain's iteration state.
         bool AgreeTerminal() const;
         void PublishIteration(bool terminal);
