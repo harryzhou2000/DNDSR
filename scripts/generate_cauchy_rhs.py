@@ -19,7 +19,12 @@ import tempfile
 ACM_MAPPINGS = ("Thread", "CTASegments")
 
 
-def read_shapes(manifest, mechanical=False):
+def add_feature_arguments(parser):
+    parser.add_argument("--families", nargs="+", choices=("PerfectGas", "ACM"), default=("PerfectGas", "ACM"))
+    parser.add_argument("--dimensions", nargs="+", type=int, choices=(2, 3), default=(2, 3))
+
+
+def read_shapes(manifest, mechanical=False, dimensions=(2, 3)):
     """Validate the human-maintained catalog and return deterministic tuples."""
     data = json.loads(manifest.read_text(encoding="utf-8"))
     expected_keys = {"schema_version", "component_counts", "modes_by_dimension"}
@@ -48,6 +53,7 @@ def read_shapes(manifest, mechanical=False):
         (components, modes, dimension)
         for components in sorted(component_counts)
         for dimension in sorted(int(value) for value in modes_by_dimension)
+        if dimension in dimensions
         for modes in sorted(modes_by_dimension[str(dimension)])
     ]
 
@@ -207,6 +213,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    add_feature_arguments(parser)
     args = parser.parse_args()
     try:
         output_directory = args.output_dir.resolve()
@@ -214,7 +221,9 @@ def main():
         index = output_directory / "FiniteVolumeRHSKernels_Sources.cmake"
         sources, headers, contents = [], [], []
         for mechanical, stem in ((False, "FiniteVolumeRHSKernels"), (True, "FiniteVolumeACMFluxKernels")):
-            shapes = read_shapes(args.manifest, mechanical)
+            if ("ACM" if mechanical else "PerfectGas") not in args.families:
+                continue
+            shapes = read_shapes(args.manifest, mechanical, args.dimensions)
             header = output_directory / (stem + "_Instantiations.hpp")
             dispatch = output_directory / (stem + "_Instantiations.cpp")
             kernels = [(shape, mapping) for shape in shapes for mapping in mappings(shape, mechanical)]

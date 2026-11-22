@@ -176,6 +176,7 @@ set(CPPS
     Riemann/RiemannFlux.cpp)
 include("${PROJECT_SOURCE_DIR}/cmake/DndsCauchyRHS.cmake")
 dnds_generate_cauchy_rhs(_cpu_flux_sources _cpu_flux_include _cpu_flux_codegen cauchy_cpu_flux)
+configure_file(Config/BuildFeatures.hpp.in "${_cpu_flux_include}/CauchyBuildFeatures.hpp" @ONLY)
 list(APPEND CPPS ${_cpu_flux_sources})
 if(DNDS_USE_CUDA)
     list(APPEND CPPS Interface/CUDA/InterfacePacketKernels.cu)
@@ -201,21 +202,25 @@ if(DNDS_USE_CUDA)
     list(APPEND CPPS ${_rhs_sources})
     # Runtime-shaped ACM leaves provide both mappings for direct gradients,
     # first-order convection and polynomial shapes outside the static catalog.
-    foreach(acm_width IN ITEMS 4 5 6)
-        set(acm_source "${_rhs_include}/FiniteVolumeACMFluxKernels_C${acm_width}.cu")
-        configure_file(Discretization/CUDA/FiniteVolumeACMFluxKernels.cu.in "${acm_source}" @ONLY)
-        list(APPEND CPPS "${acm_source}")
-    endforeach()
-    # Keep reduced-precision face kernels in bounded instantiation groups.
-    # Their host dispatcher does not include the numerical kernel definitions.
-    list(APPEND CPPS
-        Discretization/CUDA/FiniteVolumeRHSKernels_Compute.cpp
-        Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Polynomial.cu
-        Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Dissipation.cu
-        Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Flux.cu
-        Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Polynomial.cu
-        Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Dissipation.cu
-        Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Flux.cu)
+    if(DNDS_CAUCHY_ENABLE_ACM)
+        foreach(acm_width IN ITEMS 4 5 6)
+            set(acm_source "${_rhs_include}/FiniteVolumeACMFluxKernels_C${acm_width}.cu")
+            configure_file(Discretization/CUDA/FiniteVolumeACMFluxKernels.cu.in "${acm_source}" @ONLY)
+            list(APPEND CPPS "${acm_source}")
+        endforeach()
+    endif()
+    if(DNDS_CAUCHY_ENABLE_COMPRESSIBLE)
+        # Keep reduced-precision face kernels in bounded instantiation groups.
+        # Their host dispatcher does not include the numerical kernel definitions.
+        list(APPEND CPPS
+            Discretization/CUDA/FiniteVolumeRHSKernels_Compute.cpp
+            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Polynomial.cu
+            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Dissipation.cu
+            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Flux.cu
+            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Polynomial.cu
+            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Dissipation.cu
+            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Flux.cu)
+    endif()
     list(APPEND CPPS Discretization/CUDA/FiniteVolumeRHSFacePackages.cpp Discretization/CUDA/FiniteVolumeRHSKernels_Segments.cu)
     # A 512-thread segment CTA has at most 128 registers per lane on the
     # qualified SM80/SM86 devices. Apply the same bound to its out-of-line
@@ -229,14 +234,14 @@ if(DNDS_USE_CUDA)
     set(_source_shape_file "${PROJECT_SOURCE_DIR}/scripts/manifests/cauchy_rhs_shapes.json")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_source_shape_file}")
     file(READ "${_source_shape_file}" _source_shapes)
-    foreach(source_model IN ITEMS ACM PerfectGas)
+    foreach(source_model IN LISTS _cauchy_families)
         if(source_model STREQUAL ACM)
             set(_rans_widths 5 6)
         else()
             set(_rans_widths 6 7)
         endif()
         foreach(source_width IN LISTS _rans_widths)
-            foreach(source_dim IN ITEMS 2 3)
+            foreach(source_dim IN LISTS _cauchy_dimensions)
                 string(JSON _mode_count LENGTH "${_source_shapes}" modes_by_dimension ${source_dim})
                 math(EXPR _last_mode "${_mode_count} - 1")
                 foreach(_mode_index RANGE 0 ${_last_mode})

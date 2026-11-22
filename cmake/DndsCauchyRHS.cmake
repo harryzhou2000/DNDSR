@@ -1,5 +1,33 @@
 include_guard(GLOBAL)
 
+# Accept the original misspelling as an input alias. Keep one authoritative
+# cache entry so a later reconfigure cannot silently restore an old setting.
+if(DEFINED DNDS_CAUCHY_ENBALE_3D)
+    message(STATUS "Mapping DNDS_CAUCHY_ENBALE_3D to DNDS_CAUCHY_ENABLE_3D")
+    set(DNDS_CAUCHY_ENABLE_3D "${DNDS_CAUCHY_ENBALE_3D}" CACHE BOOL "Build Cauchy for 3D meshes" FORCE)
+    unset(DNDS_CAUCHY_ENBALE_3D CACHE)
+endif()
+option(DNDS_CAUCHY_ENABLE_COMPRESSIBLE "Build Cauchy for compressible equations" ON)
+option(DNDS_CAUCHY_ENABLE_ACM "Build Cauchy for artificial compressibility" ON)
+option(DNDS_CAUCHY_ENABLE_2D "Build Cauchy for 2D meshes" ON)
+option(DNDS_CAUCHY_ENABLE_3D "Build Cauchy for 3D meshes" ON)
+set(_cauchy_families)
+if(DNDS_CAUCHY_ENABLE_COMPRESSIBLE)
+    list(APPEND _cauchy_families PerfectGas)
+endif()
+if(DNDS_CAUCHY_ENABLE_ACM)
+    list(APPEND _cauchy_families ACM)
+endif()
+set(_cauchy_dimensions)
+foreach(_dim IN ITEMS 2 3)
+    if(DNDS_CAUCHY_ENABLE_${_dim}D)
+        list(APPEND _cauchy_dimensions ${_dim})
+    endif()
+endforeach()
+if(NOT _cauchy_families OR NOT _cauchy_dimensions)
+    message(FATAL_ERROR "Cauchy requires at least one equation family and one mesh dimension")
+endif()
+
 # Generate the manifest's polynomial RHS source catalog once, before targets are
 # created. Both static/shared libraries must depend on the returned target, and
 # add the returned include directory privately. Generated files stay build-local.
@@ -23,7 +51,8 @@ function(dnds_generate_cauchy_rhs out_sources out_include_dir out_target family)
     set(_dnds_output_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/${family}")
     set(_dnds_index "${_dnds_output_dir}/FiniteVolumeRHSKernels_Sources.cmake")
     set(_dnds_command "${Python3_EXECUTABLE}" "${_dnds_generator}"
-        --manifest "${_dnds_manifest}" --output-dir "${_dnds_output_dir}")
+        --manifest "${_dnds_manifest}" --output-dir "${_dnds_output_dir}"
+        --families ${_cauchy_families} --dimensions ${_cauchy_dimensions})
 
     # Input changes rerun configuration, where the full catalog is needed before
     # CMake constructs either Make or Ninja's compilation graph. Included .cmake

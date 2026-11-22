@@ -1,0 +1,6 @@
+#pragma once
+
+#cmakedefine01 DNDS_CAUCHY_ENABLE_COMPRESSIBLE
+#cmakedefine01 DNDS_CAUCHY_ENABLE_ACM
+#cmakedefine01 DNDS_CAUCHY_ENABLE_2D
+#cmakedefine01 DNDS_CAUCHY_ENABLE_3D

@@ -285,6 +285,25 @@ Key options (set via `-D<OPTION>=<VALUE>` or in a preset):
 | `DNDS_EIGEN_USE_BLAS`      | OFF     | Use external BLAS in Eigen             |
 | `DNDS_EIGEN_USE_LAPACK`    | OFF     | Use external LAPACK in Eigen           |
 
+### Cauchy equation families and dimensions
+
+`DNDS_CAUCHY_ENABLE_COMPRESSIBLE`, `DNDS_CAUCHY_ENABLE_ACM`,
+`DNDS_CAUCHY_ENABLE_2D` and `DNDS_CAUCHY_ENABLE_3D` default to `ON`.
+Enable at least one family and one dimension. For example, configure with
+`-DDNDS_CAUCHY_ENABLE_ACM=OFF -DDNDS_CAUCHY_ENABLE_3D=OFF` for
+compressible 2D cases. The original spelling `DNDS_CAUCHY_ENBALE_3D` is
+accepted as an input alias and sets the canonical cache entry for that configure.
+
+The CPU flux catalog, CUDA flux catalog and CUDA volume-source instantiations
+use these selections. A compressible-only build also omits the generic ACM
+CUDA face kernels. An ACM-only build omits reduced-precision compressible face
+kernels. Shared geometry, reconstruction, solver infrastructure and generic
+physics code remain available to their other consumers. Cauchy validates
+each domain during configuration and when constructing FV operators directly.
+Reconfigure the build directory to change the supported cases. The full RANS
+integration suite exercises both equation families. Use an all-features build
+for that suite and select matching cases for a filtered build.
+
 ## Building the Python Package
 
 ### Three Ways to Build the Python Package

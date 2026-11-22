@@ -1,3 +1,4 @@
+#include "Cauchy/Config/BuildFeatures.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation_Impl.cpp.inc"
 #include "FiniteVolumeCPUFluxCatalog.hpp"
 
@@ -34,6 +35,8 @@ namespace DNDS::Cauchy::CPU
                                                 EquationLayoutView<const real> remote, EquationLayoutView<real> destination,
                                                 EquationLayoutView<real> lowDestination, CFV::ReconstructionRegion region) noexcept
     {
+        if (!BuiltForEquation(equation.IsACM(), request.dimension))
+            return NumericalStatus{NumericalError::UnsupportedRequest};
         EquationRHSPointScratch scratch(request.width, request.species, request.produceLow);
         const auto run = SelectFlux(request, equation, owned, remote, destination, lowDestination);
         const auto phase = [&](bool faces)
@@ -53,6 +56,8 @@ namespace DNDS::Cauchy::CPU
                                                 EquationLayoutView<const real> remote, EquationLayoutView<real> destination,
                                                 EquationLayoutView<real> lowDestination, CFV::ReconstructionRegion region) noexcept
     {
+        if (!BuiltForEquation(equation.IsACM(), request.dimension))
+            return NumericalStatus{NumericalError::UnsupportedRequest};
         if (workers.empty())
             return NumericalStatus{NumericalError::InvalidInput};
         const auto run = SelectFlux(request, equation, owned, remote, destination, lowDestination);

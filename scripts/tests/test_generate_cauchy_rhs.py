@@ -57,6 +57,53 @@ class RHSCodeGenerationTests(unittest.TestCase):
                     self.assertIn(f"EquationPhysicsProfile::{profile}, ReconstructionForm::{form}, 5, 3, {mode}", text)
                     self.assertIn("a.remote.CompactRows<5>()", text)
 
+    def test_filtered_registries_only_reference_selected_leaves(self):
+        manifest = ROOT / "scripts/manifests/cauchy_rhs_shapes.json"
+        with tempfile.TemporaryDirectory() as temporary:
+            for generator in ("cauchy_cpu_flux", "cauchy_rhs"):
+                output = Path(temporary) / generator
+                base = [sys.executable, str(ROOT / f"scripts/generate_{generator}.py"),
+                        "--manifest", str(manifest), "--output-dir", str(output)]
+                for family, dimension in (("ACM", 3), ("PerfectGas", 2)):
+                    subprocess.run(base + ["--families", family, "--dimensions", str(dimension)], check=True)
+                    cpu = generator == "cauchy_cpu_flux"
+                    leaves = sorted(output.glob("*_C*_M*_D*"))
+                    self.assertEqual(len(leaves), 15 if cpu else 21 if family == "ACM" else 12)
+                    for leaf in leaves:
+                        self.assertIn(f"_D{dimension}", leaf.name)
+                        self.assertEqual("ACM" in leaf.name, family == "ACM")
+                    if cpu:
+                        registry = (output / "FiniteVolumeCPUFluxCatalog.cpp").read_text()
+                        for leaf in leaves:
+                            self.assertIn(leaf.stem.removeprefix("FiniteVolumeCPUFluxCatalog_"), registry)
+                    else:
+                        dispatchers = list(output.glob("*_Instantiations.cpp"))
+                        self.assertEqual(len(dispatchers), 1)
+                        self.assertNotIn(f"case {5 - dimension}:\n                switch (modes)",
+                                         dispatchers[0].read_text())
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake is unavailable")
+    def test_cmake_feature_selection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            build = source / "build"
+            (source / "CMakeLists.txt").write_text(
+                'cmake_minimum_required(VERSION 3.21)\nproject(Features NONE)\n'
+                f'include("{ROOT.as_posix()}/cmake/DndsCauchyRHS.cmake")\n'
+                'file(WRITE "${CMAKE_BINARY_DIR}/selected" "${_cauchy_families}:${_cauchy_dimensions}")\n')
+            configure = ["cmake", "-S", str(source), "-B", str(build)]
+            subprocess.run(configure, check=True, capture_output=True)
+            self.assertEqual((build / "selected").read_text(), "PerfectGas;ACM:2;3")
+            subprocess.run(configure + ["-DDNDS_CAUCHY_ENABLE_COMPRESSIBLE=OFF", "-DDNDS_CAUCHY_ENBALE_3D=OFF"],
+                           check=True, capture_output=True)
+            self.assertEqual((build / "selected").read_text(), "ACM:2")
+            for disabled in ("ACM", "2D"):
+                result = subprocess.run(configure + [f"-DDNDS_CAUCHY_ENABLE_{disabled}=OFF"],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("at least one equation family and one mesh dimension", result.stderr)
+                subprocess.run(configure + [f"-DDNDS_CAUCHY_ENABLE_{disabled}=ON"], check=True, capture_output=True)
+
     @unittest.skipUnless(shutil.which("cmake"), "CMake is unavailable")
     def test_cmake_tracks_inputs_and_recovers_every_output(self):
         generators = ["Unix Makefiles"] if shutil.which("make") else []

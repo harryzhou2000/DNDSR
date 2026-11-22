@@ -1,3 +1,4 @@
+#include "Cauchy/Config/BuildFeatures.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/FlowErrorOperator.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
@@ -45,6 +46,7 @@ namespace DNDS::Cauchy
         R::CommunicationDetail::AgreePolicy(mesh->getMPI().comm, settings.implicit.collectiveChecks);
         R::CommunicationDetail::LocalStage(mesh->getMPI().comm, settings.implicit.collectiveChecks, [&]
                                            {
+            RequireBuiltEquation(equation.IsACM(), mesh->getDim());
             settings.numerics.ValidatePositivity();
             DNDS_check_throw_info(!settings.numerics.resolvedCellOmega ||
                                       (equation.IsACM() && equation.HasRANS() && equation.RANS().Kind() == Physics::RANS::ModelKind::KOmegaSST &&

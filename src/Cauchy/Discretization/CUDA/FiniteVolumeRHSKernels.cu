@@ -1,11 +1,16 @@
+#include "Cauchy/Config/BuildFeatures.hpp"
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Shapes.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Compute.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Segments.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
 #include "DNDS/Runtime/Execution/KernelViews.hpp"
-#include "FiniteVolumeRHSKernels_Instantiations.hpp"
-#include "FiniteVolumeACMFluxKernels_Instantiations.hpp"
+#if DNDS_CAUCHY_ENABLE_COMPRESSIBLE
+#    include "FiniteVolumeRHSKernels_Instantiations.hpp"
+#endif
+#if DNDS_CAUCHY_ENABLE_ACM
+#    include "FiniteVolumeACMFluxKernels_Instantiations.hpp"
+#endif
 #include "Cauchy/Discretization/CUDA/FiniteVolumeACMFluxKernels.hpp"
 #include <cuda_runtime.h>
 
@@ -99,6 +104,7 @@ namespace DNDS::Cauchy::CUDA
                            RHSFacePackageView packages)
     {
         DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA && geometry.Device() == context.device, "CUDA RHS geometry/stream mismatch");
+        RequireBuiltEquation(controls.mechanical, controls.dimension);
         controls.Validate();
         const auto &g = geometry.HostDescriptor();
         g.ValidateDevice(context.device);
@@ -156,6 +162,7 @@ namespace DNDS::Cauchy::CUDA
         R::CheckKernelArgumentBudget<GeometryView, ParametersView, RHSKernelControls, RHSFields, RHSFaceOutputs, RHSIndices>();
         if (!faces.RowCount())
             return;
+#if DNDS_CAUCHY_ENABLE_ACM
         if (controls.mechanical)
         {
             const auto blocks = controls.mapping == RHSFaceMapping::CTASegments
@@ -182,6 +189,8 @@ namespace DNDS::Cauchy::CUDA
             DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA ACM face launch failed");
             return;
         }
+#endif
+#if DNDS_CAUCHY_ENABLE_COMPRESSIBLE
         const unsigned segmentBlocks = controls.mapping == RHSFaceMapping::CTASegments
                                            ? Detail::ValidateSegmentedFluxFaces(context, geometry, controls, faces, packages)
                                            : 0;
@@ -195,6 +204,7 @@ namespace DNDS::Cauchy::CUDA
         const Detail::RHSFaceLaunch launch{context, geometry, parameters, controls, fields, output, faces, packages, segmentBlocks};
         Detail::LaunchFP64RHS(launch);
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA RHS face launch failed");
+#endif
     }
     void GatherFluxCells(R::ExecutionContext context, const RHSGeometryPublication &geometry, RHSInput highFaces, RHSInput lowFaces,
                          R::ArrayView<const NumericalStatus, R::AccessBoundsChecks, R::FixedRows<1>> faceStatus,

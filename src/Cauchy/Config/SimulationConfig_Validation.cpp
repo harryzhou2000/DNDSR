@@ -1,3 +1,4 @@
+#include "Cauchy/Config/BuildFeatures.hpp"
 #include "Cauchy/Config/LinearProvider.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Input/StateInput.hpp"
@@ -21,6 +22,7 @@ namespace DNDS::Cauchy
     void SimulationConfig::ValidateDomain(const DomainConfig &domain, int size)
     {
         const auto &settings = domain.settings;
+        RequireBuiltEquation(settings.equation.system == "incompressibleACM", settings.mesh.dimension);
         settings.motion.Validate(settings.mesh.dimension);
         DNDS_check_throw_info(!settings.implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
                               "strict implicit VR acceptance requires a positive reconstructionTolerance");

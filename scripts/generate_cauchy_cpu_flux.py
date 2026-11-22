@@ -3,17 +3,19 @@
 import argparse
 from pathlib import Path
 
-from generate_cauchy_rhs import publish_index, read_shapes, write_if_changed
+from generate_cauchy_rhs import add_feature_arguments, publish_index, read_shapes, write_if_changed
 
 
-def generate(manifest, directory):
+def generate(manifest, directory, families, dimensions):
     directory.mkdir(parents=True, exist_ok=True)
     header = directory / "FiniteVolumeCPUFluxCatalog.hpp"
     registry = directory / "FiniteVolumeCPUFluxCatalog.cpp"
     index = directory / "FiniteVolumeRHSKernels_Sources.cmake"
     declarations, entries, sources = [], [], [registry]
     for acm in (False, True):
-        shapes = read_shapes(manifest, acm)
+        if ("ACM" if acm else "PerfectGas") not in families:
+            continue
+        shapes = read_shapes(manifest, acm, dimensions)
         for c, m, d in shapes:
             profile = ("ACM" if acm else "PerfectGas") + ("", "SA", "TwoEquation")[c - (4 if acm else 5)]
             for form in (("Modal",) if m else ("MeanOnly", "DirectGradient")):
@@ -67,5 +69,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    add_feature_arguments(parser)
     args = parser.parse_args()
-    generate(args.manifest, args.output_dir.resolve())
+    generate(args.manifest, args.output_dir.resolve(), args.families, args.dimensions)

@@ -1,3 +1,4 @@
+#include "Cauchy/Config/BuildFeatures.hpp"
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeSourceKernels.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeSourceKernels_Launch.hpp"
@@ -58,9 +59,13 @@ namespace DNDS::Cauchy::CUDA
         template <Detail::VolumeSourceModel Model, int C>
         void LaunchCells(cudaStream_t stream, SourceRequest request, Runtime::RowSelection rows)
         {
+            constexpr bool acm = Model == Detail::VolumeSourceModel::ACM;
             if (request.dimension == 2)
-                LaunchCells<Model, C, 2>(stream, request, rows);
-            else
+            {
+                if constexpr (BuiltForEquation(acm, 2))
+                    LaunchCells<Model, C, 2>(stream, request, rows);
+            }
+            else if constexpr (BuiltForEquation(acm, 3))
                 LaunchCells<Model, C, 3>(stream, request, rows);
         }
         void CheckLaunch() { DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA volume source launch failed"); }
@@ -75,6 +80,7 @@ namespace DNDS::Cauchy::CUDA
     {
         DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA source requires a CUDA context");
         const bool mechanical = request.acm.RowCount() != 0;
+        RequireBuiltEquation(mechanical, request.dimension);
         if (mechanical)
             request.acm.ValidateDevice(context.device);
         else
