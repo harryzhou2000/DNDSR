@@ -1,3 +1,4 @@
+#include "Cauchy/Core/DomainMesh.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/Core/StepResult.hpp"
 #include "Cauchy/IO/OutputCoordinator.hpp"
@@ -34,6 +35,7 @@ static int Run(int argc, char **argv, double started)
             arguments.add_argument("--check-config")
                 .flag()
                 .help("Print resolved configuration without constructing a mesh");
+            arguments.add_argument("--partition-mesh-only").flag().help("Write each domain's partitioned H5 mesh and exit before FV setup");
             arguments.add_argument("--emit-schema")
                 .flag()
                 .help("Print the canonical raw-input JSON schema without reading a case");
@@ -109,6 +111,12 @@ static int Run(int argc, char **argv, double started)
                 return 0;
             }
 
+            if (arguments.get<bool>("--partition-mesh-only") || config.Time().partitionMeshOnly)
+            {
+                DNDS_check_throw_info(restartPath.empty(), "partition-only mesh output cannot load a solution checkpoint");
+                DNDS::Cauchy::WritePartitionedMeshes(config, mpi.comm);
+                return 0;
+            }
             DNDS::Cauchy::Simulation simulation(config, mpi.comm);
             if (!restartPath.empty())
                 simulation.ReadCheckpoint(restartPath, meansOnly ? DNDS::Cauchy::CheckpointLoadMode::MeansOnly

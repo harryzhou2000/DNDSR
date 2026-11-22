@@ -153,7 +153,8 @@ namespace DNDS::Cauchy
     };
     struct MeshSettings
     {
-        std::string file;
+        std::string file, partitionOutput;
+        bool partitionWallDistance = false, repartition = false;
         int dimension = 2;
         int elevation = 0, bisect = 0;
         real scale = 1, rotationZDegrees = 0;
@@ -161,7 +162,10 @@ namespace DNDS::Cauchy
         std::map<std::string, int> boundaryIds;
         DNDS_DECLARE_CONFIG(MeshSettings)
         {
-            DNDS_FIELD(file, "CGNS input path; an injected mesh needs no file");
+            DNDS_FIELD(file, "CGNS file or distributed .dnds.h5 mesh archive; an injected mesh needs no file");
+            DNDS_FIELD(partitionOutput, "Output archive base or .dnds.h5 path for partition-only runs; empty uses Euler mesh naming");
+            DNDS_FIELD(partitionWallDistance, "Include nodal distance vectors to no-slip walls in a partition-only archive");
+            DNDS_FIELD(repartition, "Redistribute a distributed H5 mesh onto the current domain ranks; false restores its saved partitions");
             DNDS_FIELD(dimension, "Geometric dimension, independent of flow component count");
             DNDS_FIELD(elevation, "Native geometry order elevation: 0 keeps input order, 1 elevates to O2", DNDS::Config::range(0, 1));
             DNDS_FIELD(bisect, "Native uniform bisection passes after partition and optional elevation", DNDS::Config::range(0, 4));
@@ -739,7 +743,7 @@ namespace DNDS::Cauchy
     {
         std::string method = "ssprk3";
         std::string sourceSplitting = "coupled";
-        bool steady = false;
+        bool steady = false, partitionMeshOnly = false;
         real dt = 1e-3;
         index steps = 1;
         real tEnd = 0;
@@ -764,6 +768,7 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(method, "Coordinated physical-time method");
             DNDS_FIELD(sourceSplitting, "Chemical source integration: coupled, or strang constant-volume half-steps around source-free transport; inert domains are unchanged");
+            DNDS_FIELD(partitionMeshOnly, "Write distributed H5 meshes in their input frame and exit before solver setup");
             DNDS_FIELD(steady, "Euler steady override: BDF1 infinite-dt limit, one outer solve and frozen physical time");
             DNDS_FIELD(dt, "Fixed positive physical timestep");
             DNDS_FIELD(steps, "Nonnegative accepted step target");

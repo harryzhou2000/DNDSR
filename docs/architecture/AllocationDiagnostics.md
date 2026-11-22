@@ -1,13 +1,15 @@
 # Runtime allocation diagnostics
 
 The Cauchy frontend enables tracking before mesh construction by default.
+Reports share a `memory/` subdirectory next to the other output files.
+For example, the output prefix `out/run` writes `out/memory/run-memory-R0-final.txt`.
 With the default `output.diagnostics.allocationWarmupSteps=-1`, the first
-completed nonlinear update writes `prefix-memory-R<rank>-S<step>_<stage>_<iteration>.txt`.
+completed nonlinear update writes `memory/prefix-memory-R<rank>-S<step>_<stage>_<iteration>.txt`.
 This captures lazy reconstruction and linear-solver workspaces during long steady solves.
 Explicit stepping writes the working-set report at the first accepted step.
 Zero selects output initialization and positive values select an accepted step,
-using `prefix-memory-R<rank>-S<step>.txt`. Final output also writes
-`prefix-memory-R<rank>-final.txt`. Set `output.diagnostics.allocations=false`
+using `memory/prefix-memory-R<rank>-S<step>.txt`. Final output also writes
+`memory/prefix-memory-R<rank>-final.txt`. Set `output.diagnostics.allocations=false`
 to disable these files. Reports use existing host output boundaries without a
 new collective. These are process-local totals, so colocated domains share the
 same accounting. Injected meshes allocated before enabling tracking are not

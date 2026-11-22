@@ -228,7 +228,7 @@ namespace DNDS::Geom
     /// Open an existing full native or legacy primary archive. Schema detection
     /// is explicit and collective; legacy decode preserves original IDs but
     /// creates a new namespace because the old format stores none.
-    inline ssp<UnstructuredMesh> ReadNativeMeshFromArchive(
+    inline NativeOwnedMeshData ReadNativeMeshFromArchiveOwned(
         const MPIInfo &mpi, Serializer::SerializerFactory factory, const std::string &inputPath,
         bool repartition = false, const PartitionOptions &partOpts = {}, int ghostLayers = 1)
     {
@@ -307,6 +307,15 @@ namespace DNDS::Geom
                                                 { owned.ghostSpec = ExtendNativeMeshGhostSpecForTopology(owned, true, false, ghostLayers); });
             }
         }
+        return owned;
+    }
+
+    /// Open and publish the archive, including its requested ghost closure.
+    inline ssp<UnstructuredMesh> ReadNativeMeshFromArchive(
+        const MPIInfo &mpi, Serializer::SerializerFactory factory, const std::string &inputPath,
+        bool repartition = false, const PartitionOptions &partOpts = {}, int ghostLayers = 1)
+    {
+        auto owned = ReadNativeMeshFromArchiveOwned(mpi, std::move(factory), inputPath, repartition, partOpts, ghostLayers);
         return UnstructuredMesh::FromNative(mpi, AssembleNativeMesh(mpi, std::move(owned), ghostLayers));
     }
 

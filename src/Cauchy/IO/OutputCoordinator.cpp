@@ -155,7 +155,10 @@ namespace DNDS::Cauchy
         {
             // Explicit host output boundary. Rank-local files require no new
             // agreement/gather and do not interrupt a queued numerical region.
-            const auto name = output.prefix + "-memory-R" + std::to_string(mpi.rank) + token + ".txt";
+            const std::filesystem::path prefix(output.prefix);
+            const auto name = (prefix.parent_path() / "memory" /
+                               (prefix.filename().string() + "-memory-R" + std::to_string(mpi.rank) + token + ".txt"))
+                                  .string();
             std::ofstream file(name);
             DNDS_check_throw_info(bool(file), "cannot open allocation report: " + name);
             Runtime::AllocationDiagnostics::Snapshot().Dump(file);
@@ -184,6 +187,8 @@ namespace DNDS::Cauchy
                         std::filesystem::path(output.prefix).parent_path();
                     if (!parent.empty())
                         std::filesystem::create_directories(parent);
+                    if (output.diagnostics.allocations)
+                        std::filesystem::create_directories(parent / "memory");
                     std::ofstream resolved(plan.ResolvedPath());
                     resolved << config.Root().dump(2) << '\n';
                     DNDS_check_throw_info(

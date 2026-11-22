@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/DomainMesh.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/Core/StepResult.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
@@ -210,6 +211,39 @@ TEST_CASE("Default Cauchy CGNS loader propagates the configured preflight policy
                     CHECK(value == reference[size_t(iCell * 5 + j)]);
             }
     }
+}
+TEST_CASE("Partition-only H5 preserves nodal wall distances in the input frame")
+{
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    int pid = int(getpid());
+    MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+    const auto archive = (std::filesystem::temp_directory_path() / ("cauchy-partition-" + std::to_string(pid) + ".dnds.h5")).string();
+    C::DomainSettings settings;
+    settings.mesh.file = (root / "data/mesh/Uniform_3x3_wall.cgns").string();
+    settings.mesh.boundaryIds = {{"WALL", 7}};
+    settings.mesh.scale = 2;
+    settings.mesh.bisect = 1;
+    settings.mesh.partitionWallDistance = true;
+    settings.mesh.partitionOutput = archive;
+    settings.boundaries["7"].kind = "noSlipWall";
+    settings.equation.transport = "NewtonianFourier";
+    settings.equation.viscosity = .001;
+    const auto config = C::SimulationConfig::ResolveCollective({{"defaults", C::Json(settings)}}, mpi.comm);
+    C::WritePartitionedMeshes(config, mpi.comm);
+    auto domain = config.Domains().front();
+    auto communication = std::make_shared<R::CommunicationContext>(mpi.comm);
+    C::DomainSetupTimings timing;
+    const auto original = C::EnsureDomainWallDistance(C::ReadDomainMesh(domain, mpi, communication, timing, {}), settings, {});
+    std::map<DNDS::index, double> reference;
+    for (DNDS::index i = 0; i < original->NumNodeProc(); ++i)
+        reference[original->OriginalEntityId(DNDS::Geom::EntityKind::Node, i)] = original->NodeWallDist(i).norm();
+    domain.settings.mesh.file = archive;
+    const auto restored = C::ReadDomainMesh(domain, mpi, communication, timing, {});
+    REQUIRE(restored->HasNodeWallDist());
+    for (DNDS::index i = 0; i < restored->NumNodeProc(); ++i)
+        CHECK(restored->NodeWallDist(i).norm() == doctest::Approx(reference.at(restored->OriginalEntityId(DNDS::Geom::EntityKind::Node, i))).scale(1));
+    if (mpi.rank == 0)
+        std::filesystem::remove(archive);
 }
 TEST_CASE("Cauchy collective switch reaches prepared halos without changing the P3 RHS")
 {

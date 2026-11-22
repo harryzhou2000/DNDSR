@@ -72,7 +72,7 @@ near a moving interface. The moving-disk SA/SST qualification covers wall-free t
 
 ## Mesh input and HDF archives
 
-The current default C++ `Simulation` loader reads **one CGNS file per domain**
+The C++ `Simulation` loader reads one CGNS or native distributed H5 mesh per domain
 from `mesh.file`, distributes owned data and prepares native topology/ghosts.
 CGNS boundary names require explicit `mesh.boundaryIds`; periodic translations
 use `mesh.periodicLengths`, expressed in the input file's coordinate system.
@@ -87,14 +87,28 @@ An injected C++ `Simulation::MeshFactory`, or Python's preloaded mesh list, may
 supply prepared meshes without a file path. The rotating-vortex evidence driver
 uses this path to generate its deterministic Delaunay outer/disk meshes.
 
-Geom already provides native HDF mesh archive readers:
+Geom provides native HDF mesh archive readers:
 `ReadNativeMeshArchiveOwned` restores owned arrays before preparation, while
 `ReadNativeMeshArchive` also rebuilds ghost closure. Matching-rank or explicit
 contiguous repartition reads are supported; a later mesh transition can apply
 the desired computing partition. These readers can feed the mesh factory.
-**Cauchy's JSON `mesh.file` loader currently selects CGNS only**; renaming the
-input to `.h5` does not select a native HDF reader. A configurable HDF loader is
-a frontend extension, not an implemented option.
+Set `time.partitionMeshOnly=true` or pass `--partition-mesh-only` to
+`cauchy.exe` to partition a CGNS mesh on each domain's ranks and exit before
+FV setup. The default filename follows Euler, for example
+`cylinder.cgns_part_2.dnds.h5` on two ranks. Set `mesh.partitionOutput` to
+choose another archive path. Domains writing the same source with the same
+rank count need distinct destinations.
+
+Set `mesh.partitionWallDistance=true` to store the three-component nodal
+distance vectors to the configured no-slip walls. The archive contains the
+input-frame geometry, including requested elevation and bisection. To solve
+from it, set `mesh.file` to the resulting `.dnds.h5`, disable partition-only
+mode. Elevation and bisection apply on CGNS import only. The solver applies the usual
+scale and rotation once to coordinates and archived vectors. RANS reuses
+saved wall distance and computes it when absent. Rebuild the archive if the
+set of no-slip zones changes. A matching rank count restores ownership by
+default. Set `mesh.repartition=true` for a new computing partition, including
+when the domain communicator size changes.
 
 ## Solution restart shape
 

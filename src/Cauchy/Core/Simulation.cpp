@@ -2,88 +2,13 @@
 #include "Cauchy/Core/ConnectedPressureGauge.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "Cauchy/IO/ProgressOutput.hpp"
-#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "Cauchy/Core/DomainMesh.hpp"
 #include "DNDS/Core/OMP.hpp"
 
 #include <fmt/format.h>
 
 namespace DNDS::Cauchy
 {
-    namespace
-    {
-        ssp<Geom::UnstructuredMesh> ReadMesh(
-            const DomainConfig &domain, const MPIInfo &mpi,
-            const std::shared_ptr<Runtime::CommunicationContext> &domainCommunication, DomainSetupTimings &timings,
-            Diagnostics::SetupProgress progress)
-        {
-            // A preceding colocated domain may already have entered the
-            // per-rank context. Restore the reader-owned team for this domain's
-            // import, serial partitioning and distribution.
-            OMP::set_serial_ingress_OMP();
-            DNDS_check_throw_info(!domain.settings.mesh.file.empty(),
-                                  "Cauchy mesh path is empty");
-            Geom::PartitionOptions partition;
-            const auto mapper = [ids = domain.settings.mesh.boundaryIds](
-                                    const std::string &name)
-            {
-                const auto found = ids.find(name);
-                DNDS_check_throw_info(
-                    found != ids.end(),
-                    "CGNS boundary name is absent from mesh.boundaryIds: " + name);
-                return found->second;
-            };
-            std::optional<Geom::NativePeriodicImportOptions> periodic;
-            if (domain.settings.mesh.periodicLengths !=
-                std::array<real, 3>{0, 0, 0})
-            {
-                periodic.emplace();
-                periodic->progress = progress;
-                for (int d = 0; d < 3; ++d)
-                {
-                    periodic->frames.translation[d + 1].map().setZero();
-                    periodic->frames.translation[d + 1].map()[d] =
-                        domain.settings.mesh.periodicLengths[d];
-                }
-            }
-            auto communication = domainCommunication->WithPreflight(
-                domain.settings.implicit.collectiveChecks);
-            const real ingressStarted = MPI_Wtime();
-            auto owned = Geom::ReadAndDeriveNativeMeshFromCGNSOwned(
-                mpi, domain.settings.mesh.dimension, domain.settings.mesh.file,
-                partition, mapper, periodic, domain.settings.mesh.elevation,
-                domain.settings.mesh.bisect, 0, Geom::MeshAuditOptions{},
-                communication, progress);
-            timings.meshIngress = MPI_Wtime() - ingressStarted;
-            // Native topology, reorder, CFV setup and solver work now belong to
-            // distributed ranks and must not inherit the node-wide reader team.
-            OMP::set_full_parallel_OMP();
-            const real prepareStarted = MPI_Wtime();
-            Geom::PrepareMeshOptions prepare;
-            prepare.buildSerialOut = false;
-            prepare.reorderCells = 1;
-            prepare.coreFirst = domain.settings.execution.coreFirstCellOrdering.value_or(domain.settings.execution.overlap);
-            prepare.reorderParts = OMP::DistributedThreads();
-            prepare.progress = progress;
-            auto mesh = Geom::UnstructuredMesh::FromNative(
-                mpi, Geom::PrepareNativeMeshForSolverOwned(
-                         std::move(owned), mpi, prepare));
-            const auto &settings = domain.settings.mesh;
-            if (settings.scale != 1 || settings.rotationZDegrees != 0)
-            {
-                auto setupStage = progress.Stage("mesh/geometry");
-                // Import/matching uses the file frame. The ordinary Geom
-                // publication transforms coordinates AND periodic frames
-                // together, exactly once before metrics/initial-state sampling.
-                const real angle = settings.rotationZDegrees * std::acos(real(-1)) / 180;
-                const real c = std::cos(angle), s = std::sin(angle);
-                Eigen::Matrix3d rotation;
-                rotation << c, -s, 0, s, c, 0, 0, 0, 1;
-                mesh->ApplyGeometryTransform(rotation, settings.scale);
-            }
-            timings.meshPreparation = MPI_Wtime() - prepareStarted;
-            return mesh;
-        }
-    }
 
     Simulation::Simulation(SimulationConfig config, MPI_Comm comm,
                            const MeshFactory &factory)
@@ -172,8 +97,8 @@ namespace DNDS::Cauchy
             if (factory)
                 OMP::set_full_parallel_OMP();
             auto mesh = factory ? factory(iDomain, domain, mpi)
-                                : ReadMesh(domain, mpi,
-                                           _placement.Context(iDomain), _setupTimings[iDomain], progress);
+                                : ReadDomainMesh(domain, mpi,
+                                                 _placement.Context(iDomain), _setupTimings[iDomain], progress);
             if (factory)
                 _setupTimings[iDomain].meshIngress = MPI_Wtime() - started;
             const real domainStarted = MPI_Wtime();

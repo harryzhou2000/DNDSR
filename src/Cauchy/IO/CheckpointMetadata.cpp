@@ -131,7 +131,12 @@ namespace DNDS::Cauchy::CheckpointMetadata
                         condition.erase("massFractions");
                 }
             if (settings.contains("mesh") && settings["mesh"].is_object())
-                settings["mesh"].erase("file");
+            {
+                // Archive paths, ownership and optional persisted wall vectors
+                // describe mesh I/O. The mesh envelope checks physical identity.
+                for (const char *key : {"file", "partitionOutput", "partitionWallDistance", "repartition"})
+                    settings["mesh"].erase(key);
+            }
             if (mode == CheckpointLoadMode::MeansOnly)
                 settings.erase("numerics"); // The new solve initializes every numerical workspace from the means.
             if (settings.contains("numerics") && settings["numerics"].is_object())

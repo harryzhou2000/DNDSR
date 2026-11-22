@@ -1,4 +1,5 @@
 set(CPPS
+    Core/DomainMesh.cpp
     Core/DomainPlacement.cpp
     Core/DomainExecutionContext.cpp
     Core/DomainComponents.cpp

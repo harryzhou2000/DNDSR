@@ -1,4 +1,5 @@
 #include "Cauchy/Core/DomainComponents.hpp"
+#include "Cauchy/Core/DomainMesh.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 
 namespace DNDS::Cauchy
@@ -15,31 +16,6 @@ namespace DNDS::Cauchy
                 settings.equation.source == "chemical")
                 result.equation.source = "none";
             return result;
-        }
-        ssp<Geom::UnstructuredMesh> PrepareWallField(
-            ssp<Geom::UnstructuredMesh> mesh, const EquationSystem &equation,
-            const DomainSettings &settings, Diagnostics::SetupProgress progress)
-        {
-            if (!equation.HasRANS())
-                return mesh;
-            auto setupStage = progress.Stage("mesh/wall-distance");
-            const auto mpi = mesh->getMPI();
-            int available = mesh->HasNodeWallDist();
-            available = MPI::AllreduceValue<MPI::Reduction::Sum>(available,
-                                                                 mpi.comm);
-            DNDS_check_throw_info(
-                available == 0 || available == mpi.size,
-                "RANS nodal wall-field presence differs between ranks");
-            if (!available)
-                mesh->BuildNodeWallDist(
-                    [&](auto zone)
-                    {
-                        const auto found = settings.boundaries.find(
-                            std::to_string(zone));
-                        return found != settings.boundaries.end() &&
-                               found->second.kind == "noSlipWall";
-                    });
-            return mesh;
         }
         R::RowLayout FlowLayout(const DomainSettings &settings,
                                 index width = 5)
@@ -128,8 +104,8 @@ namespace DNDS::Cauchy
                                  EquationSystem domainEquation,
                                  Diagnostics::SetupProgress progress)
         : name(std::move(domainName)), equation(std::move(domainEquation)),
-          finiteVolume(PrepareWallField(std::move(mesh), equation, settings, progress),
-                       SpatialSettings(settings, time), equation, std::move(progress))
+          finiteVolume(equation.HasRANS() ? EnsureDomainWallDistance(mesh, settings, progress) : mesh,
+                       SpatialSettings(settings, time), equation, progress)
     {
     }
 
