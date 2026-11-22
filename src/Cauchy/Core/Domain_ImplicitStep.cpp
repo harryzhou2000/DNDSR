@@ -28,6 +28,9 @@ namespace DNDS::Cauchy
                     return MeasureStateBounds(true);
                 return std::vector<real>{};
             };
+        if (_positivity && _reportReconstructionPositivity)
+            control.measureReconstructionPositivity = [this]
+            { return _problem.finiteVolume.PositivityReconstructionStats(*_execution.workspace); };
         if (_quiescentObserver)
             control.quiescent = [observer = _quiescentObserver](const NonlinearSolveState &state)
             { observer(state); };

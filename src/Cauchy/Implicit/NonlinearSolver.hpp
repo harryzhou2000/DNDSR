@@ -57,6 +57,8 @@ namespace DNDS::Cauchy
         /// State index of the measured residual, used by the history writer.
         index observedIteration = -1;
         std::vector<real> stateBounds;
+        /// Global number of cells limited by reconstruction PP and minimum beta.
+        std::pair<index, real> reconstructionPositivity{0, 1};
     };
     /// Optional CPU profile. Values are local wall seconds, not
     /// reduced across ranks. Total encloses the disjoint named sections;
@@ -111,6 +113,8 @@ namespace DNDS::Cauchy
         /// Continue from the live/restored `state` rather than initializing a
         /// new residual reference and iteration cursor.
         bool resume = false;
+        /// Optional diagnostic of the reconstruction used by the observed residual.
+        std::function<std::pair<index, real>()> measureReconstructionPositivity;
     };
     template <class Norms>
     struct BasicNonlinearIterationReport

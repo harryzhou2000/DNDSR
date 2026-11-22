@@ -331,9 +331,12 @@ namespace DNDS::Cauchy
                                           _domain.empty() ? "" : "D[" + _domain + "] ",
                                           location.step, location.stage, location.iteration);
         const auto physical = FormatTimeProgress(location, progress.pseudoCFL);
-        const auto positivity = fmt::format("PP [rhs({},{:.3f}),inc({},{:.3f})]",
+        const auto [reconstructionLimited, minimumBeta] = progress.reconstructionPositivity;
+        const auto positivity = fmt::format("PP [rec({},{:.3f}),rhs({},{:.3f}),inc({},{:.3f})]",
+                                            reconstructionLimited, minimumBeta,
                                             progress.rhsLimited, progress.minimumRHSAlpha,
                                             progress.incrementLimited, progress.minimumIncrementAlpha);
+        const bool limited = reconstructionLimited || progress.rhsLimited || progress.incrementLimited;
         std::string vr = fmt::format("VR [{},", progress.reconstructionIterations);
         if (progress.reconstructionUpdateMeasured)
             vr += fmt::format("{:.3e}]", progress.reconstructionRelativeUpdate);
@@ -353,8 +356,8 @@ namespace DNDS::Cauchy
                                         style.red, residual, style.reset,
                                         style.orange, convergence, style.reset,
                                         style.green, physical, style.reset,
-                                        (progress.rhsLimited || progress.incrementLimited) ? style.yellow : "", positivity,
-                                        (progress.rhsLimited || progress.incrementLimited) ? style.reset : "",
+                                        limited ? style.yellow : "", positivity,
+                                        limited ? style.reset : "",
                                         vr, progress.linearIterations,
                                         style.cyan, stageAverage, style.reset,
                                         status.empty() ? "" : "   ",

@@ -223,6 +223,7 @@ TEST_CASE("Steady ACM SST progress groups console residuals and displays an infi
         iteration.iteration = 1;
         iteration.residual = {1, 2, 3, 4, 5, 6};
         iteration.pseudoCFL = 7;
+        iteration.reconstructionPositivity = {3, .125};
         output.CaptureIteration(iteration, 0);
         output.FlushIterations();
         C::AcceptedStepProgress step;
@@ -239,6 +240,8 @@ TEST_CASE("Steady ACM SST progress groups console residuals and displays an infi
         REQUIRE(std::getline(events, line));
         CHECK(line.find("res flow4 [1.000e+00 2.000e+00 3.000e+00 4.000e+00] kOmega [5.000e+00 6.000e+00]") != std::string::npos);
         CHECK(line.find("t,dt,CFL [0.000e+00,inf,7.000e+00]") != std::string::npos);
+        if (i == 0)
+            CHECK(line.find("PP [rec(3,0.125),rhs(0,1.000),inc(0,1.000)]") != std::string::npos);
     }
     std::ifstream history(bare + ".csv");
     REQUIRE(std::getline(history, line));

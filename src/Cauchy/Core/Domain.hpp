@@ -38,6 +38,7 @@ namespace DNDS::Cauchy
         std::vector<NonlinearIterationReport> _lastImplicit;
         std::function<void(const NonlinearProgress &)> _progressObserver;
         index _stateBoundsHistoryInterval = 0;
+        bool _reportReconstructionPositivity = false;
         std::function<void(const NonlinearSolveState &)> _quiescentObserver;
         index _lastCoupledIterations = 0;
         real _lastCoupledTargetRatio = 0;
@@ -229,10 +230,12 @@ namespace DNDS::Cauchy
         const std::vector<NonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
         /// Synchronous sink-neutral nonlinear progress callback. The callback
         /// may buffer/report locally but must not enter unrelated collectives.
-        void SetProgressObserver(std::function<void(const NonlinearProgress &)> observer, index stateBoundsHistoryInterval = 0)
+        void SetProgressObserver(std::function<void(const NonlinearProgress &)> observer, index stateBoundsHistoryInterval = 0,
+                                 bool reportReconstructionPositivity = false)
         {
             _progressObserver = std::move(observer);
             _stateBoundsHistoryInterval = stateBoundsHistoryInterval;
+            _reportReconstructionPositivity = reportReconstructionPositivity;
         }
         void SetQuiescentObserver(std::function<void(const NonlinearSolveState &)> observer)
         {

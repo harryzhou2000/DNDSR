@@ -29,6 +29,7 @@ namespace DNDS::Cauchy
         index limit = 0, nextIteration = 0, currentIteration = -1;
         int nextCoupledStage = 0;
         bool localConverged = false, localTerminal = false, held = false;
+        std::pair<index, real> reconstructionPositivity{0, 1};
         Phase phase = Phase::Idle;
         std::optional<NonlinearProgress> progress;
         std::chrono::steady_clock::time_point iterationStarted;
@@ -220,6 +221,8 @@ namespace DNDS::Cauchy
             std::tie(data.report.reconstructionIterations,
                      data.report.reconstructionRelativeUpdate) =
                 data.problem.reconstruction();
+            if (data.problem.control.measureReconstructionPositivity)
+                data.reconstructionPositivity = data.problem.control.measureReconstructionPositivity();
             data.report.reconstructionUpdateMeasured =
                 std::isfinite(data.report.reconstructionRelativeUpdate);
             if (!data.report.reconstructionUpdateMeasured)
@@ -294,7 +297,8 @@ namespace DNDS::Cauchy
             std::chrono::duration<real>(std::chrono::steady_clock::now() - data.iterationStarted).count(),
             data.convergence.RelativeRatio(),
             data.currentIteration,
-            data.report.stateBounds};
+            data.report.stateBounds,
+            data.reconstructionPositivity};
         if (data.problem.control.progress && reportedIteration > 0)
             data.problem.control.progress(progress);
         if (coordinatedTerminal)
