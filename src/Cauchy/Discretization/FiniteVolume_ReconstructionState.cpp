@@ -103,7 +103,7 @@ namespace DNDS::Cauchy
                                                        !(owner->settings.numerics.reconstruction == "gradient" &&
                                                          !owner->settings.numerics.positivity)) ||
                                                       owner->settings.numerics.positivity ||
-                                                      (owner->equation.Viscous() && owner->settings.numerics.UsesRANSGradientBarth() &&
+                                                      (owner->equation.Viscous() && owner->settings.numerics.ransP1Overlay &&
                                                        FiniteVolumeDetail::UsesUnlimitedViscousReconstruction(owner->settings))))
     {
         if (owner->reconstruction)
@@ -132,7 +132,7 @@ namespace DNDS::Cauchy
         }
         if (owner->limitedVRGeometry)
         {
-            limitedVRHistory.emplace(R::RowLayout::Dense(owner->metrics.NumCell(), 2), owner->metrics.Device());
+            limitedVRHistory.emplace(R::RowLayout::Dense(owner->metrics.NumCell(), owner->settings.numerics.limitedVR.HistoryWidth()), owner->metrics.Device());
             limitedVRHistory->SetName("Cauchy/reconstruction/limitedVRHistory", DNDS_ALLOCATION_SITE());
             // Construction-time initialization is synchronous and follows
             // the known allocation backend; history must start at zero on

@@ -22,7 +22,7 @@ namespace DNDS::CFV
         void ValidateRegion(ReconstructionRegion region) const;
         void ValidateSeeds(const FVField &, const FVField &, const Runtime::Array<real> &,
                            const FVField &, ReconstructionRegion) const;
-        void ValidateMaximum(const FVField &, const FVField &, std::array<real, 3>, ReconstructionRegion) const;
+        void ValidateMaximum(const FVField &, const FVField &, std::array<real, 4>, ReconstructionRegion) const;
 
     public:
         static LimitedVRPlan Prepare(FiniteVolumePlan metrics);
@@ -51,12 +51,13 @@ namespace DNDS::CFV
         /// local unsaturated value. Input halos must be current for dependent/
         /// All; Core reads owned only. Caller finishes both phases before copy
         /// or the next exchange. Distinct output; no allocation in cell loops.
-        void NeighborMaximum(const FVField &input, FVField &output, std::array<bool, 3> active,
-                             bool excludeBoundary, bool saturatedOnly = false, std::array<real, 3> caps = {1, 1, 1},
+        void NeighborMaximum(const FVField &input, FVField &output, std::array<bool, 4> active,
+                             bool excludeBoundary, bool saturatedOnly = false, std::array<real, 4> caps = {1, 1, 1, 1},
                              ReconstructionRegion region = ReconstructionRegion::All) const;
         void NeighborMaximum(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
-                             const FVField &input, FVField &output, std::array<bool, 3> active,
-                             bool excludeBoundary, bool saturatedOnly = false, std::array<real, 3> caps = {1, 1, 1},
-                             ReconstructionRegion region = ReconstructionRegion::All) const;
+                             const FVField &input, FVField &output, std::array<bool, 4> active,
+                             bool excludeBoundary, bool saturatedOnly = false, std::array<real, 4> caps = {1, 1, 1, 1},
+                             ReconstructionRegion region = ReconstructionRegion::All,
+                             const Runtime::Array<real> *base = nullptr, unsigned mergeMask = 0) const;
     };
 }

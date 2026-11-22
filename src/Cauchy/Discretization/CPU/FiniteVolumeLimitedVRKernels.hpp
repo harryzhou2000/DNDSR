@@ -6,16 +6,13 @@
 #include "CFV/Plans/LimitedVRPlan.hpp"
 namespace DNDS::Cauchy::CPU
 {
-    NumericalStatus LimitLVRTarget(FiniteVolumeStencilView stencil, RHSScalarView means, RHSOutputView coefficients,
-                                   int dimension, const ThermalBounds &bounds, int betaPower, real betaCutoff) noexcept;
-    void FillLVRScalars(RHSScalarView input, RHSOutputView output, const PerfectGas &gas);
-    /// Accepted affine target evaluated on site at both parent images of the
-    /// shared face center. Output has one [shock,contact,density support] row
-    /// per active face; physical boundary rows are zero. No sampled field.
+    void PrepareLVRScalarsAndTarget(CFV::Detail::GradientCellGeometry, RHSScalarView means,
+                                    RHSScalarView gradients, RHSOutputView scalars, RHSOutputView target,
+                                    const PerfectGas &, int dimension, index modes, index flowFirst);
     NumericalStatus BuildLVRFaceSensors(FiniteVolumeStencilView stencil, RHSFieldView means,
-                                        RHSFieldView targetCoefficients, int dimension,
-                                        const PerfectGas &, const ThermalBounds &, const CFV::LimitedVRSettings &,
-                                        RHSOutputView sensors) noexcept;
+                                        RHSFieldView gradients, RHSFieldView raw, int dimension, index flowFirst,
+                                        const PerfectGas &, const ThermalBounds &, const CFV::LimitedVRKernelParameters &,
+                                        RHSOutputView sensors, Runtime::RowSelection) noexcept;
     /// Deterministic cell gather through canonical cell-face incidences.
     /// Repeated self-periodic incidences retain their semantic multiplicity.
     void GatherLVRBranches(FiniteVolumeStencilView stencil, RHSScalarView sensors, RHSOutputView branches,
@@ -23,6 +20,6 @@ namespace DNDS::Cauchy::CPU
     void MergeLVRBase(Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<2>> base,
                       RHSOutputView seeds, int column);
     void PublishLVRPenalty(RHSScalarView branches,
-                           Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::FixedRows<2>> history,
-                           Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> penalty);
+                           Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> history,
+                           Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> penalty, CFV::LimitedVRTemporalUpdate update = {});
 }

@@ -38,7 +38,9 @@ namespace DNDS::Cauchy
             if (patch.is_object() && target.is_object())
             {
                 const std::string limitedVRPath = "/numerics/limitedVR";
-                if (path.size() >= limitedVRPath.size() && path.compare(path.size() - limitedVRPath.size(), limitedVRPath.size(), limitedVRPath) == 0 && patch.contains("variant"))
+                const bool limitedVR = path.size() >= limitedVRPath.size() &&
+                                       path.compare(path.size() - limitedVRPath.size(), limitedVRPath.size(), limitedVRPath) == 0;
+                if (limitedVR && patch.contains("variant"))
                 {
                     // Like an input preset, a variant selects explicit defaults
                     // for this layer; fields beside it then override them and a
@@ -53,6 +55,13 @@ namespace DNDS::Cauchy
                     if (!target.contains(key))
                         target[key] = child.is_object() ? Json::object() : Json();
                     Merge(target[key], child, path + "/" + Escape(key), source, origins);
+                }
+                if (limitedVR)
+                {
+                    if (patch.contains("retention") && !patch.contains("contactExtremumRetention"))
+                        Merge(target["contactExtremumRetention"], patch["retention"], path + "/contactExtremumRetention", source, origins);
+                    if (patch.contains("extremumThreshold") && !patch.contains("contactExtremumThreshold"))
+                        Merge(target["contactExtremumThreshold"], patch["extremumThreshold"], path + "/contactExtremumThreshold", source, origins);
                 }
             }
             else
@@ -182,6 +191,27 @@ namespace DNDS::Cauchy
             auto &resolved = data->root["domains"][iDomain];
             Allowed(resolved, {"name", "ranks", "settings"}, "/domains");
             Config::ValidatePartialJsonSchema(resolved.at("settings"), schema, "/domains/settings");
+            auto &numerics = resolved["settings"]["numerics"];
+            const auto p1Path = "/domains/" + std::to_string(iDomain) + "/settings/numerics/p1Limiter";
+            const auto limiterPath = "/domains/" + std::to_string(iDomain) + "/settings/numerics/limiter";
+            const auto inheritP1 = [&](const Json &limiter)
+            {
+                auto &origin = data->provenance.at(p1Path);
+                DNDS_check_throw_info(origin == "schema default" || numerics["p1Limiter"] == limiter,
+                                      "conflicting P1 limiter settings for domain " + resolved["name"].get<std::string>());
+                numerics["p1Limiter"] = limiter;
+                origin = "legacy P1 limiter";
+            };
+            // A resolved P1 configuration can contain the neutral high-order
+            // selector alongside its independent, explicit P1 choice.
+            if (numerics["reconstruction"] == "gradient" && data->provenance.at(limiterPath) != "schema default" &&
+                (numerics["limiter"] != "none" || data->provenance.at(p1Path) == "schema default"))
+                inheritP1(numerics["limiter"]);
+            if (numerics["limiter"] == "Barth" && numerics["reconstruction"] == "variational" && numerics["ransP1Overlay"] == true)
+                inheritP1(numerics["limiter"]);
+            const auto &referenceLimiter = numerics["limitedVR"]["o2ReferenceLimiter"];
+            if (numerics["limiter"] == "LVR" && referenceLimiter != "")
+                inheritP1(referenceLimiter);
             // Coarse levels are dynamic map entries, so root defaults cannot
             // supply their omitted count/solver fields. Expand after CLI patches
             // as well; the solver patch itself stays partial for inheritance.

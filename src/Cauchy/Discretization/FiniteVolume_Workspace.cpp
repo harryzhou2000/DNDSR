@@ -56,7 +56,7 @@ namespace DNDS::Cauchy
             const auto &numerics = data.settings.numerics;
             const bool meanSource = data.equation.HasRANS() &&
                                     (meanOnly || numerics.reconstruction == "constant");
-            if (meanSource || (!meanOnly && (numerics.reconstruction == "gradient" || numerics.UsesRANSGradientBarth() || data.limitedVRGeometry)))
+            if (meanSource || (!meanOnly && (numerics.reconstruction == "gradient" || numerics.ransP1Overlay || data.limitedVRGeometry)))
             {
                 field.gradient.emplace(data.metrics.BuildField(
                     FiniteVolumeDetail::FieldLayout(physical.Owned().Layout(), data.metrics.NumCell(),
@@ -68,7 +68,8 @@ namespace DNDS::Cauchy
             }
             if (field.gradient)
                 field.gradientExecution.emplace(data.gradient.BuildWorkspace(index(physical.Width()), vectors,
-                                                                             !meanOnly && data.settings.numerics.limiter == "WBAP"));
+                                                                             !meanOnly && numerics.P1Limiter() == "WBAP" &&
+                                                                                 (numerics.reconstruction == "gradient" || numerics.ransP1Overlay || data.limitedVRGeometry)));
             result.push_back(std::move(field));
         }
         return result;
@@ -158,19 +159,16 @@ namespace DNDS::Cauchy
         }
         if (!meanOnly && owner->limitedVRGeometry)
         {
-            DNDS_check_throw_info(!owner->equation.HasMixture() && !owner->equation.HasRANS() &&
-                                      state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
-                                  "LVR requires one coupled perfect-gas flow5 field");
-            DNDS_check_throw_info(fields.front().reconstruction,
-                                  "LVR requires a variational reconstruction workspace");
-            limitedVR = std::make_unique<LimitedVRWorkspace>(*owner, *fields.front().reconstruction);
+            const auto flow = state.LocateBlock("flow");
+            DNDS_check_throw_info(!owner->equation.HasMixture() && flow.componentNumber == 5,
+                                  "LVR requires a five-component perfect-gas flow block");
+            limitedVR = std::make_unique<LimitedVRWorkspace>(*owner, state);
         }
-        nativeDirectGradient = !meanOnly && owner->settings.numerics.reconstruction == "gradient" &&
-                               (owner->settings.numerics.limiter == "none" ||
-                                owner->settings.numerics.limiter == "Barth" ||
-                                owner->settings.numerics.limiter == "WBAP");
-        const bool ransGradientBarth = !meanOnly && owner->settings.numerics.UsesRANSGradientBarth();
-        if (nativeDirectGradient || ransGradientBarth)
+        const auto &numerics = owner->settings.numerics;
+        const auto &p1Limiter = numerics.P1Limiter();
+        nativeDirectGradient = !meanOnly && numerics.reconstruction == "gradient";
+        prepareP1 = nativeDirectGradient || bool(limitedVR) || (!meanOnly && numerics.ransP1Overlay);
+        if (prepareP1)
         {
             // These are CPU row-local temporaries. CUDA leaves use local
             // fixed-width values and per-cell result/status arrays instead.
@@ -178,33 +176,41 @@ namespace DNDS::Cauchy
             {
                 cpuGradientWorkers = OMP::DistributedThreads();
                 directLimiterScratch = R::Array<real>(R::RowLayout::Dense(6 * cpuGradientWorkers, componentNumber));
-                if (nativeDirectGradient && owner->settings.GradientPositivity())
+                if (owner->settings.PreparedP1Positivity())
                     directPPSamples = R::Array<real>(R::RowLayout::Dense(owner->maximumGradientPoints * cpuGradientWorkers, componentNumber));
             }
         }
-        if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || limitedVR) && owner->settings.numerics.characteristicLimiter)
+        const bool modalWBAP = numerics.reconstruction == "variational" && numerics.limiter == "WBAP";
+        if (!meanOnly && (modalWBAP || (prepareP1 && p1Limiter == "WBAP")) && numerics.characteristicLimiter)
         {
             const auto flow = state.LocateBlock("flow");
             DNDS_check_throw_info(flow.componentNumber == 5, "characteristic limiter requires one five-component flow block");
             flowCharacteristicField = flow.physicalField;
-            if (nativeDirectGradient)
+            if (prepareP1 && p1Limiter == "WBAP")
                 gradientFlowCharacteristic.emplace(owner->gradient.BuildQueuedFaceTransform(flow.firstComponent, 5));
-            else if (owner->reconstruction)
+            if (modalWBAP)
+            {
                 flowCharacteristic.emplace(owner->reconstruction->BuildQueuedFaceTransform(flow.firstComponent, 5));
+                if (gradientFlowCharacteristic)
+                {
+                    gradientFlowCharacteristic->forward = flowCharacteristic->forward;
+                    gradientFlowCharacteristic->inverse = flowCharacteristic->inverse;
+                }
+            }
         }
-        if (owner->settings.numerics.reconstruction != "variational" || (meanOnly && owner->equation.HasRANS()) || ransGradientBarth)
+        if (numerics.reconstruction != "variational" || (meanOnly && owner->equation.HasRANS()) || prepareP1)
         {
+            const index lvrFlowField = limitedVR ? state.LocateBlock("flow").physicalField : -1;
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
                 if (owner->settings.numerics.reconstruction == "constant" &&
                     !fields[iField].gradient)
                     continue;
-                if (nativeDirectGradient)
+                if (prepareP1)
                 {
                     DNDS_check_throw_info(fields[iField].gradient,
                                           "explicit P1 has no prepared physical-gradient publication");
-                    if (owner->settings.numerics.limiter == "none" &&
-                        !owner->settings.GradientPositivity())
+                    if (p1Limiter == "none" && !owner->settings.PreparedP1Positivity())
                         directGradients.push_back(*fields[iField].gradient);
                     else
                     {
@@ -213,13 +219,14 @@ namespace DNDS::Cauchy
                                                             owner->metrics.NumCell(),
                                                             state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
                             owner->metrics.Device()));
-                        if (owner->settings.numerics.limiter == "WBAP")
+                        if (p1Limiter == "WBAP" || (iField == lvrFlowField && numerics.limitedVR.weakAlphaMax > 0))
                             directGradientInputHalo.push_back(owner->BindHalo(
                                 *fields[iField].gradient, "cauchy-direct-gradient-input"));
                     }
-                    directGradientHalo.push_back(owner->BindHalo(
-                        directGradients.back(), "cauchy-direct-gradient"));
-                    if (owner->equation.Viscous() &&
+                    if (nativeDirectGradient || iField == lvrFlowField)
+                        directGradientHalo.push_back(owner->BindHalo(
+                            directGradients.back(), "cauchy-direct-gradient"));
+                    if (nativeDirectGradient && owner->equation.Viscous() &&
                         FiniteVolumeDetail::UsesUnlimitedViscousReconstruction(owner->settings))
                     {
                         directViscousGradients.push_back(*fields[iField].gradient);
@@ -233,25 +240,12 @@ namespace DNDS::Cauchy
                     // physical gradient. No limiter writes a second version,
                     // so retain the field instead of allocating/copying it.
                     directGradients.push_back(*fields[iField].gradient);
-                else if (ransGradientBarth)
-                {
-                    // All VR sweeps have committed before Barth runs. Borrow the
-                    // sweep temporary until SetLinearCoefficients consumes it on
-                    // the same stream. The subspans retain its allocation leases.
-                    const auto &temporary = fields[iField].reconstruction->temporary;
-                    const auto gradientRows = [&](const auto &rows)
-                    {
-                        const auto layout = R::RowLayout::Dense(rows.RowCount(), state.PhysicalField(iField).Width() * owner->metrics.Dimension());
-                        return R::Array<real>::FromStorage(layout, rows.Storage().Subspan(0, CheckedSize::Multiply(layout.Elements(), sizeof(real))));
-                    };
-                    directGradients.emplace_back(temporary.Space(), gradientRows(temporary.Owned()), gradientRows(temporary.Ghost()));
-                }
                 else
                     directGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
                                                         state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
                         owner->metrics.Device()));
-                if (!meanOnly && !nativeDirectGradient && !ransGradientBarth && owner->reconstruction &&
+                if (!meanOnly && !prepareP1 && owner->reconstruction &&
                     owner->equation.Viscous() && FiniteVolumeDetail::UsesUnlimitedViscousReconstruction(owner->settings))
                     directViscousGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),

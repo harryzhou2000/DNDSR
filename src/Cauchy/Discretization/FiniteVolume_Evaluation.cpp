@@ -430,28 +430,21 @@ namespace DNDS::Cauchy
                 work.EndQueuedPhase(engine, stream, timing);
                 return;
             }
-            if (work.limitedVR)
-            {
-                auto &field = work.fields.front();
-                DNDS_check_throw_info(_data->reconstruction && field.reconstruction &&
-                                          field.reconstructionBoundary,
-                                      "limited VR schedule lacks polynomial workspace");
-                _data->reconstruction->SubmitReconstructionIterLimitedTo(
-                    engine, stream, state.CoupledField(), reconstruction.WarmValues().CoupledField(),
-                    *field.reconstruction, *field.reconstructionBoundary, work.limitedVR->targetCoefficients,
-                    work.limitedVR->alpha, region, _data->reconstructionKernel);
-                work.EndQueuedPhase(engine, stream, timing);
-                return;
-            }
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
                 auto &field = work.fields[iField];
                 DNDS_check_throw_info(_data->reconstruction && field.reconstruction &&
                                           field.reconstructionBoundary,
                                       "VR schedule lacks polynomial workspace");
-                _data->reconstruction->SubmitReconstructionIterTo(
-                    engine, stream, state.PhysicalField(iField), reconstruction.WarmValues().PhysicalField(iField),
-                    *field.reconstruction, *field.reconstructionBoundary, region, _data->reconstructionKernel);
+                if (work.limitedVR)
+                    _data->reconstruction->SubmitReconstructionIterLimitedTo(
+                        engine, stream, state.PhysicalField(iField), reconstruction.WarmValues().PhysicalField(iField),
+                        *field.reconstruction, *field.reconstructionBoundary, work.limitedVR->targetCoefficients[iField],
+                        work.limitedVR->alpha, region, _data->reconstructionKernel);
+                else
+                    _data->reconstruction->SubmitReconstructionIterTo(
+                        engine, stream, state.PhysicalField(iField), reconstruction.WarmValues().PhysicalField(iField),
+                        *field.reconstruction, *field.reconstructionBoundary, region, _data->reconstructionKernel);
             }
             work.EndQueuedPhase(engine, stream, timing);
         };
@@ -576,15 +569,52 @@ namespace DNDS::Cauchy
         std::optional<R::TransferOperation> primitiveGradientOperation;
         if (work.primitiveGradientHalo)
             primitiveGradientOperation.emplace(schedule.BeginAfterCompute(*work.primitiveGradientHalo));
+        const bool refreshWeak = work.limitedVR && numerics.limitedVR.weakAlphaMax > 0 &&
+                                 (!numerics.limitedVR.weakFreezeWithinImplicitStage || reconstruction.newLimitedVRStage);
+        std::vector<R::TransferOperation> rawGradientOperations;
+        if (work.prepareP1)
+        {
+            const auto &limiter = numerics.P1Limiter();
+            if (!gradientAuxiliary && (limiter == "WBAP" || refreshWeak))
+                rawGradientOperations = schedule.BeginAfterCompute(work.directGradientInputHalo);
+            if (limiter == "WBAP")
+            {
+                if (work.gradientFlowCharacteristic)
+                    characteristicSubmission = work.SubmitCharacteristics(engine, stream, state, OptionalRef<const AuxiliaryValues>(auxiliary));
+                const auto limit = [&](CFV::ReconstructionRegion region)
+                {
+                    for (index field = 0; field < index(work.fields.size()); ++field)
+                        _data->gradient.LimitWBAP3(
+                            engine, stream, *work.fields[field].gradient, work.directGradients[field],
+                            *work.fields[field].gradientExecution,
+                            field == work.flowCharacteristicField && work.gradientFlowCharacteristic
+                                ? CFV::GradientFaceCharacteristicTransformRef(std::cref(*work.gradientFlowCharacteristic))
+                                : std::nullopt,
+                            region, std::nullopt, 0, numerics.cfv.WBAP_nStd);
+                };
+                if (overlap)
+                    limit(CFV::ReconstructionRegion::Core);
+                schedule.Await(rawGradientOperations);
+                limit(rest);
+            }
+            else if (limiter == "Barth" || _data->settings.PreparedP1Positivity())
+                work.SubmitGradientLimiter(engine, stream, state, limiter == "Barth");
+            if (_data->settings.PreparedP1Positivity())
+            {
+                const auto timing = work.BeginQueuedPhase(engine, stream, Workspace::PPPhase);
+                gradientPositivitySubmission = work.SubmitGradientPositivity(engine, stream, state);
+                work.EndQueuedPhase(engine, stream, timing);
+            }
+        }
         if (work.limitedVR)
         {
-            if (work.flowCharacteristic)
-                characteristicSubmission = work.SubmitCharacteristics(engine, stream, state, OptionalRef<const AuxiliaryValues>(auxiliary));
             DNDS_check_throw_info(reconstruction.limitedVRHistory, "LVR reconstruction state has no history");
-            work.limitedVR->Build(*_data, state.CoupledField(), *work.fields.front().gradient, *reconstruction.limitedVRHistory,
-                                  work.flowCharacteristic ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
-                                                          : std::nullopt,
-                                  engine, stream, communication);
+            schedule.Await(rawGradientOperations);
+            const auto flow = state.LocateBlock("flow");
+            work.limitedVR->Build(*_data, state, work.directGradients, *work.fields[flow.physicalField].gradient,
+                                  reconstruction.newLimitedVRStage, *reconstruction.limitedVRHistory,
+                                  work.directGradientHalo, engine, stream, communication);
+            reconstruction.newLimitedVRStage = false;
         }
         if (variational)
         {
@@ -650,71 +680,41 @@ namespace DNDS::Cauchy
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 Algebra::Copy(engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
                               reconstruction.WarmValues().PhysicalField(iField));
-        if (work.nativeDirectGradient && numerics.limiter != "WBAP" &&
-            (numerics.limiter == "Barth" || _data->settings.GradientPositivity()))
-            work.SubmitGradientLimiter(engine, stream, state, numerics.limiter == "Barth");
-        // Mean-only forecasts do not publish a reconstructed face field, even
-        // when the regular operator is configured with gradient/modal WBAP.
-        if (!work.meanOnly && numerics.limiter == "WBAP")
+        // Direct P1 is prepared before any VR sweep. The conventional
+        // modal WBAP acts on the reconstructed polynomial here.
+        if (variational && numerics.limiter == "WBAP")
         {
-            if (work.nativeDirectGradient)
+            if (work.flowCharacteristic && !characteristicSubmission)
+                characteristicSubmission = work.SubmitCharacteristics(engine, stream, state, OptionalRef<const AuxiliaryValues>(auxiliary));
+            for (int order = numerics.cfv.maxOrder; order >= 1; --order)
             {
-                if (work.gradientFlowCharacteristic)
-                    characteristicSubmission = work.SubmitCharacteristics(engine, stream, state, OptionalRef<const AuxiliaryValues>(auxiliary));
-                auto gradientOperations = gradientAuxiliary ? std::vector<R::TransferOperation>{} : schedule.BeginAfterCompute(work.directGradientInputHalo);
-                const auto limit = [&](CFV::ReconstructionRegion region)
+                auto limiterOperations = schedule.BeginAfterCompute(reconstruction.FinalizedHalo());
+                const auto limit = [&, order](CFV::ReconstructionRegion region)
                 {
                     for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                        _data->gradient.LimitWBAP3(
-                            engine, stream, *work.fields[iField].gradient, work.directGradients[iField],
-                            *work.fields[iField].gradientExecution,
-                            iField == work.flowCharacteristicField && work.gradientFlowCharacteristic
-                                ? CFV::GradientFaceCharacteristicTransformRef(
-                                      std::cref(*work.gradientFlowCharacteristic))
+                        _data->reconstruction->SubmitLimiterWBAP_3OrderTo(
+                            engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
+                            *work.fields[iField].reconstruction, order,
+                            iField == work.flowCharacteristicField && work.flowCharacteristic
+                                ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
                                 : std::nullopt,
-                            region, std::nullopt, 0, numerics.cfv.WBAP_nStd);
+                            region);
                 };
                 if (overlap)
                     limit(CFV::ReconstructionRegion::Core);
-                schedule.Await(gradientOperations);
+                schedule.Await(limiterOperations);
                 limit(rest);
-            }
-            else
-            {
-                if (work.flowCharacteristic && !work.limitedVR)
-                    characteristicSubmission = work.SubmitCharacteristics(engine, stream, state, OptionalRef<const AuxiliaryValues>(auxiliary));
-                for (int order = numerics.cfv.maxOrder; order >= 1; --order)
-                {
-                    auto limiterOperations = schedule.BeginAfterCompute(reconstruction.FinalizedHalo());
-                    const auto limit = [&, order](CFV::ReconstructionRegion region)
-                    {
-                        for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                            _data->reconstruction->SubmitLimiterWBAP_3OrderTo(
-                                engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
-                                *work.fields[iField].reconstruction, order,
-                                iField == work.flowCharacteristicField && work.flowCharacteristic
-                                    ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
-                                    : std::nullopt,
-                                region);
-                    };
-                    if (overlap)
-                        limit(CFV::ReconstructionRegion::Core);
-                    schedule.Await(limiterOperations);
-                    limit(rest);
-                    for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                        _data->reconstruction->SubmitCommitReconstruction(
-                            engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
-                            *work.fields[iField].reconstruction);
-                    // Commit precedes the next order's producer-prefix
-                    // exchange; no host observation is needed between orders.
-                }
+                for (index iField = 0; iField < index(work.fields.size()); ++iField)
+                    _data->reconstruction->SubmitCommitReconstruction(
+                        engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
+                        *work.fields[iField].reconstruction);
+                // Commit precedes the next order's producer-prefix
+                // exchange; no host observation is needed between orders.
             }
         }
-        const auto positivityTiming = (work.nativeDirectGradient && _data->settings.GradientPositivity()) || work.positivity
+        const auto positivityTiming = work.positivity
                                           ? work.BeginQueuedPhase(engine, stream, Workspace::PPPhase)
                                           : nullptr;
-        if (work.nativeDirectGradient && _data->settings.GradientPositivity())
-            gradientPositivitySubmission = work.SubmitGradientPositivity(engine, stream, state);
         if (work.positivity)
             local([&]
                   {
@@ -731,11 +731,8 @@ namespace DNDS::Cauchy
         if (ransP1Overlay)
         {
             const auto block = state.LocateBlock("rans");
-            const bool barth = numerics.UsesRANSGradientBarth();
-            if (barth)
-                work.SubmitGradientLimiter(engine, stream, state, true);
             const auto &meanGradient = work.meanGradients->fields[block.physicalField];
-            const auto &fluxGradient = barth ? work.directGradients[block.physicalField] : meanGradient;
+            const auto &fluxGradient = work.directGradients[block.physicalField];
             const auto force = [&](EquationDofs &coefficients, const CFV::FVField &gradient)
             {
                 _data->gradient.SetLinearCoefficients(engine, stream, gradient, *_data->reconstruction,
@@ -748,7 +745,7 @@ namespace DNDS::Cauchy
         std::vector<R::TransferOperation> operations;
         if (!work.nativeDirectGradient)
             operations = schedule.BeginAfterCompute(reconstruction.FinalizedHalo());
-        else if (!gradientAuxiliary || numerics.limiter != "none" || _data->settings.GradientPositivity())
+        else if (!gradientAuxiliary || numerics.P1Limiter() != "none" || _data->settings.PreparedP1Positivity())
             operations = schedule.BeginAfterCompute(work.directGradientHalo);
         std::vector<R::TransferOperation> unlimitedViscousOperations;
         if (separateViscous)

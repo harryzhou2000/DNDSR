@@ -108,7 +108,7 @@ namespace DNDS::Cauchy
                                                        fmt::format("{} global min {:.9e}", settings.numerics.firstLayerWallDistanceMethod, minimum[1]));
             }
         }
-        const bool limitedVR = settings.numerics.limiter == "LVR" && (settings.numerics.limitedVR.alphaMax > 0 || settings.numerics.limitedVR.contactAlphaMax > 0);
+        const bool limitedVR = settings.numerics.limiter == "LVR" && settings.numerics.limitedVR.Active();
         {
             auto setupStage = progress.Stage("FV/stencil");
             data->BuildStencil();

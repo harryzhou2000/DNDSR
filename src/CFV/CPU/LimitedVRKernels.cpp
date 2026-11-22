@@ -12,10 +12,10 @@ namespace DNDS::CFV::Detail
                      { Math::BuildLimitedVRSeedCell(stencil, scalars, gates, previous, output, settings, selection.RowAt(iWork)); });
     }
     void LimitedVRMaximum(LimitedVRStencilView stencil, Runtime::RowSelection selection, LVRField input, LVROutput output,
-                          std::array<bool, 3> active, bool excludeBoundary, bool saturatedOnly, std::array<real, 3> caps)
+                          std::array<bool, 4> active, bool excludeBoundary, bool saturatedOnly, std::array<real, 4> caps, LVRInput base, unsigned mergeMask)
     {
-        Runtime::ValidateViewDevices(Runtime::Device::Host(), stencil, selection, input, output);
+        Runtime::ValidateViewDevices(Runtime::Device::Host(), stencil, selection, input, output, base);
         OMP::ForRows(0, selection.RowCount(), [&](index iWork) noexcept
-                     { Math::LimitedVRMaximumCell(stencil, input, output, selection.RowAt(iWork), active, excludeBoundary, saturatedOnly, caps); });
+                     { Math::LimitedVRMaximumCell(stencil, input, output, selection.RowAt(iWork), active, excludeBoundary, saturatedOnly, caps, base, mergeMask); });
     }
 }

@@ -33,8 +33,9 @@ namespace DNDS::CFV
                         R::ReadAs<R::FixedRows<1>>(_offsets), R::ReadAs<R::FixedRows<1>>(_neighbors), R::ReadAs<R::FixedRows<1>>(_boundary), R::ReadAs<R::FixedRows<1>>(selected.indices), R::ReadAs<R::UniformTableRows>(meanScalars.Owned()), R::ReadAs<R::UniformTableRows>(region == ReconstructionRegion::Core ? _empty : meanScalars.Ghost()), R::ReadAs<R::UniformTableRows>(baseGates.Owned()), R::ReadAs<R::UniformTableRows>(region == ReconstructionRegion::Core ? _empty : baseGates.Ghost()), R::ReadAs<R::UniformTableRows>(previous), R::WriteAs<R::UniformTableRows>(output.Owned()));
     }
     void LimitedVRPlan::NeighborMaximum(R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &input, FVField &output,
-                                        std::array<bool, 3> active, bool excludeBoundary, bool saturatedOnly,
-                                        std::array<real, 3> caps, ReconstructionRegion region) const
+                                        std::array<bool, 4> active, bool excludeBoundary, bool saturatedOnly,
+                                        std::array<real, 4> caps, ReconstructionRegion region,
+                                        const R::Array<real> *base, unsigned mergeMask) const
     {
         ValidateMaximum(input, output, caps, region);
         DNDS_check_throw_info(stream.Context().device == Device(), "LVR stream placement differs");
@@ -43,18 +44,18 @@ namespace DNDS::CFV
 #endif
         auto geometry = std::make_shared<Geom::MeshReadAccess>(_metrics.AcquireMeshRead());
         const auto &selected = _regionRows.Get(region);
-        R::SubmitArrays(engine, stream, [geometry, shape = selected.shape, active, excludeBoundary, saturatedOnly, caps](R::ExecutionContext context, auto offsets, auto neighbors, auto boundary, auto rows, auto owned, auto ghost, auto result)
+        R::SubmitArrays(engine, stream, [geometry, shape = selected.shape, active, excludeBoundary, saturatedOnly, caps, mergeMask](R::ExecutionContext context, auto offsets, auto neighbors, auto boundary, auto rows, auto owned, auto ghost, auto base, auto result)
                         {
                             const Detail::LimitedVRStencilView stencil{offsets, neighbors, boundary};
                             const Runtime::RowSelection selection{shape, rows};
                             const Detail::LVRField source{owned, ghost};
                             if (context.device == R::Device::Host())
-                                Detail::LimitedVRMaximum(stencil, selection, source, result, active, excludeBoundary, saturatedOnly, caps);
+                                Detail::LimitedVRMaximum(stencil, selection, source, result, active, excludeBoundary, saturatedOnly, caps, base, mergeMask);
 #ifdef DNDS_USE_CUDA
                             else
-                                Detail::LaunchLimitedVRMaximum(context, stencil, selection, source, result, active, excludeBoundary, saturatedOnly, caps);
+                                Detail::LaunchLimitedVRMaximum(context, stencil, selection, source, result, active, excludeBoundary, saturatedOnly, caps, base, mergeMask);
 #endif
                         },
-                        R::ReadAs<R::FixedRows<1>>(_offsets), R::ReadAs<R::FixedRows<1>>(_neighbors), R::ReadAs<R::FixedRows<1>>(_boundary), R::ReadAs<R::FixedRows<1>>(selected.indices), R::ReadAs<R::UniformTableRows>(input.Owned()), R::ReadAs<R::UniformTableRows>(region == ReconstructionRegion::Core ? _empty : input.Ghost()), R::WriteAs<R::UniformTableRows>(output.Owned()));
+                        R::ReadAs<R::FixedRows<1>>(_offsets), R::ReadAs<R::FixedRows<1>>(_neighbors), R::ReadAs<R::FixedRows<1>>(_boundary), R::ReadAs<R::FixedRows<1>>(selected.indices), R::ReadAs<R::UniformTableRows>(input.Owned()), R::ReadAs<R::UniformTableRows>(region == ReconstructionRegion::Core ? _empty : input.Ghost()), R::ReadAs<R::UniformTableRows>(base ? *base : _empty), R::WriteAs<R::UniformTableRows>(output.Owned()));
     }
 }

@@ -53,7 +53,7 @@ namespace DNDS::Cauchy
     {
 #ifdef DNDS_USE_CUDA
         state.RequireSchema(owner->equation.Schema());
-        DNDS_check_throw_info((nativeDirectGradient || (!meanOnly && owner->settings.numerics.UsesRANSGradientBarth())) && fields.size() == 1 && directGradients.size() == 1 && fields.front().gradient &&
+        DNDS_check_throw_info(prepareP1 && fields.size() == 1 && directGradients.size() == 1 && fields.front().gradient &&
                                   state.Space().Same(owner->metrics.Space()) && owner->metrics.Device().space == R::MemorySpace::CUDA &&
                                   engine.Owns(stream) && stream.Context().device == owner->metrics.Device() && state.Device() == owner->metrics.Device(),
                               "device direct-gradient limiter workspace or backend differs");
@@ -85,7 +85,7 @@ namespace DNDS::Cauchy
     {
 #ifdef DNDS_USE_CUDA
         state.RequireSchema(owner->equation.Schema());
-        DNDS_check_throw_info(nativeDirectGradient && owner->settings.GradientPositivity() && fields.size() == 1 && directGradients.size() == 1 &&
+        DNDS_check_throw_info(prepareP1 && owner->settings.PreparedP1Positivity() && fields.size() == 1 && directGradients.size() == 1 &&
                                   state.Space().Same(owner->metrics.Space()) && owner->metrics.Device().space == R::MemorySpace::CUDA &&
                                   preparationStatus && preparationStatus->pending && gradientStatistics && engine.Owns(stream) &&
                                   stream.Context().device == owner->metrics.Device() && state.Device() == owner->metrics.Device(),

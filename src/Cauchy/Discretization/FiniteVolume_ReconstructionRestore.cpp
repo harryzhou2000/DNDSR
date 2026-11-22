@@ -109,6 +109,11 @@ namespace DNDS::Cauchy
         else
             state.PublishFinalized();
     }
+    void FiniteVolume::BeginLimitedVRStage(ReconstructionState &state) const
+    {
+        DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
+        state.newLimitedVRStage = true;
+    }
     void FiniteVolume::CopyReconstructionState(ReconstructionState &destination,
                                                const ReconstructionState &source, std::optional<R::ExecutionStream> stream) const
     {
@@ -131,6 +136,7 @@ namespace DNDS::Cauchy
         auto restore = ReserveReconstructionRestoreImpl(state, warm, limitedVRHistory, {}, true,
                                                         OptionalRef<const EquationDofs>(finalized), stream);
         restore.Commit();
+        state.newLimitedVRStage = !limitedVRHistory;
         state.PublishFinalized();
     }
     std::optional<Runtime::Array<real>> FiniteVolume::LimitedVRHistory(const ReconstructionState &state) const
@@ -226,7 +232,7 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(historyInput->GetDevice() == context.device &&
                                               !historyInput->Layout().IsVariable() &&
                                               historyInput->RowCount() == Metrics().NumCell() &&
-                                              historyInput->Layout().Width() == 2,
+                                              historyInput->Layout().Width() == state.limitedVRHistory->Layout().Width(),
                                           "LVR history shape or placement differs");
                     for (index iField = 0; iField < guess.PhysicalFieldNumber(); ++iField)
                     {
@@ -245,6 +251,8 @@ namespace DNDS::Cauchy
                     const std::array<real, 2> caps{_data->settings.numerics.limitedVR.alphaMax,
                                                    _data->settings.numerics.limitedVR.contactAlphaMax};
                     validation.Check({values, 0, 2}, true, caps);
+                    if (values.Width() == 3)
+                        validation.Check({values, 2, 1}, true, {_data->settings.numerics.limitedVR.weakAlphaMax, 0});
                 }
                 std::vector<EquationBlockArrayView<const real>> inputRows, fluxInputRows;
                 std::vector<EquationBlockArrayView<real>> outputRows, fluxOutputRows;

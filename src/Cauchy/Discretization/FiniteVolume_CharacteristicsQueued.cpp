@@ -49,8 +49,8 @@ namespace DNDS::Cauchy
         FiniteVolume(owner).ValidateWorkspace(state, *this);
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == owner->metrics.Device(),
                               "characteristic stream or placement differs");
-        DNDS_check_throw_info(bool(flowCharacteristic) != bool(gradientFlowCharacteristic),
-                              "characteristic submission needs exactly one matrix target");
+        DNDS_check_throw_info(flowCharacteristic || gradientFlowCharacteristic,
+                              "characteristic submission needs a matrix target");
         const auto flow = state.LocateBlock("flow");
         auto &forward = flowCharacteristic ? flowCharacteristic->forward : gradientFlowCharacteristic->forward;
         auto &inverse = flowCharacteristic ? flowCharacteristic->inverse : gradientFlowCharacteristic->inverse;

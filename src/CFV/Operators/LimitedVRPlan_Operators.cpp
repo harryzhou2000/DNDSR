@@ -16,9 +16,9 @@ namespace DNDS::CFV
     {
         ValidateRegion(region);
         _metrics.ValidateField(meanScalars, 2);
-        _metrics.ValidateField(baseGates, 3);
-        _metrics.ValidateField(output, 3);
-        DNDS_check_throw_info(previous.GetDevice() == Device() && !previous.Layout().IsVariable() && previous.RowCount() == _metrics.NumCell() && previous.Layout().Width() == 2,
+        _metrics.ValidateField(baseGates, output.Width());
+        _metrics.ValidateField(output, output.Width());
+        DNDS_check_throw_info(previous.GetDevice() == Device() && !previous.Layout().IsVariable() && previous.RowCount() == _metrics.NumCell() && previous.Layout().Width() + 1 == output.Width(),
                               "LVR previous-gate shape or placement differs");
         for (const auto *source : {&meanScalars.Owned(), &meanScalars.Ghost(), &baseGates.Owned(), &baseGates.Ghost(), &previous})
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), output.Owned().Storage()), "LVR seed output aliases input");
@@ -46,18 +46,19 @@ namespace DNDS::CFV
         const Runtime::RowSelection selection{selected.shape, rows.View<Runtime::FixedRows<1>>()};
         Detail::BuildLimitedVRSeeds({o, n, b}, selection, scalar, gate, prior, result, parameters);
     }
-    void LimitedVRPlan::ValidateMaximum(const FVField &input, const FVField &output, std::array<real, 3> caps, ReconstructionRegion region) const
+    void LimitedVRPlan::ValidateMaximum(const FVField &input, const FVField &output, std::array<real, 4> caps, ReconstructionRegion region) const
     {
         ValidateRegion(region);
-        _metrics.ValidateField(input, 3);
-        _metrics.ValidateField(output, 3);
+        _metrics.ValidateField(input, output.Width());
+        DNDS_check_throw_info(output.Width() == 3 || output.Width() == 4, "LVR maximum gate width differs");
+        _metrics.ValidateField(output, output.Width());
         for (auto cap : caps)
             DNDS_check_throw_info(std::isfinite(cap) && cap >= 0 && cap <= 1, "invalid LVR saturation cap");
         for (const auto *source : {&input.Owned(), &input.Ghost()})
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), output.Owned().Storage()), "LVR maximum output aliases input");
     }
-    void LimitedVRPlan::NeighborMaximum(const FVField &input, FVField &output, std::array<bool, 3> active,
-                                        bool excludeBoundary, bool saturatedOnly, std::array<real, 3> caps, ReconstructionRegion region) const
+    void LimitedVRPlan::NeighborMaximum(const FVField &input, FVField &output, std::array<bool, 4> active,
+                                        bool excludeBoundary, bool saturatedOnly, std::array<real, 4> caps, ReconstructionRegion region) const
     {
         ValidateMaximum(input, output, caps, region);
         DNDS_check_throw_info(Device() == R::Device::Host(), "synchronous LVR convenience API requires host placement; use its queued overload for CUDA");
@@ -74,6 +75,6 @@ namespace DNDS::CFV
         const auto &selected = _regionRows.Get(region);
         const auto rows = selected.indices.Read();
         const Runtime::RowSelection selection{selected.shape, rows.View<Runtime::FixedRows<1>>()};
-        Detail::LimitedVRMaximum({o, n, b}, selection, source, result, active, excludeBoundary, saturatedOnly, caps);
+        Detail::LimitedVRMaximum({o, n, b}, selection, source, result, active, excludeBoundary, saturatedOnly, caps, {}, 0);
     }
 }

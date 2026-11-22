@@ -156,7 +156,7 @@ namespace DNDS::Cauchy
                                           (freshMeans || !metadata.contains("update_policy") || metadata.at("update_policy") == UpdatePolicyMetadata())));
         valid = valid && CompatibleFrame(metadata, _problem.finiteVolume, std::isfinite(time) ? time : 0);
         valid = valid && (!limitedVRHistory || ((reconstruction || reconstructionArchive) && limitedVRHistory->RowCount() == ids.RowCount() &&
-                                                !limitedVRHistory->Layout().IsVariable() && limitedVRHistory->Layout().Width() == 2));
+                                                !limitedVRHistory->Layout().IsVariable() && (limitedVRHistory->Layout().Width() == 2 || limitedVRHistory->Layout().Width() == 3)));
         valid = valid && (meansOnly || version < 4 || (metadata.is_object() && metadata.value("limited_vr_history", false) == bool(limitedVRHistory) && (!limitedVRHistory || metadata.value("limited_vr_history_schema", 0) == 1)));
         valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);
         if (!valid)
@@ -256,7 +256,7 @@ namespace DNDS::Cauchy
                 if (needsLimitedVRHistory)
                 {
                     MPI::LocalStage(mpi, [&]
-                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2), _state.trial.Device()); });
+                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), limitedVRHistory->Layout().Width()), _state.trial.Device()); });
                     transfer(*limitedVRHistory, *mappedLimitedVRHistory);
                 }
             }
@@ -319,7 +319,7 @@ namespace DNDS::Cauchy
                 if (needsLimitedVRHistory)
                 {
                     MPI::LocalStage(mpi, [&]
-                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2), _state.trial.Device()); });
+                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), limitedVRHistory->Layout().Width()), _state.trial.Device()); });
                     transfer(*limitedVRHistory, *mappedLimitedVRHistory);
                 }
             }

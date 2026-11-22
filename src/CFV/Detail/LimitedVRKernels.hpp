@@ -16,9 +16,9 @@ namespace DNDS::CFV::Detail
     void BuildLimitedVRSeeds(LimitedVRStencilView, Runtime::RowSelection, LVRField scalars, LVRField gates,
                              LVRInput previous, LVROutput output, LimitedVRKernelParameters);
     void LimitedVRMaximum(LimitedVRStencilView, Runtime::RowSelection, LVRField input, LVROutput output,
-                          std::array<bool, 3> active, bool excludeBoundary, bool saturatedOnly, std::array<real, 3> caps);
+                          std::array<bool, 4> active, bool excludeBoundary, bool saturatedOnly, std::array<real, 4> caps, LVRInput base, unsigned mergeMask);
     void LaunchLimitedVRSeeds(Runtime::ExecutionContext, LimitedVRStencilView, Runtime::RowSelection, LVRField scalars,
                               LVRField gates, LVRInput previous, LVROutput output, LimitedVRKernelParameters);
     void LaunchLimitedVRMaximum(Runtime::ExecutionContext, LimitedVRStencilView, Runtime::RowSelection, LVRField input, LVROutput output,
-                                std::array<bool, 3> active, bool excludeBoundary, bool saturatedOnly, std::array<real, 3> caps);
+                                std::array<bool, 4> active, bool excludeBoundary, bool saturatedOnly, std::array<real, 4> caps, LVRInput base, unsigned mergeMask);
 }

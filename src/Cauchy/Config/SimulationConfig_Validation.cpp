@@ -532,9 +532,11 @@ namespace DNDS::Cauchy
             const auto flux = Riemann::RiemannFlux::Resolve(s.numerics.flux);
             require((!mixture || flux.Kind() == Riemann::Solver::Rusanov) && !s.numerics.faceFallback,
                     "extended equation thermodynamic flux preparation/face fallback");
-            require(!s.numerics.riemann.useStencil || (!flux.UsesTransverseSignal() && !flux.UsesPressureStencil()),
+            require(!s.numerics.riemann.useStencil ||
+                        (!flux.UsesTransverseSignal() && (!mixture || !flux.UsesPressureStencil())),
                     "extended equation wave/pressure stencil auxiliary inputs");
-            require(s.numerics.limiter == "none" || s.numerics.limiter == "Barth" || s.numerics.limiter == "WBAP",
+            require(s.numerics.limiter == "none" || s.numerics.limiter == "Barth" || s.numerics.limiter == "WBAP" ||
+                        (!mixture && s.numerics.limiter == "LVR"),
                     "extended equation limiter");
             require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
             require(!s.implicit.roeDissipation, "extended equation Roe Jacobian");
@@ -558,6 +560,11 @@ namespace DNDS::Cauchy
         require(s.numerics.limiter != "WBAP" || s.numerics.reconstruction != "constant",
                 "WBAP needs gradient or variational reconstruction");
         require(s.numerics.limiter != "LVR" || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "LVR needs degree2/3 variational reconstruction");
+        require(s.numerics.p1Limiter == "none" || s.numerics.p1Limiter == "Barth" || s.numerics.p1Limiter == "WBAP", "P1 limiter");
+        require(s.numerics.limiter != "LVR" || s.numerics.P1Limiter() != "none", "LVR requires a Barth or WBAP P1 limiter");
+        require(!acm || s.numerics.P1Limiter() != "WBAP" ||
+                    (s.numerics.reconstruction != "gradient" && !s.numerics.ransP1Overlay),
+                "ACM direct P1 limiter supports Barth or none");
         require(!s.implicit.multigrid.levels || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "polynomial FAS requires high-order variational reconstruction");
         for (const auto &[zone, condition] : s.boundaries)
         {
