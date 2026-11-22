@@ -83,10 +83,21 @@ TEST_CASE("LVR variants expand defaults per input layer with explicit overrides 
     CHECK(v3.Domains()[0].settings.numerics.limitedVR.alphaMax == 1);
     CHECK(v3.Domains()[0].settings.numerics.limitedVR.contactAlphaMax == 1);
     CHECK(v3.Domains()[0].settings.numerics.limitedVR.neighborLayers == 2);
+    CHECK(v3.Domains()[0].settings.numerics.P1Limiter() == "Barth");
+    auto &overrides = input["domains"][0]["overrides"]["numerics"];
+    overrides["p1Limiter"] = "none";
+    CHECK_THROWS_AS(C::SimulationConfig::Resolve(input, mpi.size), std::exception);
+    overrides["p1Limiter"] = "WBAP";
+    CHECK(C::SimulationConfig::Resolve(input, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "WBAP");
     input["domains"][0]["overrides"]["numerics"]["limitedVR"]["variant"] = "v4";
     CHECK_THROWS_AS(C::SimulationConfig::Resolve(input, mpi.size), std::exception);
     input["domains"][0]["overrides"]["numerics"]["limitedVR"] = {{"pressureJump", {.1, .1}}};
     CHECK_THROWS_AS(C::SimulationConfig::Resolve(input, mpi.size), std::exception);
+
+    C::Json direct = {{"defaults", {{"numerics", {{"limiter", "none"}}}}}};
+    CHECK(C::SimulationConfig::Resolve(direct, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "none");
+    direct["defaults"]["numerics"]["p1Limiter"] = "WBAP";
+    CHECK(C::SimulationConfig::Resolve(direct, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "WBAP");
 }
 TEST_CASE("Native Cauchy LVR prepares active v2/v3 targets identically across layouts and CPU schedules")
 {

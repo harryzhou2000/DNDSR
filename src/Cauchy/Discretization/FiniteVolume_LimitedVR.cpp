@@ -18,20 +18,21 @@ namespace DNDS::Cauchy
         // the ordinary FV publication. The selected gradient operator and its
         // mutable execution workspace belong to the common FV path as well.
     }
-    FiniteVolume::LimitedVRWorkspace::LimitedVRWorkspace(const Data &data, const CFV::ReconstructionWorkspace &prototype)
-        : target(data.reconstruction->BuildWorkspace(prototype.components, prototype.temporary.Owned().Layout(), prototype.periodicVectorStarts)),
-          targetCoefficients(data.reconstruction->BuildCoefficients(prototype.components, prototype.temporary.Owned().Layout())),
-          scalars(data.metrics.BuildField(2)),
-          branches(data.metrics.BuildField(3)), seeds(data.metrics.BuildField(3)), temporary(data.metrics.BuildField(3)),
+    FiniteVolume::LimitedVRWorkspace::LimitedVRWorkspace(const Data &data, const EquationDofs &state)
+        : scalars(data.metrics.BuildField(2)),
+          branches(data.metrics.BuildField(data.settings.numerics.limitedVR.GateWidth())), seeds(data.metrics.BuildField(data.settings.numerics.limitedVR.GateWidth())), temporary(data.metrics.BuildField(data.settings.numerics.limitedVR.GateWidth())),
           base(R::RowLayout::Dense(data.metrics.NumCell(), 2), data.metrics.Device()),
-          alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1), data.metrics.Device()), targetHalo(data.BindHalo(targetCoefficients)),
-          branchHalo(data.BindHalo(branches)), seedHalo(data.BindHalo(seeds))
+          alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1), data.metrics.Device()),
+          branchHalo(data.BindHalo(branches)), seedHalo(data.BindHalo(seeds)), temporaryHalo(data.BindHalo(temporary))
     {
-        // Current physical adapter dispatches only compressible flow5. Generic
-        // CFV penalties/targets and scalar stencils do not assume this width.
-        DNDS_check_throw_info(prototype.components == 5 && data.limitedVRGeometry, "LVR compressible target setup is incomplete");
-        Algebra::Fill(targetCoefficients, 0.);
-        Algebra::Fill(target.temporary, 0.);
+        const auto modes = data.reconstruction->NRecDOF();
+        for (index field = 0; field < state.PhysicalFieldNumber(); ++field)
+        {
+            const auto &mean = state.PhysicalField(field);
+            targetCoefficients.push_back(data.reconstruction->BuildCoefficients(
+                mean.Width(), FiniteVolumeDetail::FieldLayout(mean.Owned().Layout(), data.metrics.NumCell(),
+                                                              mean.Width() * modes)));
+        }
         if (data.metrics.Device() == R::Device::Host())
         {
             auto penalty = alpha.Write();

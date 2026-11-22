@@ -136,7 +136,7 @@ namespace DNDS::Cauchy
         std::vector<CFV::FVField> directGradients, directViscousGradients;
         /// Unfiltered explicit P1 keeps the GradientPlan publication directly;
         /// no gradient-to-modal-to-gradient round trip or coefficient halo.
-        bool nativeDirectGradient = false;
+        bool nativeDirectGradient = false, prepareP1 = false;
         std::vector<R::TransferBinding> directGradientHalo, directGradientInputHalo,
             directViscousGradientHalo;
         /// Legacy-compatible primitive-gradient viscosity is prepared inside

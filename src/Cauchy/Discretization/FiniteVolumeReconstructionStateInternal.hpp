@@ -34,6 +34,7 @@ namespace DNDS::Cauchy
         uint64_t meanEpoch = 0;
         std::vector<R::TransferBinding> coefficientHalo, fluxHalo;
         std::optional<R::Array<real>> limitedVRHistory;
+        bool newLimitedVRStage = true;
 
         bool FinalizedCurrent() const;
         void PublishFinalized();

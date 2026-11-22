@@ -301,7 +301,8 @@ namespace DNDS::Cauchy
                       domain.SetProgressObserver(
                           [this, iDomain](const NonlinearProgress &entry)
                           { progress[size_t(iDomain)]->CaptureIteration(entry, MPI_Wtime() - started); },
-                          output.historyStateBounds ? output.implicit.historyInterval : 0);
+                          output.historyStateBounds ? output.implicit.historyInterval : 0,
+                          output.implicit.consoleInterval > 0);
                       domain.SetQuiescentObserver(
                           [this, iDomain](const NonlinearSolveState &nonlinear)
                           { InternalSnapshot(iDomain, nonlinear); }); });

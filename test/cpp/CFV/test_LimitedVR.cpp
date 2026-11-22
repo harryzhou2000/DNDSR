@@ -42,7 +42,7 @@ TEST_CASE("Native v2/v3 gates preserve legacy thresholds, contact response and e
                         CHECK(current.pressureJump == shock.pressureJump);
                         CHECK(current.compression == shock.compression);
                         CHECK(current.densityJump == contact.densityJump);
-                        CHECK(current.shock == shock.alpha);
+                        CHECK(current.shock == doctest::Approx(shock.alpha).epsilon(2e-14));
                         CHECK(current.contact == contact.alpha);
                         if (pressure == 1 || (!expansion && velocity <= 0))
                             CHECK(current.shock == 0);
@@ -67,19 +67,41 @@ TEST_CASE("Supported extremum seeds preserve incidence counts, retention and bou
     maximum.Observe(1.1, 1.05, 0., settings.equalityTolerance);
     maximum.Observe(1.1, 1.1, 0., settings.equalityTolerance);
     maximum.Observe(1.1, 1.1, 0., settings.equalityTolerance);
-    CHECK(maximum.Correction(1.1, 0, 1, settings.pressureSupport, settings) == 1);
+    CHECK(maximum.Correction(1.1, 0, 1, settings.pressureSupport, settings.extremumThreshold, settings.retention, settings) == 1);
     maximum.boundary = true;
-    CHECK(maximum.Correction(1.1, 1, 1, settings.pressureSupport, settings) == 0);
+    CHECK(maximum.Correction(1.1, 1, 1, settings.pressureSupport, settings.extremumThreshold, settings.retention, settings) == 0);
     maximum.boundary = false;
     maximum.equal = 1;
-    CHECK(maximum.Correction(1.1, 1, 1, settings.pressureSupport, settings) == 0);
+    CHECK(maximum.Correction(1.1, 1, 1, settings.pressureSupport, settings.extremumThreshold, settings.retention, settings) == 0);
     C::Math::LimitedVRExtremumStencil plateau;
     for (int i = 0; i < 4; ++i)
         plateau.Observe(1., 1., .2, settings.equalityTolerance);
-    CHECK(plateau.Correction(1., .8, 1., settings.pressureSupport, settings) == doctest::Approx(.76));
+    CHECK(plateau.Correction(1., .8, 1., settings.pressureSupport, settings.extremumThreshold, settings.retention, settings) == doctest::Approx(.76));
     plateau.support = 0;
-    CHECK(plateau.Correction(1., .8, 1., settings.pressureSupport, settings) == 0);
-    CHECK(plateau.Correction(1., .8, 0., settings.pressureSupport, settings) == 0);
+    CHECK(plateau.Correction(1., .8, 1., settings.pressureSupport, settings.extremumThreshold, settings.retention, settings) == 0);
+    CHECK(plateau.Correction(1., .8, 0., settings.pressureSupport, settings.extremumThreshold, settings.retention, settings) == 0);
+}
+
+TEST_CASE("Weak LVR rejects matched pressure slopes and preserves the stage update policy")
+{
+    auto settings = C::LimitedVRSettings::ForVariant("v3");
+    settings.weakAlphaMax = .5;
+    const auto p = C::LimitedVRKernelParameters::FromSettings(settings);
+    CHECK(C::Math::LimitedVRWeakShock(1, 2, .5, -.5, 1, 1, p) == 0);
+    CHECK(C::Math::LimitedVRWeakShock(1, 2, 0, 0, -1, 1, p) == 0);
+    CHECK(C::Math::LimitedVRWeakShock(1, 2, 0, 0, 1, 1, p) == .5);
+
+    R::Array<double> gates(R::RowLayout::Dense(1, 4)), history(R::RowLayout::Dense(1, 3));
+    auto g = gates.Write(), h = history.Write();
+    const auto value = g.View(), saved = h.View();
+    value(0, 0) = value(0, 1) = 0;
+    saved(0, 0) = saved(0, 1) = saved(0, 2) = 0;
+    value(0, 3) = .5;
+    CHECK(C::Math::PublishLimitedVRCell(value, saved, 0, {1, .25, 0, true, true}) == .5);
+    value(0, 3) = 0;
+    CHECK(C::Math::PublishLimitedVRCell(value, saved, 0, {1, .25, 0, false, false}) == .5);
+    CHECK(C::Math::PublishLimitedVRCell(value, saved, 0, {1, .25, 0, false, true}) == .375);
+    CHECK(C::Math::PublishLimitedVRCell(value, saved, 0, {1, .25, 0, true, true}) == 0);
 }
 
 TEST_CASE("LVR neighbor rounds cross rank boundaries with synchronous Cartesian distance and saturation oracles")

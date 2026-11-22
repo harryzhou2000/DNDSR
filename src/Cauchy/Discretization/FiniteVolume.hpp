@@ -451,6 +451,7 @@ namespace DNDS::Cauchy
         /// finalized limiter/PP coefficients and LVR history. Used when a new
         /// DITR midpoint starts from the accepted endpoint publication while
         /// both stages continue to share scratch.
+        void BeginLimitedVRStage(ReconstructionState &state) const;
         void CopyReconstructionState(ReconstructionState &destination,
                                      const ReconstructionState &source,
                                      std::optional<Runtime::ExecutionStream> stream = {}) const;

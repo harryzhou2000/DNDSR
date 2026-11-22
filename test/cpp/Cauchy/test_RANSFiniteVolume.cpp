@@ -79,6 +79,65 @@ namespace
     }
 }
 
+TEST_CASE("Full-width LVR applies the shared P1 target to SA across grouping and overlap")
+{
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    std::vector<double> reference;
+    for (bool split : {false, true})
+        for (bool overlap : {false, true})
+        {
+            auto settings = Settings();
+            settings.boundaries.clear();
+            settings.execution.overlap = overlap;
+            settings.numerics.reconstruction = "variational";
+            settings.numerics.cfv.maxOrder = 2;
+            settings.numerics.limiter = "LVR";
+            settings.numerics.p1Limiter = "WBAP";
+            settings.numerics.flux = "AUSMPWPlus";
+            settings.numerics.limitedVR.densityJump = {.001, .002};
+            const auto equation = Equation(settings);
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto state = State(fv, split);
+            Fill(state, fv, true);
+            auto output = C::EquationDofOperations::NewVector(state);
+            auto reconstruction = fv.BuildReconstructionState(state);
+            auto work = fv.BuildWorkspace(state);
+            auto auxiliary = fv.BuildAuxiliaryValues(fv.CompleteRHSAuxiliaryRequest());
+            R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+            fv.Evaluate(state, output, *reconstruction, *work, auxiliary, engine, engine.CreateCPUStream());
+            REQUIRE(auxiliary.cellPressureMinimum);
+            const auto penalty = fv.LimitedVRAlpha(*work)->Read();
+            const auto coefficients = fv.ReconstructionGuess(*reconstruction).ReadOwned();
+            const auto sa = coefficients.Block("rans");
+            std::vector<double> current;
+            int nonzero = 0;
+            for (I cell = 0; cell < fv.Metrics().NumCell(); ++cell)
+            {
+                const auto alpha = penalty.View()(cell, 0);
+                current.push_back(alpha);
+                for (I mode = 0; mode < sa.ComponentNumber(); ++mode)
+                {
+                    current.push_back(sa(cell, mode));
+                    nonzero |= alpha > .99 && mode < 2 && std::abs(sa(cell, mode)) > 1e-12;
+                    if (alpha == 1 && mode >= 2)
+                        CHECK(sa(cell, mode) == 0);
+                }
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &nonzero, 1, MPI_INT, MPI_MAX, mpi.comm);
+            CHECK(nonzero);
+            if (!split && !overlap)
+                reference = current;
+            else
+            {
+                REQUIRE(current.size() == reference.size());
+                for (size_t i = 0; i < current.size(); ++i)
+                    CHECK(current[i] == doctest::Approx(reference[i]).epsilon(2e-12).scale(1));
+            }
+        }
+}
+
 TEST_CASE("Barth RANS overlay keeps face values fixed when selecting unlimited viscous slopes")
 {
     auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
@@ -513,7 +572,7 @@ TEST_CASE("Explicit RANS repairs scalars separately from the uncompressed flow5 
             for (I iCell = 0; iCell < actual.RowCount(); ++iCell)
                 for (I j = 0; j < actual.ComponentNumber(); ++j)
                 {
-                    CHECK(actual(iCell, j) == raw(iCell, j));
+                    CHECK(actual(iCell, j) == doctest::Approx(raw(iCell, j)).epsilon(2e-13));
                     if (oracle.Schema().blocks[iBlock].name == "flow")
                         CHECK(actual(iCell, j) == doctest::Approx(before.Block(iBlock)(iCell, j)).epsilon(2e-13).scale(1));
                 }

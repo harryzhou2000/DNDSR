@@ -288,6 +288,7 @@ namespace DNDS::Cauchy
         else
         {
             BeginTrial(dt);
+            _problem.finiteVolume.BeginLimitedVRStage(*_state.reconstruction);
             _state.coordinatedStage = 0;
             if (_state.timeStepper)
                 _state.timeStepper->BeginStep(
@@ -389,6 +390,12 @@ namespace DNDS::Cauchy
         {
             static constexpr real times[]{0, 1, .5};
             group.times[0] = _state.time + times[group.stage] * _state.trialDt;
+        }
+        if (!_state.internalResume)
+        {
+            _problem.finiteVolume.BeginLimitedVRStage(*_state.reconstruction);
+            if (group.coupledStages == 2)
+                _problem.finiteVolume.BeginLimitedVRStage(*_coupledMiddle->state);
         }
         return group;
     }

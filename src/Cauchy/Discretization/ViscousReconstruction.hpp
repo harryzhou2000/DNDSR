@@ -13,7 +13,7 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         if (n.viscousLimited || n.viscousGradient != "polynomial")
             return false;
         if (n.reconstruction == "gradient")
-            return n.limiter != "none" || settings.GradientPositivity();
-        return n.reconstruction == "variational" && (n.limiter == "WBAP" || n.UsesRANSGradientBarth() || n.positivity);
+            return n.P1Limiter() != "none" || settings.GradientPositivity();
+        return n.reconstruction == "variational" && (n.limiter == "WBAP" || n.ransP1Overlay || n.positivity);
     }
 }

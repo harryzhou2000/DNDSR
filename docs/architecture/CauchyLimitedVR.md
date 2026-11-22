@@ -2,22 +2,22 @@
 
 The native LVR path is a penalty inside the variational reconstruction solve,
 not a final WBAP pass on its answer. It preserves the Euler v2/v3 family with
-explicit buffers on the new Array, mesh, gradient and reconstruction facilities.
-The physical adapter supports CPU and CUDA compressible perfect-gas flow5.
-Unsupported equation/device selections must fail at capability resolution.
+explicit buffers on the Array, mesh, gradient and reconstruction facilities.
+The physical adapter supports perfect-gas flow with or without appended RANS
+variables. CPU supports coupled and split fields. CUDA uses coupled AoS.
 
 ```text
 FiniteVolume immutable data                 Per-evaluation workspace
-  Selected GradientPlan (GG/LS/GGMP)                   target gradient + O2 coefficients
+  Selected GradientPlan (GG/LS/GGMP)                  shared P1 gradient + P1 coefficients
   LimitedVRPlan (face-neighbor stencils)       mean pressure/density + scalar gates
   shared CFV face-center geometry             base / seeds / layer scratch
   shared canonical cell-face incidence         retained shock/contact history
                      |                                   |
-mean + independent center traces -> selected gradient -> order1 WBAP -> center PP
+mean + independent center traces -> selected gradient -> Barth or gradient WBAP -> center PP
                                                         |
           mean and finalized-O2 face sensors -> extremum correction / expansion
                                                         |
-                       frozen O2 target + alpha = max(shock, contact)
+                       frozen P1 target + alpha = max(shock, contact, weak)
                                                         |
                    VR Jacobi / ordered two-buffer SOR with A-weighted penalty
                                                         |
@@ -44,10 +44,12 @@ writer acquisition, and input/target values must be finite. The generic CFV
 operation does not interpret density, pressure, sound speed or equation width.
 
 Cauchy's private `Discretization/LimitedVRInternal.hpp` and `FiniteVolume_LimitedVR*`
-provide the physical adapter and persistent scratch. They prepare mean-based
-characteristic transformations and Euler's common-beta O2 positivity bound,
-then evaluate density, pressure, normal velocity and sound speed. There is no
-dependency on Euler storage or its evaluator owner. Face-center sampling uses
+provide the physical adapter and persistent scratch. The finite-volume RHS
+prepares the P1 gradient once for LVR, the direct-P1 RHS and the RANS P1
+overlay. LVR samples the accepted gradient for its sensors and converts the
+owned gradient to modal coefficients for every variable, using the same alpha
+for each physical field. The optional RANS overlay uses the accepted RANS
+slopes after the VR sweeps and final high-order PP. Face-center sampling uses
 the mapped reference center, including the preserved parent periodic frame;
 it does not substitute an area-weighted centroid. Neighbor momentum is rotated
 into the selected parent frame before sensing. Published face incidences retain
@@ -69,8 +71,14 @@ that section to its explicit preset before applying overrides from that layer.
 Later configuration layers may override those values. Typed C++ callers can use
 `LimitedVRSettings::ForVariant` to construct the same preset.
 
+`numerics.p1Limiter` selects `Barth` (default) or `WBAP` for the shared P1
+gradient. `none` is available to the direct-P1 RHS and RANS P1 overlay. LVR
+requires a slope limiter. Its `o2ReferenceUsePP` field controls positivity of
+the shared P1 target. The legacy `o2ReferenceLimiter` maps to `p1Limiter`.
+
 | Preset | Shock cap | Contact cap | Extra contact seed layers |
 |---|---:|---:|---:|
+| v1 | 0.5 | 0 | 1 (inactive by default) |
 | v2 | 0.5 | 0 | 1 (inactive by default) |
 | v3 | 1 | 1 | 2 |
 
@@ -87,14 +95,14 @@ only after that branch's own correction expansion. Finally apply
 `neighborLayers` extra shock rounds, optionally only propagating saturated
 values (`saturatedOnly`). Thus different branch depths do not accidentally
 expand the base sensor or the other branch. The frozen alpha and O2 target are
-then reused through that RHS evaluation's VR sweeps. There is no post-LVR
-3WBAP step. Setting both caps to zero omits the target/gate workspace and
-recovers ordinary unlimited VR.
+then reused through that RHS evaluation's VR sweeps. Setting all caps to zero
+omits the target/gate workspace and recovers ordinary unlimited VR.
 
-The weak-shock experiment, alternate Barth target, anisotropic/tree LVR and
-new physical models are not advertised by this implementation. LVR with the
-AMG reconstruction solver is also deferred: the existing CUDA LVR capability
-belongs to the relaxation solver. The proposed true-residual formulation and
+`weakAlphaMax` enables the optional weak branch. It compares the mean-pressure
+jump to unrestricted face increments and checks acoustic compression. Its
+neighbor passes share the active gate exchanges. The first evaluation of each
+time stage starts fresh, with optional relaxation, decay or freezing for later
+evaluations in that stage. The proposed AMG true-residual formulation and
 base-hierarchy reuse are recorded in the
 [AMG deferred integration guide](../guides/amgx.md#deferred-lvr-integration-preserve-the-base-hierarchy).
 
@@ -108,8 +116,9 @@ change the production trajectory. A pending-trial checkpoint writes accepted
 means, clock and the saved accepted warm state.
 
 Default checkpoints omit both coefficients and LVR history. With reconstruction
-enabled, the optional owned `limited_vr_history` array has width two (shock,
-contact), schema marker one, and the same exact persistent-cell-ID redistribution
+enabled, the optional owned `limited_vr_history` array holds shock and contact,
+plus a third column when the weak branch is enabled. It uses schema marker one
+and the same exact persistent-cell-ID redistribution
 as other checkpoint fields. A compatible warm load restores both together.
 Missing optional history or incompatible polynomial metadata cold-starts both
 at zero; a file declaring missing/malformed history is an error. Allocation,

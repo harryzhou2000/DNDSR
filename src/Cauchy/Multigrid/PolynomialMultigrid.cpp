@@ -594,6 +594,7 @@ namespace DNDS::Cauchy
         lower.numerics.firstOrderConvection = level > 0;
         lower.numerics.cfv.maxOrder = 1;
         lower.numerics.limiter = fine.implicit.multigrid.coarseGradientBarth ? "Barth" : "none";
+        lower.numerics.p1Limiter = lower.numerics.limiter;
         lower.coarseGradientPositivity = fine.equation.system == "compressible" &&
                                          fine.implicit.multigrid.coarseGradientPositivity;
         return lower;

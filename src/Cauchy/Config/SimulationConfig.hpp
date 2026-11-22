@@ -222,6 +222,7 @@ namespace DNDS::Cauchy
     struct NumericsSettings
     {
         std::string reconstruction = "gradient", gradient = "greenGauss", flux = "rusanov", limiter = "none";
+        std::string p1Limiter = "Barth";
         CFV::LeastSquaresWeights leastSquares;
         int reconstructionIterations = 1;
         int reconstructionResidualCheckInterval = 4;
@@ -264,6 +265,10 @@ namespace DNDS::Cauchy
         int RHSIntegrationOrder() const { return reconstruction == "variational" ? cfv.intOrder : 1; }
         /// Barth bounds only the linear RANS coefficients embedded in the flow VR polynomial.
         bool UsesRANSGradientBarth() const { return ransP1Overlay && reconstruction == "variational" && limiter == "Barth"; }
+        const std::string &P1Limiter() const
+        {
+            return reconstruction == "gradient" && limiter != "none" ? limiter : p1Limiter;
+        }
         real EffectiveWallDistanceFloor() const
         {
             return wallDistanceFloor == 0 ? wallDistanceSafetyFloor : wallDistanceFloor;
@@ -273,6 +278,7 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(reconstruction, "constant, gradient, or variational reconstruction");
             DNDS_FIELD(gradient, "leastSquares, greenGauss, or ggmp");
+            DNDS_FIELD(p1Limiter, "Shared physical P1 slope limiter for direct reconstruction, the RANS overlay and LVR: Barth, WBAP or none; LVR requires a limiter");
             config.field_section(&T::leastSquares, "leastSquares", "Weights for the P1 weighted least-squares objective");
             DNDS_FIELD(flux, "Numerical inviscid flux family");
             DNDS_FIELD(limiter, "none, Barth for direct gradients or the RANS P1 overlay, WBAP, or native LVR; positivity is checked separately");
@@ -666,6 +672,10 @@ namespace DNDS::Cauchy
         /// Resolved by pMG. Direct gradients otherwise follow numerics.positivity.
         std::optional<bool> coarseGradientPositivity;
         bool GradientPositivity() const { return coarseGradientPositivity.value_or(numerics.positivity); }
+        bool PreparedP1Positivity() const
+        {
+            return numerics.limiter == "LVR" ? numerics.limitedVR.o2ReferenceUsePP : GradientPositivity();
+        }
         /// Extra halo audits are opt-in and respect the umbrella check switch.
         bool CheckHaloFreshness() const { return execution.haloFreshnessChecks && implicit.collectiveChecks; }
         DNDS_DECLARE_CONFIG(DomainSettings)

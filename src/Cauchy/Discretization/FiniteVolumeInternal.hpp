@@ -38,7 +38,7 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
     {
         const auto &numerics = settings.numerics;
         const bool limitedVR = numerics.limiter == "LVR" &&
-                               (numerics.limitedVR.alphaMax > 0 || numerics.limitedVR.contactAlphaMax > 0);
+                               numerics.limitedVR.Active();
         auto support = CFV::ReconstructionCapabilities::ForSweeps(numerics.limiter == "WBAP" || limitedVR);
         support.sweeps = numerics.reconstruction == "variational";
         return support;
