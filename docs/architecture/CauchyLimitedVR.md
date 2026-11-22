@@ -76,6 +76,11 @@ gradient. `none` is available to the direct-P1 RHS and RANS P1 overlay. LVR
 requires a slope limiter. Its `o2ReferenceUsePP` field controls positivity of
 the shared P1 target. The legacy `o2ReferenceLimiter` maps to `p1Limiter`.
 
+With `p1Limiter="WBAP"`, the gradient plan applies WBAP to physical slopes
+and uses the flow block's face transforms when characteristic limiting is enabled.
+Only `numerics.limiter="WBAP"` requests the modal secondary matrices, one
+square block per owned cell–face incidence. LVR sweeps use the prepared P1 target.
+
 | Preset | Shock cap | Contact cap | Extra contact seed layers |
 |---|---:|---:|---:|
 | v1 | 0.5 | 0 | 1 (inactive by default) |

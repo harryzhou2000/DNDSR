@@ -34,15 +34,6 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
                 flux.Kind() == Riemann::Solver::Rusanov, flux.UsesTransverseSignal(), flux.UsesPressureStencil(),
                 settings.numerics.noRsOnWall, settings.numerics.noGRPOnWall};
     }
-    inline CFV::ReconstructionCapabilities ReconstructionSupport(const DomainSettings &settings)
-    {
-        const auto &numerics = settings.numerics;
-        const bool limitedVR = numerics.limiter == "LVR" &&
-                               numerics.limitedVR.Active();
-        auto support = CFV::ReconstructionCapabilities::ForSweeps(numerics.limiter == "WBAP" || limitedVR);
-        support.sweeps = numerics.reconstruction == "variational";
-        return support;
-    }
     inline Runtime::RowLayout FieldLayout(const Runtime::RowLayout &prototype, index rows, index width)
     {
         if (prototype.Kind() == Runtime::RowLayoutKind::ColMajorTable)
@@ -222,7 +213,8 @@ namespace DNDS::Cauchy
               reconstruction(settings.numerics.reconstruction == "variational"
                                  ? std::make_optional(CFV::VariationalReconstructionPlan::ConstructRecCoeff(
                                        metrics, settings.numerics.cfv,
-                                       FiniteVolumeDetail::ReconstructionSupport(settings), progress))
+                                       // LVR's P1 WBAP uses GradientPlan. Only modal WBAP reads the secondary matrices.
+                                       CFV::ReconstructionCapabilities::ForSweeps(settings.numerics.limiter == "WBAP"), progress))
                                  : std::nullopt),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP
                                                                                                                                                                                       : CFV::GradientMethod::LeastSquares,

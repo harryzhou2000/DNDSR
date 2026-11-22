@@ -99,6 +99,7 @@ TEST_CASE("Full-width LVR applies the shared P1 target to SA across grouping and
             settings.numerics.limitedVR.densityJump = {.001, .002};
             const auto equation = Equation(settings);
             C::FiniteVolume fv(mesh, settings, equation);
+            CHECK_FALSE(fv.PolynomialReconstruction()->Capabilities().wbap);
             auto state = State(fv, split);
             Fill(state, fv, true);
             auto output = C::EquationDofOperations::NewVector(state);
