@@ -15,34 +15,38 @@ namespace DNDS::CFV
     {
         /// Only requested tables acquire writers. An omitted table has no Array
         /// allocation or lease, including on ranks with zero owned cells.
+        template <class Scalar = real>
         struct OptionalTableWriter
         {
-            std::optional<R::Array<real>::WriteLease> lease;
-            R::ArrayView<real, false, R::UniformTableRows> values;
-            explicit OptionalTableWriter(std::optional<R::Array<real>> &array)
+            std::optional<typename R::Array<Scalar>::WriteLease> lease;
+            R::ArrayView<Scalar, false, R::UniformTableRows> values;
+            explicit OptionalTableWriter(std::optional<R::Array<Scalar>> &array)
             {
                 if (array)
                 {
                     lease.emplace(array->Write());
-                    values = lease->View<R::UniformTableRows>();
+                    values = lease->template View<R::UniformTableRows>();
                 }
             }
         };
-        template <class Derived>
-        void PublishMatrix(R::ArrayView<real, false, R::UniformTableRows> target, index row,
+        template <class Scalar, class Derived>
+        void PublishMatrix(R::ArrayView<Scalar, false, R::UniformTableRows> target, index row,
                            const Eigen::MatrixBase<Derived> &matrix, bool triangle = false)
         {
+            if constexpr (std::is_same_v<Scalar, float>)
+                DNDS_check_throw_info(matrix.allFinite() && matrix.cwiseAbs().maxCoeff() <= std::numeric_limits<float>::max(),
+                                      "reconstruction matrix cannot be represented in FP32");
             const index n = matrix.rows();
             if (!triangle && target.ElementStride() == 1)
-                Eigen::Map<Matrix>(target[row].data(), n, n) = matrix;
+                Eigen::Map<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>(target[row].data(), n, n) = matrix.template cast<Scalar>();
             else if (triangle)
                 for (index i = 0; i < n; ++i)
                     for (index j = 0; j <= i; ++j)
-                        target(row, i * (i + 1) / 2 + j) = matrix(i, j);
+                        target(row, i * (i + 1) / 2 + j) = Scalar(matrix(i, j));
             else
                 for (index j = 0; j < n; ++j)
                     for (index i = 0; i < n; ++i)
-                        target(row, i + n * j) = matrix(i, j);
+                        target(row, i + n * j) = Scalar(matrix(i, j));
         }
         /// Face scratch dependencies. Full support retains the original slot
         /// order; sweep-only setup omits the two secondary change-of-base maps.
@@ -78,13 +82,18 @@ namespace DNDS::CFV
 
     VariationalReconstructionPlan VariationalReconstructionPlan::ConstructRecCoeff(FiniteVolumePlan metrics, ReconstructionSettings settings,
                                                                                    ReconstructionCapabilities capabilities,
-                                                                                   Diagnostics::SetupProgress progress)
+                                                                                   Diagnostics::SetupProgress progress,
+                                                                                   bool packRawMatricesOnHost)
     {
         auto completeStage = progress.Stage("VR/complete");
         auto geometry = metrics._data;
         // Capability differences change payload construction and diagnostics
         // collectives. This is required protocol agreement, not optional safety.
-        int modes[]{capabilities.Mask(), -capabilities.Mask()};
+        const auto &storage = settings.storage;
+        const bool packB = packRawMatricesOnHost && storage.PackedRawB();
+        const bool packInverse = packRawMatricesOnHost && storage.PackedInverse();
+        const int mode = capabilities.Mask() | (int(packB) << 5) | (int(packInverse) << 6);
+        int modes[]{mode, -mode};
         MPI_Allreduce(MPI_IN_PLACE, modes, 2, MPI_INT, MPI_MIN, geometry->communication->Communicator());
         DNDS_check_throw_info(modes[0] == -modes[1], "VR preparation capabilities differ between ranks");
         std::shared_ptr<Detail::ReconstructionData> data;
@@ -92,7 +101,6 @@ namespace DNDS::CFV
                                             {
             metrics.Validate();
             settings.Validate();
-            const auto &storage = settings.storage;
             const bool rawSweep = capabilities.sweeps && storage.Raw();
             DNDS_check_throw_info(!storage.Raw() || (!capabilities.linearSystem && !capabilities.localPreconditioner),
                                   "experimental raw VR storage requires a sweep-only capability profile");
@@ -192,16 +200,26 @@ namespace DNDS::CFV
             }
             if (rawSweep)
             {
-                data->rawMatrixB.emplace(storage.Layout(storage.faceCoupling ? nFace : incidences, n * n), R::Device::Host(), storage.Allocation());
+                const auto layout = storage.Layout(storage.faceCoupling ? nFace : incidences, n * n);
+                if (packB)
+                    data->rawMatrixB32.emplace(layout, R::Device::Host(), storage.Allocation());
+                else
+                    data->rawMatrixB.emplace(layout, R::Device::Host(), storage.Allocation());
                 data->rawVectorB.emplace(storage.Layout(incidences, n), R::Device::Host(), storage.Allocation());
                 data->rawBoundaryInjection.emplace(storage.Layout(boundaryCount, n), R::Device::Host(), storage.Allocation());
                 if (storage.faceCoupling)
                     data->rawFaceSide.emplace(R::RowLayout::Dense(incidences, 1));
             }
             if (capabilities.localPreconditioner || rawSweep)
-                data->localInverse.emplace(rawSweep
-                                              ? storage.Layout(nCell, storage.inverseTriangle ? n * (n + 1) / 2 : n * n)
-                                              : R::RowLayout::Dense(nCell, n * n), R::Device::Host(), storage.Allocation());
+            {
+                const auto layout = rawSweep
+                                        ? storage.Layout(nCell, storage.inverseTriangle ? n * (n + 1) / 2 : n * n)
+                                        : R::RowLayout::Dense(nCell, n * n);
+                if (packInverse)
+                    data->localInverse32.emplace(layout, R::Device::Host(), storage.Allocation());
+                else
+                    data->localInverse.emplace(layout, R::Device::Host(), storage.Allocation());
+            }
             if (capabilities.inverseDiagnostics)
                 data->inverseConditions.emplace(R::RowLayout::Dense(nCell, 4));
             // Match the placed sweep table names so host and device reports group the same operators.
@@ -216,10 +234,12 @@ namespace DNDS::CFV
             nameTable(data->secondary, "CFV/secondary");
             nameTable(data->localMatrix, "CFV/localMatrix");
             nameTable(data->rawMatrixB, "CFV/rawMatrixB");
+            nameTable(data->rawMatrixB32, "CFV/rawMatrixB32");
             nameTable(data->rawVectorB, "CFV/rawVectorB");
             nameTable(data->rawBoundaryInjection, "CFV/rawBoundaryInjection");
             nameTable(data->rawFaceSide, "CFV/rawFaceSide");
             nameTable(data->localInverse, "CFV/localInverse");
+            nameTable(data->localInverse32, "CFV/localInverse32");
             nameTable(data->inverseConditions, "CFV/inverseConditions");
             data->neighborRotation = R::Array<real>(R::RowLayout::Dense(incidences, 9));
             data->neighborRotationActive = R::Array<uint8_t>(R::RowLayout::Dense(incidences, 1));
@@ -230,9 +250,17 @@ namespace DNDS::CFV
             const auto rotations = rotationWrite.View<R::FixedRows<9>>();
             const auto rotationActive = rotationActiveWrite.View<R::FixedRows<1>>();
             OptionalTableWriter rawMatrixWrite(data->rawMatrixB), rawVectorWrite(data->rawVectorB), rawInjectionWrite(data->rawBoundaryInjection);
+            OptionalTableWriter rawMatrix32Write(data->rawMatrixB32), localInverse32Write(data->localInverse32);
             const auto rawMatrices = rawMatrixWrite.values, rawVectors = rawVectorWrite.values, rawInjections = rawInjectionWrite.values;
             OptionalTableWriter localMatrixWrite(data->localMatrix), localInverseWrite(data->localInverse);
             const auto localMatrices = localMatrixWrite.values, localInverses = localInverseWrite.values;
+            const auto publishB = [&](index row, const auto &matrix)
+            {
+                if (packB)
+                    PublishMatrix(rawMatrix32Write.values, row, matrix);
+                else
+                    PublishMatrix(rawMatrices, row, matrix);
+            };
             std::optional<R::Array<uint8_t>::WriteLease> faceSideWrite;
             R::ArrayView<uint8_t, false, R::FixedRows<1>> faceSides;
             if (data->rawFaceSide)
@@ -411,7 +439,7 @@ namespace DNDS::CFV
                 if (faceSystem.b >= 0)
                     Eigen::Map<Matrix>(system[iFace].data() + faceSystem.b, n, n) = bLR;
                 if (rawSweep && storage.faceCoupling)
-                    PublishMatrix(rawMatrices, iFace, bLR);
+                    publishB(iFace, bLR);
                 if (capabilities.wbap && iR != UnInitIndex)
                 {
                     const tPoint centerL{cell(iL, 1), cell(iL, 2), cell(iL, 3)}, centerR{cell(iR, 1), cell(iR, 2), cell(iR, 3)};
@@ -506,7 +534,10 @@ namespace DNDS::CFV
                         inverseSymmetry[size_t(iCell)] = inverse.allFinite() &&
                             asymmetry <= 128 * n * std::numeric_limits<real>::epsilon() * norm;
                     }
-                    PublishMatrix(localInverses, iCell, inverse, rawSweep && storage.inverseTriangle);
+                    if (packInverse)
+                        PublishMatrix(localInverse32Write.values, iCell, inverse, storage.inverseTriangle);
+                    else
+                        PublishMatrix(localInverses, iCell, inverse, rawSweep && storage.inverseTriangle);
                 }
                 if (capabilities.inverseDiagnostics)
                 {
@@ -552,7 +583,7 @@ namespace DNDS::CFV
                         if (rawSweep)
                         {
                             if (!storage.faceCoupling)
-                                PublishMatrix(rawMatrices, iEntry, rawM);
+                                publishB(iEntry, rawM);
                             for (int i = 0; i < n; ++i)
                                 rawVectors(iEntry, i) = rawB[i];
                         }

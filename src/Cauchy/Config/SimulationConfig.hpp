@@ -848,6 +848,7 @@ namespace DNDS::Cauchy
         bool boundaryFacialFluxes = false;
         bool checkpointReconstruction = false;
         bool checkpointFullMesh = false;
+        bool finalSnapshot = true;
         bool restartCheckCoordinates = true;
         bool visualizationSharedMesh = true;
         bool asynchronous = false;
@@ -876,6 +877,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(boundaryFacialFluxes, "Write observed face-averaged numerical flux and tangential force in boundary VTKHDF");
             DNDS_FIELD(hdfDeflateLevel, "VTKHDF compression level 0..9; uncompressed is the initial portable baseline");
             DNDS_FIELD(checkpointFullMesh, "Embed a complete native mesh archive in each checkpoint for independent mesh recovery");
+            DNDS_FIELD(finalSnapshot, "Write the final checkpoint and visualization; false keeps histories, diagnostics and scheduled snapshots");
             DNDS_FIELD(restartCheckCoordinates, "Validate mesh coordinates on restart; topology and persistent IDs are always checked");
             DNDS_FIELD(visualizationSharedMesh, "Reference immutable shared VTKHDF topology and point files from field snapshots");
             DNDS_FIELD(checkpointReconstruction, "Store optional compatible polynomial warm guesses for exact finite-sweep continuation; default omits them");

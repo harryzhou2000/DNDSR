@@ -356,9 +356,10 @@ namespace DNDS::Cauchy
         const auto reconstructionKernel = s.execution.ReconstructionKernel();
         const auto &storage = s.numerics.cfv.storage;
         require(!(storage.PackedRawB() || storage.PackedInverse()) ||
-                    (cuda && storage.Raw() && s.numerics.reconstruction == "variational" && !amgVR &&
-                     (reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64 || IsV2Sweep(reconstructionKernel) || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64Pipelined)),
-                "FP32 raw matrix storage requires CUDA variational relaxation with reconstructionKernel=auto or fp64Pipelined");
+                    (storage.Raw() && s.numerics.reconstruction == "variational" && !amgVR &&
+                     (!cuda || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64 ||
+                      IsV2Sweep(reconstructionKernel) || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64Pipelined)),
+                "FP32 raw matrix storage requires variational relaxation with a compatible CPU or CUDA sweep");
         require(cuda || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64,
                 "nondefault reconstruction kernel requires CUDA");
 #ifndef DNDS_USE_CCCL_COMPUTE

@@ -112,6 +112,7 @@ namespace DNDS::CFV::Detail
         // Unscaled blocks retain the original assembled operator even when
         // the truncated local inverse projects out small, nonzero modes.
         std::optional<Runtime::Array<real>> rawMatrixB, rawVectorB, rawBoundaryInjection;
+        std::optional<Runtime::Array<float>> rawMatrixB32, localInverse32;
         /// Raw face representation reuses faces as its row mapping. This byte
         /// records the canonical parent side; side one reads B transposed.
         std::optional<Runtime::Array<uint8_t>> rawFaceSide;

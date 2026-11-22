@@ -214,7 +214,8 @@ namespace DNDS::Cauchy
                                  ? std::make_optional(CFV::VariationalReconstructionPlan::ConstructRecCoeff(
                                        metrics, settings.numerics.cfv,
                                        // LVR's P1 WBAP uses GradientPlan. Only modal WBAP reads the secondary matrices.
-                                       CFV::ReconstructionCapabilities::ForSweeps(settings.numerics.limiter == "WBAP"), progress))
+                                       CFV::ReconstructionCapabilities::ForSweeps(settings.numerics.limiter == "WBAP"),
+                                       progress, settings.execution.device == "cpu"))
                                  : std::nullopt),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP
                                                                                                                                                                                       : CFV::GradientMethod::LeastSquares,

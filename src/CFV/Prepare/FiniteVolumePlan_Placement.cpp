@@ -324,7 +324,9 @@ namespace DNDS::CFV
         else if (options.sweeps)
         {
             if (view.packedRawB)
-                view.rawMatrixB32 = result->AddQuantized("rawMatrixB32", host.SweepMatrices(), context, allocation);
+                view.rawMatrixB32 = host.rawMatrixB32
+                                        ? result->Add("rawMatrixB32", *host.rawMatrixB32, context, allocation)
+                                        : result->AddQuantized("rawMatrixB32", host.SweepMatrices(), context, allocation);
             else
                 view.matrixAInvB = result->Add(view.raw ? "rawMatrixB" : "matrixAInvB", host.SweepMatrices(), context, allocation);
             view.vectorAInvB = result->Add(view.raw ? "rawVectorB" : "vectorAInvB", host.SweepVectors(), context, allocation);
@@ -333,7 +335,9 @@ namespace DNDS::CFV
         if (options.sweeps && view.raw)
         {
             if (view.packedInverse)
-                view.localInverse32 = result->AddQuantized("localInverse32", *host.localInverse, context, allocation);
+                view.localInverse32 = host.localInverse32
+                                          ? result->Add("localInverse32", *host.localInverse32, context, allocation)
+                                          : result->AddQuantized("localInverse32", *host.localInverse, context, allocation);
             else
                 view.localInverse = result->Add("localInverse", *host.localInverse, context, allocation);
             if (view.faceCoupling)

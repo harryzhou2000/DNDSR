@@ -71,14 +71,14 @@ Quantized FP32-map placement also supports `fp32Pipelined` (full FP32 SIMT
 arithmetic) and `tf32Pipelined` (TF32-rounded tensor products and FP32 update
 arithmetic), through the same neighbor-buffered implementation.
 
-Raw CUDA relaxation separately supports `numerics.cfv.storage.rawBPrecision`
+Raw CPU and CUDA relaxation support `numerics.cfv.storage.rawBPrecision`
 and `numerics.cfv.storage.inversePrecision`, each accepting `fp64` (default)
-or `fp32`. These controls quantize only the selected device matrix after FP64
+or `fp32`. These controls quantize only the selected resident matrix after FP64
 setup and inversion. The raw mean and boundary maps, evolving coefficients,
-and all update arithmetic remain FP64. Both general FP64 and the eligible V2 presets load packed values directly. The
-inverse precision applies to both full and triangular inverse storage.
-The kernel promotes packed values on load and retains a single device
-allocation per matrix.
+and CPU raw update arithmetic remain FP64. The host Cauchy relaxation path
+publishes each selected matrix directly in FP32, without retaining an FP64
+copy. CUDA general FP64 and eligible V2 presets load packed values directly.
+The inverse precision applies to both full and triangular inverse storage.
 
 TF32 has a separately looser accuracy budget;
 it is not an ordinary-FP32 alias. The general FP32/TF32 policies remain

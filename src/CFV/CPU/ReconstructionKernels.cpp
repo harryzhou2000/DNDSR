@@ -70,7 +70,6 @@ namespace DNDS::CFV::CPU
                     const bool rotatedEntry = view.rotated && rotationActive(iEntry, 0);
                     const index matrixRow = view.faceCoupling ? view.faces(iEntry, 0) : iEntry;
                     const bool transpose = view.faceCoupling && view.faceSides(iEntry, 0);
-                    const auto block = matrices[matrixRow];
                     // SOR reads completed predecessors from a separate output,
                     // leaving the whole input immutable for direct MPI sends.
                     const auto otherCoefficients = other < work.owned
@@ -79,19 +78,30 @@ namespace DNDS::CFV::CPU
                     // Component rotation is independent of spatial derivative
                     // pullback, already included in the prepared B block.
                     // Apply scalar columns directly, then correct vector blocks.
+                    const auto addRawProduct = [&](const auto &coefficients, index first)
+                    {
+                        const auto accumulate = [&](auto block)
+                        {
+                            for (index variable = 0; variable < coefficients.cols(); ++variable)
+                                for (index i = 0; i < n; ++i)
+                                {
+                                    real product = 0;
+                                    for (index j = 0; j < n; ++j)
+                                        product += real(block[transpose ? j + n * i : i + n * j]) * coefficients(j, variable);
+                                    rawRight(i, first + variable) += product;
+                                }
+                        };
+                        if (view.matrices32.data)
+                            accumulate(view.matrices32[matrixRow]);
+                        else
+                            accumulate(matrices[matrixRow]);
+                    };
                     if (view.raw)
                     {
                         // A same-frame periodic self-neighbor was subtracted
                         // from A at setup. Its shared face B must not reappear.
                         if (other != iCell || rotatedEntry)
-                            for (index variable = 0; variable < nv; ++variable)
-                                for (index i = 0; i < n; ++i)
-                                {
-                                    real product = 0;
-                                    for (index j = 0; j < n; ++j)
-                                        product += block[transpose ? j + n * i : i + n * j] * otherCoefficients(j, variable);
-                                    rawRight(i, variable) += product;
-                                }
+                            addRawProduct(otherCoefficients, 0);
                     }
                     else
                         output.noalias() += scale * matrixRows[iEntry] * otherCoefficients;
@@ -101,14 +111,7 @@ namespace DNDS::CFV::CPU
                             const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
                             rotatedRec = otherCoefficients.middleCols(first, 3) * (rotation.transpose() - Geom::tGPoint::Identity());
                             if (view.raw)
-                                for (index variable = 0; variable < 3; ++variable)
-                                    for (index i = 0; i < n; ++i)
-                                    {
-                                        real product = 0;
-                                        for (index j = 0; j < n; ++j)
-                                            product += block[transpose ? j + n * i : i + n * j] * rotatedRec(j, variable);
-                                        rawRight(i, first + variable) += product;
-                                    }
+                                addRawProduct(rotatedRec, first);
                             else
                                 output.middleCols(first, 3).noalias() += scale * matrixRows[iEntry] * rotatedRec;
                         }
@@ -140,15 +143,21 @@ namespace DNDS::CFV::CPU
             }
             if (view.raw)
             {
-                const auto inverse = view.inverse[iCell];
-                for (index variable = 0; variable < nv; ++variable)
-                    for (index i = 0; i < n; ++i)
-                    {
-                        real value = 0;
-                        for (index j = 0; j < n; ++j)
-                            value += inverse[view.inverseTriangle ? Math::SymmetricTriangleEntry(i, j) : i + n * j] * rawRight(j, variable);
-                        output(i, variable) += scale * value;
-                    }
+                const auto applyInverse = [&](auto inverse)
+                {
+                    for (index variable = 0; variable < nv; ++variable)
+                        for (index i = 0; i < n; ++i)
+                        {
+                            real value = 0;
+                            for (index j = 0; j < n; ++j)
+                                value += real(inverse[view.inverseTriangle ? Math::SymmetricTriangleEntry(i, j) : i + n * j]) * rawRight(j, variable);
+                            output(i, variable) += scale * value;
+                        }
+                };
+                if (view.inverse32.data)
+                    applyInverse(view.inverse32[iCell]);
+                else
+                    applyInverse(view.inverse[iCell]);
             }
         };
         const index owned = work.owned;

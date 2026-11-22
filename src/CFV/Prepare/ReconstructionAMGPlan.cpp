@@ -40,6 +40,8 @@ namespace DNDS::CFV
                                   source._data && !source._data->hasRotatedPeriodicity && source._data->capabilities.sweeps,
                               "VR AMG prototype needs a host sweep plan, CUDA, and no rotated periodicity");
         const auto &host = *source._data;
+        DNDS_check_throw_info(!host.rawMatrixB32 && !host.localInverse32,
+                              "VR AMG requires full-precision host matrices");
         const auto &space = host.metrics.Space();
         DNDS_check_throw_info(!space.Distributed() || MPIInfo(space.Communicator()).size == 1,
                               "VR AMG currently supports one rank/device; no hidden principal extraction");

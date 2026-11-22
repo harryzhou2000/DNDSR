@@ -489,6 +489,9 @@ TEST_CASE("Deprecated time and output aliases are exclusive with their canonical
     const auto oldOutput = C::SimulationConfig::Resolve({{"output", {{"interval", 7}}}}, 1);
     CHECK(oldOutput.Output().checkpointInterval == 7);
     CHECK(oldOutput.Output().interval == -1);
+    CHECK(oldOutput.Output().finalSnapshot);
+    const auto noFinalSnapshot = C::SimulationConfig::Resolve({{"output", {{"finalSnapshot", false}}}}, 1);
+    CHECK_FALSE(noFinalSnapshot.Output().finalSnapshot);
 
     CHECK_THROWS_WITH(C::SimulationConfig::Resolve({{"time", {{"tEnd", 2.5}, {"finalTime", 2.5}}}}, 1),
                       doctest::Contains("only time.tEnd"));

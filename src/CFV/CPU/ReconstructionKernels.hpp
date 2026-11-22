@@ -30,6 +30,7 @@ namespace DNDS::CFV::CPU
     {
         ReconstructionIndexRows offsets, neighbors, boundaryOffsets;
         ReconstructionReadRows matrices, vectors, injection, inverse;
+        R::ArrayView<const float, R::AccessBoundsChecks, R::UniformTableRows> matrices32, inverse32;
         ReconstructionIndexRows faces;
         R::ArrayView<const uint8_t, R::AccessBoundsChecks, R::FixedRows<1>> faceSides;
         R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<9>> rotations;

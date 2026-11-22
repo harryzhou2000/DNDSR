@@ -179,6 +179,72 @@ TEST_CASE("One-cell OpenMP SOR blocks reduce to Jacobi with frozen cross-block r
     Equal(a, b);
 }
 
+TEST_CASE("CPU raw VR retains only selected matrix precision across a split sweep")
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, true);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+    C::ReconstructionSettings settings;
+    settings.storage.representation = "raw";
+    settings.storage.inverseTriangle = true;
+    settings.storage.faceCoupling = true;
+    const auto caps = C::ReconstructionCapabilities::ForSweeps(false);
+    auto reference = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings, caps);
+    const auto tableBytes = [](const auto &plan, const char *name)
+    {
+        for (const auto &table : plan.StorageReport().tables)
+            if (table.name == name)
+                return table.payloadBytes;
+        return uint64_t(0);
+    };
+    auto mean = metrics.BuildField(2);
+    Fill(mean, 1);
+    metrics.BindHalo(mean).Begin().Wait();
+    const auto sweep = [&](const auto &plan, bool queued)
+    {
+        auto coefficients = plan.BuildCoefficients(2);
+        auto work = plan.BuildWorkspace(2);
+        auto boundary = plan.BuildBoundaryValues(2);
+        Fill(coefficients, 0.2);
+        {
+            auto write = boundary.values.Write();
+            for (I row = 0; row < boundary.values.RowCount(); ++row)
+                for (I component = 0; component < 2; ++component)
+                    write.View()(row, component) = 1 + component;
+        }
+        metrics.BindHalo(coefficients).Begin().Wait();
+        if (queued)
+        {
+            R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+            auto stream = engine.CreateCPUStream();
+            for (const auto region : {C::ReconstructionRegion::Core, C::ReconstructionRegion::HaloDependent})
+                plan.SubmitReconstructionIterTo(engine, stream, mean, coefficients, work, boundary, region);
+            plan.SubmitCommitReconstruction(engine, stream, coefficients, work);
+            engine.Synchronize();
+        }
+        else
+            plan.DoReconstructionIter(mean, coefficients, work, boundary);
+        return coefficients;
+    };
+    auto doubleCoefficients = sweep(reference, false);
+    for (const auto &choice : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}})
+    {
+        settings.storage.rawBPrecision = choice.first ? "fp32" : "fp64";
+        settings.storage.inversePrecision = choice.second ? "fp32" : "fp64";
+        auto packed = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings, caps, {}, true);
+        CHECK(tableBytes(packed, "rawMatrixB32") * 2 == (choice.first ? tableBytes(reference, "rawMatrixB") : 0));
+        CHECK(tableBytes(packed, "localInverse32") * 2 == (choice.second ? tableBytes(reference, "localInverse") : 0));
+        CHECK(tableBytes(packed, "rawMatrixB") == (choice.first ? 0 : tableBytes(reference, "rawMatrixB")));
+        CHECK(tableBytes(packed, "localInverse") == (choice.second ? 0 : tableBytes(reference, "localInverse")));
+        auto immediate = sweep(packed, false);
+        auto queued = sweep(packed, true);
+        Equal(immediate, queued);
+        auto expected = doubleCoefficients.Owned().Read(), actual = queued.Owned().Read();
+        for (I row = 0; row < actual.View().RowCount(); ++row)
+            for (I component = 0; component < queued.Width(); ++component)
+                CHECK(actual.View()(row, component) == doctest::Approx(expected.View()(row, component)).epsilon(2e-5));
+    }
+}
+
 TEST_CASE("CFV split operators share eager ordering across inline and worker CPU launchers")
 {
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, true);

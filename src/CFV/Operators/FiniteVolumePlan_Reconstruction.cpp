@@ -165,6 +165,7 @@ namespace DNDS::CFV
             R::Array<uint8_t>::ReadLease rotationActive;
             std::optional<R::Array<index>::ReadLease> boundaryOffsets, faces;
             std::optional<R::Array<real>::ReadLease> matrices, vectors, injection, inverse, secondary;
+            std::optional<R::Array<float>::ReadLease> matrices32, inverse32;
             std::optional<R::Array<uint8_t>::ReadLease> faceSides;
             HostReconstructionRead(std::shared_ptr<const Detail::ReconstructionData> values, Geom::MeshReadAccess meshRead,
                                    const ReconstructionWorkspace &work, ReconstructionRegion region, bool limiter)
@@ -180,12 +181,18 @@ namespace DNDS::CFV
                 else
                 {
                     boundaryOffsets.emplace(data->boundaryOffsets.Read());
-                    matrices.emplace(data->SweepMatrices().Read());
+                    if (data->rawMatrixB32)
+                        matrices32.emplace(data->rawMatrixB32->Read());
+                    else
+                        matrices.emplace(data->SweepMatrices().Read());
                     vectors.emplace(data->SweepVectors().Read());
                     injection.emplace(data->SweepInjection().Read());
                     if (data->settings.storage.Raw())
                     {
-                        inverse.emplace(data->localInverse->Read());
+                        if (data->localInverse32)
+                            inverse32.emplace(data->localInverse32->Read());
+                        else
+                            inverse.emplace(data->localInverse->Read());
                         if (data->settings.storage.faceCoupling)
                         {
                             faces.emplace(data->faces.Read());
@@ -200,11 +207,16 @@ namespace DNDS::CFV
                 result.offsets = offsets.View<R::FixedRows<1>>();
                 result.neighbors = neighbors.View<R::FixedRows<1>>();
                 result.boundaryOffsets = boundaryOffsets->View<R::FixedRows<1>>();
-                result.matrices = matrices->View<R::UniformTableRows>();
+                if (matrices32)
+                    result.matrices32 = matrices32->View<R::UniformTableRows>();
+                else
+                    result.matrices = matrices->View<R::UniformTableRows>();
                 result.vectors = vectors->View<R::UniformTableRows>();
                 result.injection = injection->View<R::UniformTableRows>();
                 if (inverse)
                     result.inverse = inverse->View<R::UniformTableRows>();
+                if (inverse32)
+                    result.inverse32 = inverse32->View<R::UniformTableRows>();
                 if (result.faceCoupling)
                 {
                     result.faces = faces->View<R::FixedRows<1>>();
@@ -267,31 +279,39 @@ namespace DNDS::CFV
                 alphaSlot = add(*alpha);
                 view.limited = true;
             }
-            const index inverseSlot = view.raw ? add(*data->localInverse) : -1;
             // Split SOR consumes core results already written to this output.
             // Its dependent pass is therefore a read/write operand, not merely
             // a write reservation, even though the input coefficients stay frozen.
             std::vector<WriteOperand> writes{view.sor && region == ReconstructionRegion::HaloDependent
                                                  ? R::ReadWriteAs<R::UniformTableRows>(work.temporary.Owned())
                                                  : R::WriteAs<R::UniformTableRows>(work.temporary.Owned())};
-            const auto launch = [retained, view, meanGhost, inputGhost, targetSlot, alphaSlot, inverseSlot, region](R::ExecutionContext, SpanView<const ReadRows> inputs, SpanView<const WriteRows> outputs, auto offsets, auto neighbors, auto boundaryOffsets, auto matrices, auto vectors, auto injection, auto rotations, auto rotationActive, auto... rawMetadata) mutable
+            const auto launch = [retained, view, meanGhost, inputGhost, targetSlot, alphaSlot, region](R::ExecutionContext, SpanView<const ReadRows> inputs, SpanView<const WriteRows> outputs, auto offsets, auto neighbors, auto boundaryOffsets, auto matrices, auto vectors, auto injection, auto rotations, auto rotationActive, auto... rawOperands) mutable
             {
                 const TimelineScope execution("CFV/CPU/ReconstructionSweep", int(region));
                                     view.offsets = offsets;
                                     view.neighbors = neighbors;
                                     view.boundaryOffsets = boundaryOffsets;
-                                    view.matrices = matrices;
+                                    if constexpr (std::is_same_v<std::remove_const_t<typename decltype(matrices)::value_type>, float>)
+                                        view.matrices32 = matrices;
+                                    else
+                                        view.matrices = matrices;
                                     view.vectors = vectors;
                                     view.injection = injection;
                                     view.rotations = rotations;
                                     view.rotationActive = rotationActive;
-                                    if (view.raw) view.inverse = inputs[inverseSlot];
-                                    if constexpr (sizeof...(rawMetadata) == 2)
+                                    const auto setRawOperand = [&](auto operand)
                                     {
-                                        const auto raw = std::make_tuple(rawMetadata...);
-                                        view.faces = std::get<0>(raw);
-                                        view.faceSides = std::get<1>(raw);
-                                    }
+                                        using Scalar = std::remove_const_t<typename decltype(operand)::value_type>;
+                                        if constexpr (std::is_same_v<Scalar, real>)
+                                            view.inverse = operand;
+                                        else if constexpr (std::is_same_v<Scalar, float>)
+                                            view.inverse32 = operand;
+                                        else if constexpr (std::is_same_v<Scalar, index>)
+                                            view.faces = operand;
+                                        else
+                                            view.faceSides = operand;
+                                    };
+                                    (setRawOperand(rawOperands), ...);
                                     view.means = {inputs[0], meanGhost >= 0 ? inputs[meanGhost] : ReadRows{}};
                                     view.current = inputs[1];
                                     view.boundary = TableView(inputs[2]);
@@ -304,14 +324,30 @@ namespace DNDS::CFV
                                     }
                                     const auto status = CPU::ReconstructionSweep(view, retained->selection);
                                     DNDS_check_throw_info(status, "reconstruction penalty alpha must be finite and in [0,1]"); };
-            auto operands = std::make_tuple(R::ReadAs<R::FixedRows<1>>(data->offsets), R::ReadAs<R::FixedRows<1>>(data->neighbors),
-                                            R::ReadAs<R::FixedRows<1>>(data->boundaryOffsets), R::ReadAs<R::UniformTableRows>(data->SweepMatrices()),
-                                            R::ReadAs<R::UniformTableRows>(data->SweepVectors()), R::ReadAs<R::UniformTableRows>(data->SweepInjection()),
-                                            R::ReadAs<R::FixedRows<9>>(data->neighborRotation), R::ReadAs<R::FixedRows<1>>(data->neighborRotationActive));
-            if (view.faceCoupling)
-                R::SubmitArrayBatch(engine, stream, launch, std::move(reads), std::move(writes), std::tuple_cat(std::move(operands), std::make_tuple(R::ReadAs<R::FixedRows<1>>(data->faces), R::ReadAs<R::FixedRows<1>>(*data->rawFaceSide))));
+            const auto submit = [&](const auto &matrices, auto... inverse)
+            {
+                auto operands = std::make_tuple(R::ReadAs<R::FixedRows<1>>(data->offsets), R::ReadAs<R::FixedRows<1>>(data->neighbors),
+                                                R::ReadAs<R::FixedRows<1>>(data->boundaryOffsets), R::ReadAs<R::UniformTableRows>(matrices),
+                                                R::ReadAs<R::UniformTableRows>(data->SweepVectors()), R::ReadAs<R::UniformTableRows>(data->SweepInjection()),
+                                                R::ReadAs<R::FixedRows<9>>(data->neighborRotation), R::ReadAs<R::FixedRows<1>>(data->neighborRotationActive), inverse...);
+                if (view.faceCoupling)
+                    R::SubmitArrayBatch(engine, stream, launch, std::move(reads), std::move(writes), std::tuple_cat(std::move(operands), std::make_tuple(R::ReadAs<R::FixedRows<1>>(data->faces), R::ReadAs<R::FixedRows<1>>(*data->rawFaceSide))));
+                else
+                    R::SubmitArrayBatch(engine, stream, launch, std::move(reads), std::move(writes), std::move(operands));
+            };
+            const auto submitSweep = [&](const auto &matrices)
+            {
+                if (data->localInverse32)
+                    submit(matrices, R::ReadAs<R::UniformTableRows>(*data->localInverse32));
+                else if (view.raw)
+                    submit(matrices, R::ReadAs<R::UniformTableRows>(*data->localInverse));
+                else
+                    submit(matrices);
+            };
+            if (data->rawMatrixB32)
+                submitSweep(*data->rawMatrixB32);
             else
-                R::SubmitArrayBatch(engine, stream, launch, std::move(reads), std::move(writes), std::move(operands));
+                submitSweep(data->SweepMatrices());
         }
     }
     const FiniteVolumePlan &VariationalReconstructionPlan::Metrics() const
@@ -412,6 +448,8 @@ namespace DNDS::CFV
         DNDS_REC_OPTIONAL_STORAGE(localMatrix);
         DNDS_REC_OPTIONAL_STORAGE(localInverse);
         DNDS_REC_OPTIONAL_STORAGE(rawMatrixB);
+        DNDS_REC_OPTIONAL_STORAGE(localInverse32);
+        DNDS_REC_OPTIONAL_STORAGE(rawMatrixB32);
         DNDS_REC_OPTIONAL_STORAGE(rawVectorB);
         DNDS_REC_OPTIONAL_STORAGE(rawBoundaryInjection);
         DNDS_REC_OPTIONAL_STORAGE(inverseConditions);

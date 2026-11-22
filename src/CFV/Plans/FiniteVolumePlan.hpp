@@ -630,9 +630,12 @@ namespace DNDS::CFV
         /// Collective CPU setup. The immutable capabilities must agree on all
         /// ranks. Default support preserves the standalone API; reduced profiles
         /// omit unused tables and fail explicitly on unprepared operations.
+        /// CPU relaxation can retain requested FP32 matrices directly without an
+        /// FP64 copy. The default leaves quantization to device placement.
         static VariationalReconstructionPlan ConstructRecCoeff(FiniteVolumePlan metrics, ReconstructionSettings settings = {},
                                                                ReconstructionCapabilities capabilities = {},
-                                                               Diagnostics::SetupProgress progress = {});
+                                                               Diagnostics::SetupProgress progress = {},
+                                                               bool packRawMatricesOnHost = false);
         /// Return the same public CFV plan placed on one backend. CUDA setup is
         /// synchronous; hot submissions are stream ordered. Set
         /// retainHostPayloads=false after preparing host geometry queries;

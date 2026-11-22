@@ -607,7 +607,8 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(!finalized,
                                   "Cauchy output coordinator finalized twice");
             finalized = true;
-            WriteSnapshot("-final", true, true);
+            if (output.finalSnapshot)
+                WriteSnapshot("-final", true, true);
             if (asynchronous)
                 asynchronous->Drain();
             if (output.diagnostics.allocations)

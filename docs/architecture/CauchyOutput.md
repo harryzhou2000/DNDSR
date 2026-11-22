@@ -30,8 +30,10 @@ run-S<step>-manifest.json
 run-summary.json
 ```
 
-`-final` replaces the step/time token for the unconditional final checkpoint
-and visualization. A snapshot manifest records the accepted step and time plus
+`-final` replaces the step/time token for the final checkpoint and
+visualization. Set `output.finalSnapshot=false` to suppress those final field
+files while retaining the run summary, logs, and allocation reports. Scheduled
+snapshots have independent controls. A snapshot manifest records the accepted step and time plus
 checkpoint, volume and boundary paths. The run manifest records the
 detailed-history schema, status enumeration and logical component names once,
 so CSV rows remain compact numeric data.
