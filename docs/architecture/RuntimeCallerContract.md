@@ -70,6 +70,11 @@ scope when a peer could still be waiting. Normal retirement still waits.
 The CPU executor captures the solver policy when created. A compute worker
 failure terminates the process without calling MPI from the worker.
 
+On a controller thread inside `MPI::SolverFailureScope`, a failed
+`DNDS_check_throw_info` emits its source file, line, condition and message to
+stderr before unwinding. This preserves the originating check when destruction
+of a live schedule or MPI request must abort immediately.
+
 Outside production solver scope, worker execution retains exceptions until its event/synchronization is observed.
 That is a transport of the error to the controller, not numerical recovery.
 Observe worker completion before entering dependent MPI. For recoverable numerical

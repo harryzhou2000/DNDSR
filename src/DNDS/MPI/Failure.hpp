@@ -53,12 +53,21 @@ namespace DNDS::MPI
     class SolverFailureScope
     {
         MPI_Comm _previous = FailureDetail::solverCommunicator;
+        bool _previousReport = reportCheckBeforeUnwind;
 
     public:
-        explicit SolverFailureScope(MPI_Comm control) noexcept { FailureDetail::solverCommunicator = control; }
+        explicit SolverFailureScope(MPI_Comm control) noexcept
+        {
+            FailureDetail::solverCommunicator = control;
+            reportCheckBeforeUnwind = control != MPI_COMM_NULL;
+        }
         SolverFailureScope(const SolverFailureScope &) = delete;
         SolverFailureScope &operator=(const SolverFailureScope &) = delete;
-        ~SolverFailureScope() { FailureDetail::solverCommunicator = _previous; }
+        ~SolverFailureScope()
+        {
+            reportCheckBeforeUnwind = _previousReport;
+            FailureDetail::solverCommunicator = _previous;
+        }
     };
 
     inline bool SolverFailureScopeActive() noexcept

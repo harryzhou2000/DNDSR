@@ -122,6 +122,10 @@ namespace DNDS::CFV
         /// Mutable backend matrices. Caller orders producer then limiting.
         /// Numerical inverse checking is a separate opt-in diagnostic.
         GradientFaceCharacteristicTransform BuildQueuedFaceTransform(index first, index count) const;
+        /// Share a queued modal transform on the same face ordering and placement.
+        /// The gradient descriptor retains the arrays and its own plan identity.
+        std::pair<FaceCharacteristicTransform, GradientFaceCharacteristicTransform>
+        BuildSharedQueuedFaceTransforms(const VariationalReconstructionPlan &modalPlan, index first, index count) const;
         /// Opt-in diagnostic, not called automatically by a limiter.
         void SubmitValidateFaceTransform(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                          const GradientFaceCharacteristicTransform &, GradientWorkspace &) const;

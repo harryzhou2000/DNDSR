@@ -93,6 +93,10 @@ namespace DNDS
         std::abort();
     }
 
+    /// Solver controllers opt in to reporting the originating check before RAII
+    /// cleanup can abort a communicator while the exception is unwinding.
+    inline thread_local bool reportCheckBeforeUnwind = false;
+
     /// @brief Throwing variant of #assert_false_info. Used by @ref DNDS_check_throw.
     /// @tparam TException Exception type to throw (defaults to `std::runtime_error`).
     /// Currently the implementation ignores the template parameter and always
@@ -100,6 +104,9 @@ namespace DNDS
     template <class TException = std::runtime_error>
     void assert_false_info_throw(const char *expr, const char *file, int line, const std::string &info)
     {
+        if (reportCheckBeforeUnwind)
+            std::cerr << "DNDS solver check at " << file << ":" << line << ": " << info
+                      << " [" << expr << "]" << std::endl;
         std::stringstream ss;
         ss << getTraceString() << "\n";
         ss << "\033[91m DNDS_assertion failed\033[39m: \"" << expr << "\"  at [  " << file << ":" << line << "  ]\n"

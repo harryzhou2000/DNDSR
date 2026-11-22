@@ -187,17 +187,14 @@ namespace DNDS::Cauchy
             const auto flow = state.LocateBlock("flow");
             DNDS_check_throw_info(flow.componentNumber == 5, "characteristic limiter requires one five-component flow block");
             flowCharacteristicField = flow.physicalField;
-            if (prepareP1 && p1Limiter == "WBAP")
-                gradientFlowCharacteristic.emplace(owner->gradient.BuildQueuedFaceTransform(flow.firstComponent, 5));
-            if (modalWBAP)
-            {
+            const bool gradientWBAP = prepareP1 && p1Limiter == "WBAP";
+            if (modalWBAP && gradientWBAP)
+                std::tie(flowCharacteristic, gradientFlowCharacteristic) =
+                    owner->gradient.BuildSharedQueuedFaceTransforms(*owner->reconstruction, flow.firstComponent, 5);
+            else if (modalWBAP)
                 flowCharacteristic.emplace(owner->reconstruction->BuildQueuedFaceTransform(flow.firstComponent, 5));
-                if (gradientFlowCharacteristic)
-                {
-                    gradientFlowCharacteristic->forward = flowCharacteristic->forward;
-                    gradientFlowCharacteristic->inverse = flowCharacteristic->inverse;
-                }
-            }
+            else
+                gradientFlowCharacteristic.emplace(owner->gradient.BuildQueuedFaceTransform(flow.firstComponent, 5));
         }
         if (numerics.reconstruction != "variational" || (meanOnly && owner->equation.HasRANS()) || prepareP1)
         {

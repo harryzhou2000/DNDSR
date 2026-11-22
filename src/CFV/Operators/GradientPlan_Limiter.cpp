@@ -21,9 +21,11 @@ namespace DNDS::CFV
             DNDS_check_throw_info(valid(transform.forward) && valid(transform.inverse),
                                   "gradient characteristic matrix shape or placement differs");
             const bool queued = transform.validation == CharacteristicValidation::Queued;
-            DNDS_check_throw_info((queued || (transform.validation == CharacteristicValidation::Frozen && transform.forwardVersion != 0 && transform.forwardVersion == transform.forward.Version() && transform.inverseVersion == transform.inverse.Version())) &&
-                                      transform.forwardIdentity == transform.forward.Identity() && transform.inverseIdentity == transform.inverse.Identity(),
-                                  "gradient characteristic matrices changed; finalize them before limiting");
+            DNDS_check_throw_info(transform.forwardIdentity == transform.forward.Identity() && transform.inverseIdentity == transform.inverse.Identity(),
+                                  "gradient WBAP characteristic storage was replaced after binding");
+            DNDS_check_throw_info(queued || (transform.validation == CharacteristicValidation::Frozen && transform.forwardVersion != 0 &&
+                                             transform.forwardVersion == transform.forward.Version() && transform.inverseVersion == transform.inverse.Version()),
+                                  "gradient WBAP frozen matrix values changed; finalize the transform before limiting");
         }
     }
     GradientFaceCharacteristicTransform GradientPlan::BuildQueuedFaceTransform(index first, index count) const
@@ -48,6 +50,21 @@ namespace DNDS::CFV
         result.forwardIdentity = result.forward.Identity();
         result.inverseIdentity = result.inverse.Identity();
         return result;
+    }
+    std::pair<FaceCharacteristicTransform, GradientFaceCharacteristicTransform>
+    GradientPlan::BuildSharedQueuedFaceTransforms(const VariationalReconstructionPlan &modalPlan, index first, index count) const
+    {
+        _data->metrics.Validate();
+        DNDS_check_throw_info(Device() == modalPlan.Device() && _data->metrics.Space().Same(modalPlan.Space()),
+                              "shared WBAP characteristics require matching gradient and modal mesh spaces and devices");
+        auto modal = modalPlan.BuildQueuedFaceTransform(first, count);
+        GradientFaceCharacteristicTransform gradient{first, count, modal.forward, modal.inverse, _data->identity};
+        gradient.validation = CharacteristicValidation::Queued;
+        gradient.forwardIdentity = modal.forwardIdentity;
+        gradient.inverseIdentity = modal.inverseIdentity;
+        if (count)
+            ValidateTransform(gradient, Device(), _data->metrics.NumFaceProc());
+        return {std::move(modal), std::move(gradient)};
     }
     void GradientPlan::SubmitValidateFaceTransform(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                    const GradientFaceCharacteristicTransform &transform, GradientWorkspace &workspace) const

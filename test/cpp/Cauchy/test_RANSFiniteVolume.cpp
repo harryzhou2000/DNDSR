@@ -367,6 +367,8 @@ TEST_CASE("Characteristic WBAP transforms only flow5 across combined and segment
     settings.numerics.reconstructionIterations = 3;
     settings.numerics.limiter = "WBAP";
     settings.numerics.characteristicLimiter = true;
+    settings.numerics.ransP1Overlay = true;
+    settings.numerics.p1Limiter = "WBAP";
     settings.numerics.positivity = false;
     settings.numerics.riemann.useStencil = false;
     const auto equation = Equation(settings);
