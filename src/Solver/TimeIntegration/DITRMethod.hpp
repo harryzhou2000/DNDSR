@@ -69,9 +69,12 @@ namespace DNDS::ODE
         DITRMethod(const State &prototype, real fraction = .55, real theta = .9146,
                    DITRVariant variant = DITRVariant::U2R2, LocalAction local = {}, Operations operations = {})
             : _operations(std::move(operations)), _coefficients(fraction, variant), _fraction(fraction), _theta(theta), _local(std::move(local)),
-              _initial(Operations::NewVector(prototype)), _middle(Operations::NewVector(prototype)),
-              _initialRate(Operations::NewVector(prototype)), _middleRate(Operations::NewVector(prototype)),
-              _endRate(Operations::NewVector(prototype)), _resOther(Operations::NewVector(prototype)), _middleBinding(_middle)
+              _initial(Detail::NewTimeStorage<Operations>(prototype, "DITR/initial", 0)),
+              _middle(Detail::NewTimeStorage<Operations>(prototype, "DITR/middle", 0)),
+              _initialRate(Detail::NewTimeStorage<Operations>(prototype, "DITR/initialRate", 0)),
+              _middleRate(Detail::NewTimeStorage<Operations>(prototype, "DITR/middleRate", 0)),
+              _endRate(Detail::NewTimeStorage<Operations>(prototype, "DITR/endRate", 0)),
+              _resOther(Detail::NewTimeStorage<Operations>(prototype, "DITR/resOther", 0)), _middleBinding(_middle)
         {
             DNDS_check_throw_info(std::isfinite(theta) && theta > 0, "DITR intermediate equation weight must be positive");
         }

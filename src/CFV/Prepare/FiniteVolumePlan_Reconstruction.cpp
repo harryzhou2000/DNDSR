@@ -169,6 +169,10 @@ namespace DNDS::CFV
             data->faces = R::Array<index>(R::RowLayout::Dense(incidences, 1));
             data->neighbors = R::Array<index>(R::RowLayout::Dense(incidences, 1));
             data->boundaryOffsets = R::Array<index>(R::RowLayout::Dense(incidences + 1, 1));
+            data->offsets.SetName("CFV/offsets", DNDS_ALLOCATION_SITE());
+            data->faces.SetName("CFV/faces", DNDS_ALLOCATION_SITE());
+            data->neighbors.SetName("CFV/neighbors", DNDS_ALLOCATION_SITE());
+            data->boundaryOffsets.SetName("CFV/boundaryOffsets", DNDS_ALLOCATION_SITE());
             // Central operation-to-storage dependency table. Do not construct
             // full tables and discard them after setup: that retains peak cost.
             if (capabilities.sweeps && !rawSweep)
@@ -200,8 +204,27 @@ namespace DNDS::CFV
                                               : R::RowLayout::Dense(nCell, n * n), R::Device::Host(), storage.Allocation());
             if (capabilities.inverseDiagnostics)
                 data->inverseConditions.emplace(R::RowLayout::Dense(nCell, 4));
+            // Match the placed sweep table names so host and device reports group the same operators.
+            const auto nameTable = [](const auto &table, const char *name)
+            {
+                if (table)
+                    table->SetName(name, DNDS_ALLOCATION_SITE());
+            };
+            nameTable(data->matrixAInvB, "CFV/matrixAInvB");
+            nameTable(data->vectorAInvB, "CFV/vectorAInvB");
+            nameTable(data->boundaryInjection, "CFV/boundaryInjection");
+            nameTable(data->secondary, "CFV/secondary");
+            nameTable(data->localMatrix, "CFV/localMatrix");
+            nameTable(data->rawMatrixB, "CFV/rawMatrixB");
+            nameTable(data->rawVectorB, "CFV/rawVectorB");
+            nameTable(data->rawBoundaryInjection, "CFV/rawBoundaryInjection");
+            nameTable(data->rawFaceSide, "CFV/rawFaceSide");
+            nameTable(data->localInverse, "CFV/localInverse");
+            nameTable(data->inverseConditions, "CFV/inverseConditions");
             data->neighborRotation = R::Array<real>(R::RowLayout::Dense(incidences, 9));
             data->neighborRotationActive = R::Array<uint8_t>(R::RowLayout::Dense(incidences, 1));
+            data->neighborRotation.SetName("CFV/neighborRotation", DNDS_ALLOCATION_SITE());
+            data->neighborRotationActive.SetName("CFV/neighborRotationActive", DNDS_ALLOCATION_SITE());
             auto rotationWrite = data->neighborRotation.Write();
             auto rotationActiveWrite = data->neighborRotationActive.Write();
             const auto rotations = rotationWrite.View<R::FixedRows<9>>();
@@ -222,12 +245,14 @@ namespace DNDS::CFV
             std::vector<uint8_t> inverseSymmetry(size_t(rawSweep && storage.inverseTriangle ? nCell : 0), 1);
             data->preparationRuntimeScratchBytes += inverseSymmetry.size();
             data->boundaryPoints = R::Array<index>(R::RowLayout::Dense(boundaryCount, 4));
+            data->boundaryPoints.SetName("CFV/boundaryPoints", DNDS_ALLOCATION_SITE());
             // Only requested face-system blocks exist. This is preparation
             // scratch, released before returning the immutable plan.
             std::optional<R::Array<real>> systems;
             if (faceSystem.width)
             {
                 systems.emplace(R::RowLayout::Dense(nFace, faceSystem.width));
+                systems->SetName("CFV/setup/faceSystems", DNDS_ALLOCATION_SITE());
                 data->preparationRuntimeScratchBytes += systems->Storage().Bytes();
             }
             auto momentWrite = data->moments.Write();

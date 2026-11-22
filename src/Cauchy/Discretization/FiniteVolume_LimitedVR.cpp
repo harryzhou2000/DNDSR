@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Discretization/FieldAllocationName.hpp"
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
@@ -26,12 +27,19 @@ namespace DNDS::Cauchy
           branchHalo(data.BindHalo(branches)), seedHalo(data.BindHalo(seeds)), temporaryHalo(data.BindHalo(temporary))
     {
         const auto modes = data.reconstruction->NRecDOF();
+        FiniteVolumeDetail::NameField(scalars, "Cauchy/LVR/scalars", DNDS_ALLOCATION_SITE());
+        FiniteVolumeDetail::NameField(branches, "Cauchy/LVR/branches", DNDS_ALLOCATION_SITE());
+        FiniteVolumeDetail::NameField(seeds, "Cauchy/LVR/seeds", DNDS_ALLOCATION_SITE());
+        FiniteVolumeDetail::NameField(temporary, "Cauchy/LVR/temporary", DNDS_ALLOCATION_SITE());
+        base.SetName("Cauchy/LVR/base", DNDS_ALLOCATION_SITE());
+        alpha.SetName("Cauchy/LVR/alpha", DNDS_ALLOCATION_SITE());
         for (index field = 0; field < state.PhysicalFieldNumber(); ++field)
         {
             const auto &mean = state.PhysicalField(field);
             targetCoefficients.push_back(data.reconstruction->BuildCoefficients(
                 mean.Width(), FiniteVolumeDetail::FieldLayout(mean.Owned().Layout(), data.metrics.NumCell(),
                                                               mean.Width() * modes)));
+            FiniteVolumeDetail::NameField(targetCoefficients.back(), "Cauchy/LVR/targetCoefficients/" + state.Fields().Name(field), DNDS_ALLOCATION_SITE());
         }
         if (data.metrics.Device() == R::Device::Host())
         {

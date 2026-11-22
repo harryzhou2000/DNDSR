@@ -623,6 +623,8 @@ namespace DNDS::CFV
             return result;
         result.forward = R::Array<real>(R::RowLayout::Dense(_device->faces, count * count), Device());
         result.inverse = R::Array<real>(R::RowLayout::Dense(_device->faces, count * count), Device());
+        result.forward.SetName("CFV/reconstruction/characteristics/forward", DNDS_ALLOCATION_SITE());
+        result.inverse.SetName("CFV/reconstruction/characteristics/inverse", DNDS_ALLOCATION_SITE());
         result.forwardIdentity = result.forward.Identity();
         result.inverseIdentity = result.inverse.Identity();
         return result;

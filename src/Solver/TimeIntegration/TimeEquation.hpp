@@ -4,6 +4,21 @@
 
 namespace DNDS::ODE
 {
+    namespace Detail
+    {
+        // Field backends can name time integration storage. Plain vector backends only allocate.
+        template <class Operations, class State>
+        auto NewTimeStorage(const State &prototype, const char *name, int) -> decltype(Operations::NewVector(prototype, name))
+        {
+            return Operations::NewVector(prototype, name);
+        }
+        template <class Operations, class State>
+        State NewTimeStorage(const State &prototype, const char *, long)
+        {
+            return Operations::NewVector(prototype);
+        }
+    }
+
     /// Normalized equation r = resOther + rhsScale * F(U,t) - inverseDt * (M U).
     /// inverseDt is the reciprocal physical step (zero for steady or spatial-only
     /// evaluation). The equation adapter applies M to state operands only.

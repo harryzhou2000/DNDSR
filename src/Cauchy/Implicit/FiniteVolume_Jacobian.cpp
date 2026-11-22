@@ -65,6 +65,10 @@ namespace DNDS::Cauchy
               radiusStorage(R::RowLayout::Dense(fv._data->stencil.stencilFaces.RowCount(), 2)),
               independent(fv._data->equation.HasMixture() ? fv._data->equation.Mixture().SpeciesNumber() - 1 : 0)
         {
+            meanStorage.SetName("Cauchy/linear/fluxJacobian/means", DNDS_ALLOCATION_SITE());
+            derivativeStorage.SetName("Cauchy/linear/fluxJacobian/pressureDerivative", DNDS_ALLOCATION_SITE());
+            pressureStorage.SetName("Cauchy/linear/fluxJacobian/pressure", DNDS_ALLOCATION_SITE());
+            radiusStorage.SetName("Cauchy/linear/fluxJacobian/radius", DNDS_ALLOCATION_SITE());
             components = state.ComponentNumber();
             frame = fv._data->motion.At(time);
             scale = controls.residualScale;

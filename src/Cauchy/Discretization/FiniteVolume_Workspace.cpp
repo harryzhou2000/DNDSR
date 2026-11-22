@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Discretization/FieldAllocationName.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/ViscousReconstruction.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
@@ -219,6 +220,7 @@ namespace DNDS::Cauchy
                                                             owner->metrics.NumCell(),
                                                             state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
                             owner->metrics.Device()));
+                        FiniteVolumeDetail::NameField(directGradients.back(), "Cauchy/gradient/limited/" + state.Fields().Name(iField), DNDS_ALLOCATION_SITE());
                         if (p1Limiter == "WBAP" || (iField == lvrFlowField && numerics.limitedVR.weakAlphaMax > 0))
                             directGradientInputHalo.push_back(owner->BindHalo(
                                 *fields[iField].gradient, "cauchy-direct-gradient-input"));
@@ -241,16 +243,22 @@ namespace DNDS::Cauchy
                     // so retain the field instead of allocating/copying it.
                     directGradients.push_back(*fields[iField].gradient);
                 else
+                {
                     directGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
                                                         state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
                         owner->metrics.Device()));
+                    FiniteVolumeDetail::NameField(directGradients.back(), "Cauchy/gradient/direct/" + state.Fields().Name(iField), DNDS_ALLOCATION_SITE());
+                }
                 if (!meanOnly && !prepareP1 && owner->reconstruction &&
                     owner->equation.Viscous() && FiniteVolumeDetail::UsesUnlimitedViscousReconstruction(owner->settings))
+                {
                     directViscousGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
                                                         state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
                         owner->metrics.Device()));
+                    FiniteVolumeDetail::NameField(directViscousGradients.back(), "Cauchy/gradient/viscous/" + state.Fields().Name(iField), DNDS_ALLOCATION_SITE());
+                }
             }
         }
         if (!meanOnly && owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "primitive")
@@ -261,6 +269,9 @@ namespace DNDS::Cauchy
             primitive.emplace(owner->metrics.BuildField(5));
             primitiveGradient.emplace(owner->metrics.BuildField(5 * owner->metrics.Dimension()));
             primitiveBoundary.emplace(owner->gradient.BuildBoundaryValues(5));
+            FiniteVolumeDetail::NameField(*primitive, "Cauchy/gradient/primitiveState", DNDS_ALLOCATION_SITE());
+            FiniteVolumeDetail::NameField(*primitiveGradient, "Cauchy/gradient/primitiveGradient", DNDS_ALLOCATION_SITE());
+            primitiveBoundary->SetName("Cauchy/gradient/primitiveBoundary", DNDS_ALLOCATION_SITE());
             primitiveGradientExecution.emplace(owner->gradient.BuildWorkspace(5, {1}));
             primitiveGradientHalo.emplace(owner->BindHalo(*primitiveGradient, "cauchy-primitive-gradient"));
         }

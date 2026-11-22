@@ -16,6 +16,9 @@ namespace DNDS::CFV
         result._offsets = Runtime::Array<index>(Runtime::RowLayout::Dense(result._metrics.NumCell() + 1, 1));
         result._neighbors = Runtime::Array<index>(Runtime::RowLayout::Dense(count, 1));
         result._boundary = Runtime::Array<index>(Runtime::RowLayout::Dense(result._metrics.NumCell(), 1));
+        result._offsets.SetName("CFV/limitedVR/offsets", DNDS_ALLOCATION_SITE());
+        result._neighbors.SetName("CFV/limitedVR/neighbors", DNDS_ALLOCATION_SITE());
+        result._boundary.SetName("CFV/limitedVR/boundaryMask", DNDS_ALLOCATION_SITE());
         auto offsets = result._offsets.Write(), neighbors = result._neighbors.Write(), boundary = result._boundary.Write();
         const auto o = offsets.View<Runtime::FixedRows<1>>(), n = neighbors.View<Runtime::FixedRows<1>>(), b = boundary.View<Runtime::FixedRows<1>>();
         index next = 0;

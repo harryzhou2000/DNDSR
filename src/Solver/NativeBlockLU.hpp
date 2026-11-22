@@ -252,7 +252,13 @@ namespace DNDS::Direct
         };
         NativeBlockLU(ssp<SerialSymLUStructure> symbolic, index blockSize)
             : _symbolic(std::move(symbolic)), _matrix(Counts(_symbolic), blockSize), _factors(Counts(_symbolic), blockSize),
-              _layoutGeneration(_symbolic->generation) {}
+              _layoutGeneration(_symbolic->generation)
+        {
+            _matrix.Values().SetName("Solver/nativeBlockLU/matrix/values", DNDS_ALLOCATION_SITE());
+            _matrix.OffsetArray().SetName("Solver/nativeBlockLU/matrix/rowOffsets", DNDS_ALLOCATION_SITE());
+            _factors.Values().SetName("Solver/nativeBlockLU/factors/values", DNDS_ALLOCATION_SITE());
+            _factors.OffsetArray().SetName("Solver/nativeBlockLU/factors/rowOffsets", DNDS_ALLOCATION_SITE());
+        }
         Algebra::BlockMatrixStorage &Matrix() { return _matrix; }
         const Algebra::BlockMatrixStorage &Matrix() const { return _matrix; }
         const SerialSymLUStructure &Symbolic() const { return *_symbolic; }

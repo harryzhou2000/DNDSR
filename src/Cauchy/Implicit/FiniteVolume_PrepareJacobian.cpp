@@ -38,6 +38,9 @@ namespace DNDS::Cauchy
               radiusStorage(R::RowLayout::Dense(fv._data->stencil.stencilFaces.RowCount(), 2)),
               magnitudeStorage(R::RowLayout::Dense(controls.roeDissipation ? fv._data->stencil.IncidenceNumber() : 0, 3))
         {
+            meanStorage.SetName("Cauchy/linear/fluxJacobian/means", DNDS_ALLOCATION_SITE());
+            radiusStorage.SetName("Cauchy/linear/fluxJacobian/radius", DNDS_ALLOCATION_SITE());
+            magnitudeStorage.SetName("Cauchy/linear/fluxJacobian/roeMagnitude", DNDS_ALLOCATION_SITE());
             frame = fv._data->motion.At(time);
             scale = controls.residualScale;
             roe = controls.roeDissipation;

@@ -19,26 +19,12 @@ namespace DNDS::ODE
         real _previousDt = 0;
         bool _history = false;
 
-        // Backends may attach allocation names without changing the field
-        // interface. The history storage slots can exchange roles on commit.
-        template <class Ops>
-        static auto NewStorage(const State &prototype, const char *name, int)
-            -> decltype(Ops::NewVector(prototype, name))
-        {
-            return Ops::NewVector(prototype, name);
-        }
-        template <class Ops>
-        static State NewStorage(const State &prototype, const char *, long)
-        {
-            return Ops::NewVector(prototype);
-        }
-
     public:
         BDFMethod(const State &prototype, int order, Operations operations = {})
             : _operations(std::move(operations)), _order(order),
-              _initial(NewStorage<Operations>(prototype, "BDF/stateSlot0", 0)),
-              _previous(NewStorage<Operations>(prototype, "BDF/stateSlot1", 0)),
-              _source(NewStorage<Operations>(prototype, "BDF/resOther", 0))
+              _initial(Detail::NewTimeStorage<Operations>(prototype, "BDF/stateSlot0", 0)),
+              _previous(Detail::NewTimeStorage<Operations>(prototype, "BDF/stateSlot1", 0)),
+              _source(Detail::NewTimeStorage<Operations>(prototype, "BDF/resOther", 0))
         {
             DNDS_check_throw_info(order == 1 || order == 2, "unsupported BDF order");
         }
@@ -111,11 +97,13 @@ namespace DNDS::ODE
 
     public:
         DIRKMethod(const State &prototype, const std::string &method, Operations operations = {})
-            : _operations(std::move(operations)), _tableau(method), _initial(Operations::NewVector(prototype)), _source(Operations::NewVector(prototype))
+            : _operations(std::move(operations)), _tableau(method),
+              _initial(Detail::NewTimeStorage<Operations>(prototype, "DIRK/initial", 0)),
+              _source(Detail::NewTimeStorage<Operations>(prototype, "DIRK/resOther", 0))
         {
             _rates.reserve(_tableau.a.size());
             for (index stage = 0; stage < index(_tableau.a.size()); ++stage)
-                _rates.push_back(Operations::NewVector(prototype));
+                _rates.push_back(Detail::NewTimeStorage<Operations>(prototype, ("DIRK/rate" + std::to_string(stage)).c_str(), 0));
         }
         int StageNumber() const { return int(_tableau.a.size()); }
         bool Implicit(int stage) const { return _tableau.a.at(stage).at(stage) != 0; }

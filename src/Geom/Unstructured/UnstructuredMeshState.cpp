@@ -258,7 +258,10 @@ namespace DNDS::Geom
         result->_hostView = result->_hostRead->HostView();
         result->_originalIds = std::move(ids);
         for (const auto &[kind, values] : result->_originalIds)
-            result->_originalReads.emplace(kind, std::make_shared<Runtime::Array<index>::ReadLease>(values.Read())); });
+        {
+            values.SetName(std::string("Geom/mesh/persistentIds/") + entityKindName(kind), DNDS_ALLOCATION_SITE());
+            result->_originalReads.emplace(kind, std::make_shared<Runtime::Array<index>::ReadLease>(values.Read()));
+        } });
         const int signature = int(requirements.faces) | (int(requirements.inverse) << 1) |
                               (int(requirements.edges) << 2) | (int(requirements.cellFaceNeighbors) << 3) |
                               (int(requirements.wallDistance) << 4) | (int(requirements.allFaceCellsLocal) << 5) |

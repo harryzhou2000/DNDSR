@@ -24,7 +24,6 @@ namespace DNDS::CFV
             std::vector<real> next;
             communication->LocalStage([&]
                                       {
-                factors.SetName("CFV/metrics/cellSmoothScaleFactors", DNDS_ALLOCATION_SITE());
                 scale.emplace(plan.Space(), factors.Layout(), R::Device::Host());
                 next.resize(ownedCount);
                 topology.emplace(plan.AcquireTopologyRead());
@@ -149,10 +148,13 @@ namespace DNDS::CFV
             data->cell.SetName("CFV/metrics/cell", DNDS_ALLOCATION_SITE());
             const index scaleRows = options.nIterCellSmoothScale ? view.NumCell() : 0;
             data->cellSmoothScaleFactors = R::Array<real>(R::RowLayout::Dense(scaleRows, 1));
+            data->cellSmoothScaleFactors.SetName("CFV/metrics/cellSmoothScaleFactors", DNDS_ALLOCATION_SITE());
             data->radialMoment = R::Array<real>(R::RowLayout::Dense(view.NumCellProc(), 3));
+            data->radialMoment.SetName("CFV/metrics/radialMoment", DNDS_ALLOCATION_SITE());
             auto radialWrite = data->radialMoment.Write();
             const auto radial = radialWrite.View<R::FixedRows<3>>();
             data->faceOffsets = R::Array<index>(R::RowLayout::Dense(view.NumFaceProc() + 1, 1));
+            data->faceOffsets.SetName("CFV/metrics/faceOffsets", DNDS_ALLOCATION_SITE());
             auto offsets = data->faceOffsets.Write();
             auto offset = offsets.View<R::FixedRows<1>>();
             std::vector<index> facePointCounts(static_cast<size_t>(view.NumFaceProc()));
@@ -162,6 +164,7 @@ namespace DNDS::CFV
                 view.NumFaceProc(), [&](index iFace) noexcept { return facePointCounts[size_t(iFace)]; },
                 [&](index iFace, index value) noexcept { offset(iFace, 0) = value; });
             data->faceQuadrature = R::Array<real>(R::RowLayout::Dense(count, 7));
+            data->faceQuadrature.SetName("CFV/metrics/faceQuadrature", DNDS_ALLOCATION_SITE());
             auto cells = data->cell.Write();
             const auto cell = cells.View<R::FixedRows<8>>();
             // Immutable process-wide shape tables are fully constructed before
@@ -211,6 +214,7 @@ namespace DNDS::CFV
             auto points = data->faceQuadrature.Write();
             const auto point = points.View<R::FixedRows<7>>();
             data->faceMean = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 7));
+            data->faceMean.SetName("CFV/metrics/faceMean", DNDS_ALLOCATION_SITE());
             data->facePeriodicCodes = R::Array<uint8_t>(R::RowLayout::Dense(view.IsPeriodic() ? view.NumFaceProc() : 0, 1));
             data->periodicParameters = R::Array<FacePeriodicParameters>(R::RowLayout::Dense(1, 1));
             data->neighborCenters = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 6));
@@ -460,6 +464,7 @@ namespace DNDS::CFV
         const auto access = _data->mesh->AcquireRead(MeshReadRequirements::Primary());
         const auto mesh = access.HostView();
         Runtime::Array<real> result(Runtime::RowLayout::Dense(NumCellProc(), 1));
+        result.SetName("CFV/metrics/cellMaxLengthScale", DNDS_ALLOCATION_SITE());
         auto write = result.Write();
         const auto length = write.View<Runtime::FixedRows<1>>();
         OMP::ForSetupRows(0, NumCellProc(), [&](index iCell)

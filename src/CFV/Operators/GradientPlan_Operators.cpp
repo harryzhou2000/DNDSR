@@ -41,6 +41,8 @@ namespace DNDS::CFV
             R::Array<real>(R::RowLayout::Dense(_data->metrics.NumFaceProc(), count * count)),
             R::Array<real>(R::RowLayout::Dense(_data->metrics.NumFaceProc(), count * count)),
             _data->identity};
+        result.forward.SetName("CFV/gradient/characteristics/forward", DNDS_ALLOCATION_SITE());
+        result.inverse.SetName("CFV/gradient/characteristics/inverse", DNDS_ALLOCATION_SITE());
         for (auto *array : {&result.forward, &result.inverse})
         {
             auto write = array->Write();
