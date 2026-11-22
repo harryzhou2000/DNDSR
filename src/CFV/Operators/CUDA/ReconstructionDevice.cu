@@ -241,7 +241,7 @@ namespace DNDS::CFV::Detail
     void LaunchLimitedJacobi(R::ExecutionContext context, ReconstructionDeviceView plan, Runtime::RowSelection selection,
                              DevicePeriodicBlocks blocks, R::PairReadView<real> mean, R::PairReadView<real> input,
                              R::ArrayView<const real> boundary, R::ArrayView<const real> target, R::ArrayView<const real> alpha,
-                             R::ArrayView<real> output, R::ArrayView<int> status, bool pipeline, const ReconstructionSweepLaunch &options)
+                             R::ArrayView<real> output, R::ArrayView<int> status, bool pipeline, const ReconstructionSweepLaunch &options, ReconstructionSweepArithmetic arithmetic)
     {
         DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA limited Jacobi requires a CUDA context");
         R::ValidateViewDevices(context.device, plan, selection, blocks, mean, input, boundary, target, alpha, output, status);
@@ -255,7 +255,7 @@ namespace DNDS::CFV::Detail
         // race between cell blocks and prevents partial publication on error.
         ValidatePenalty<<<unsigned(std::min<index>(256, (alpha.rows + 127) / 128)), 128, 0, ::DNDS::Runtime::CUDAStream(context)>>>(alpha, status);
         if (pipeline)
-            LaunchLimitedStagedJacobi(context, plan, selection, blocks, mean, input, boundary, output, status.ConstView(), target, alpha, options);
+            LaunchLimitedStagedJacobi(context, plan, selection, blocks, mean, input, boundary, output, status.ConstView(), target, alpha, options, arithmetic);
         else
             RunGeneralLimited({context, plan, selection, blocks, mean, input, boundary, output, status.ConstView(), target, alpha});
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA limited Jacobi launch failed");

@@ -38,25 +38,23 @@ transformations still apply in the corresponding incidence frame, including
 self-periodic faces. `aosRowPadding` controls AoS pitch in scalar elements;
 `allocationAlignmentBytes` independently requests base alignment.
 
-The retained CUDA families are the general `fp64` sweep, existing
-`fp64MatrixShared`, neighbor-buffered SIMT `fp64Pipelined`, and neighbor-buffered
-MMA `fp64TensorAsync`. `floatFloatPipelined` adds complete float-float arithmetic
-to the same SIMT body. General quantized-map `fp32`, `fp32Accum`,
-`fp32FloatFloatAccum` and `tf32` policies remain separate; the latter float-float
-policy has already lost matrix precision and is not the new experiment.
+The general FP64 sweep accepts each supported representation. The A100
+`fp64V2` preset selects compact fixed-width fields and matrix rows for
+C4–7 with 2, 3, 5, 9 or 19 modes. Raw storage applies the full inverse
+after the neighbor sum. The triangular inverse, padded rows, arbitrary
+C and M2/M3 LVR use general FP64. The optimized families read neighbor
+blocks directly into registers. The raw inverse consumes the accumulated
+cell right-hand side from shared memory. See the [A100 routing
+table](../dev/cauchy_a100_kernel_defaults.md).
 
-`numerics.cfv.cudaSweep` controls only `threads` and `gridBlocks`. Zero threads
-select 32 for block-team SIMT and 128 for static warp-team MMA (32 for dynamic component counts); zero blocks selects
-a wide grid. Both pipelines stage a whole neighbor matrix and every component
-coefficient once, using two cp.async slots. Full-cell-row buffering, warp-team
-SIMT, synchronous staged alternatives and duplicate wide/static/tensor selectors
-were retired after measurements; their configurations belong to their historical
-source revision. Ordinary
-FP64/FP32 retain general component support. The staged families specialize
-5/6/7 components and use shared accumulation for dynamic counts; all five
-modal sizes 2/3/5/9/19 cover P1/P2/P3 in 2D and 3D. Dynamic counts are limited
-by checked shared-memory capacity, rather than a fixed seven-component array.
-FP64 MMA requires supporting hardware.
+LVR supplies one frozen owned target of width C × M and one coefficient
+`alpha` per cell. The target uses the same modal ordering as the input.
+The sweep blends the unconstrained Jacobi result with this target before
+relaxation. Target preparation can exchange halo values independently.
+
+Historical pipelines and precision experiments require
+`DNDS_CFV_CUDA_ENABLE_V1_KERNELS=ON`. Their explicit selectors retain
+their original staging and arithmetic.
 
 `floatFloatPipelined` requires `DNDS_USE_CCCL_COMPUTE` and the pinned CCCL
 `cuda::fp32mp2` provider (`DNDS::Math::real_f32f32`). ALL numerical sweep
@@ -77,8 +75,7 @@ Raw CUDA relaxation separately supports `numerics.cfv.storage.rawBPrecision`
 and `numerics.cfv.storage.inversePrecision`, each accepting `fp64` (default)
 or `fp32`. These controls quantize only the selected device matrix after FP64
 setup and inversion. The raw mean and boundary maps, evolving coefficients,
-and all update arithmetic remain FP64. Either FP32 storage option selects
-`fp64Pipelined` when `execution.reconstructionKernel` is `auto`. The
+and all update arithmetic remain FP64. Both general FP64 and the eligible V2 presets load packed values directly. The
 inverse precision applies to both full and triangular inverse storage.
 The kernel promotes packed values on load and retains a single device
 allocation per matrix.

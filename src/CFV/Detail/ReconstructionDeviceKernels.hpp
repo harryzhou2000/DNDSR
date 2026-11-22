@@ -21,7 +21,10 @@ namespace DNDS::CFV::Detail
         FP32Reference,
         FP32FullAccumulation,
         FP32FloatFloatAccumulation,
-        TF32Synchronous
+        TF32Synchronous,
+        V2Auto,
+        V2SIMT,
+        V2MMA
     };
     /// Full modal batches, with explicit checked mapping/launch/shared-memory
     /// policy. The caller retains every view through stream completion.
@@ -33,7 +36,7 @@ namespace DNDS::CFV::Detail
     void LaunchLimitedStagedJacobi(Runtime::ExecutionContext, ReconstructionDeviceView, Runtime::RowSelection, DevicePeriodicBlocks,
                                    Runtime::PairReadView<real>, Runtime::PairReadView<real>, Runtime::ArrayView<const real>,
                                    Runtime::ArrayView<real>, Runtime::ArrayView<const int>, Runtime::ArrayView<const real>,
-                                   Runtime::ArrayView<const real>, const ReconstructionSweepLaunch &);
+                                   Runtime::ArrayView<const real>, const ReconstructionSweepLaunch &, ReconstructionSweepArithmetic = ReconstructionSweepArithmetic::FP64);
     /// Untimed launch feasibility/resource inquiry; never enqueues a kernel.
     ReconstructionSweepResources InspectStagedJacobi(Runtime::ExecutionContext, ReconstructionDeviceView, Runtime::RowSelection, DevicePeriodicBlocks,
                                                      Runtime::PairReadView<real>, Runtime::PairReadView<real>, Runtime::ArrayView<const real>,
@@ -58,7 +61,7 @@ namespace DNDS::CFV::Detail
     void LaunchLimitedJacobi(Runtime::ExecutionContext, ReconstructionDeviceView, Runtime::RowSelection, DevicePeriodicBlocks,
                              Runtime::PairReadView<real>, Runtime::PairReadView<real>, Runtime::ArrayView<const real>,
                              Runtime::ArrayView<const real>, Runtime::ArrayView<const real>, Runtime::ArrayView<real>, Runtime::ArrayView<int>,
-                             bool pipeline, const ReconstructionSweepLaunch &);
+                             bool pipeline, const ReconstructionSweepLaunch &, ReconstructionSweepArithmetic = ReconstructionSweepArithmetic::FP64);
     void LaunchWBAP(Runtime::ExecutionContext, ReconstructionDeviceView, Runtime::RowSelection, DevicePeriodicBlocks,
                     Runtime::PairReadView<real>, Runtime::ArrayView<real>, Runtime::ArrayView<real>, DeviceCharacteristicView,
                     Runtime::ArrayView<const real>, Runtime::ArrayView<int>, index, index, real, index);

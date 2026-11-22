@@ -105,7 +105,7 @@ static void Run(int argc, char **argv)
         {
             const double start = MPI_Wtime();
             resident.SubmitReconstructionIterTo(engine, stream, deviceMean, input, sweep, placedBC,
-                                                C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP64Pipelined);
+                                                C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP64V2);
             engine.Synchronize();
             const double applySeconds = MPI_Wtime() - start;
             const double commitStart = MPI_Wtime();

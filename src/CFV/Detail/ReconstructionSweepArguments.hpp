@@ -77,6 +77,8 @@ namespace DNDS::CFV::Detail
                                   (!p.faceCoupling || (p.faces.RowCount() == p.neighbors.RowCount() && p.faceSide.RowCount() == p.neighbors.RowCount())),
                               "CUDA reconstruction matrix payload shape differs");
     }
+    ReconstructionSweepResources DispatchV2(const StagedSweepArguments &, ReconstructionSweepArithmetic);
+    ReconstructionSweepResources InspectGeneral(const GeneralSweepArguments &, bool limited);
     ReconstructionSweepResources RunStagedFP64(const StagedSweepArguments &, bool tensor);
     ReconstructionSweepResources RunMatrixShared(const StagedSweepArguments &);
     ReconstructionSweepResources RunQuantizedComparison(const StagedSweepArguments &, int policy);

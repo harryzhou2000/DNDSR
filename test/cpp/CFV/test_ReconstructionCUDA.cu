@@ -81,7 +81,7 @@ static void CompareSharedSweep(const C::FiniteVolumePlan &metrics, const C::Vari
     const auto originalGhost = coefficients.Ghost().Clone();
     plan.DoReconstructionIter(mean, coefficients, cpu, boundary);
     std::vector<C::ReconstructionDeviceKernel> kernels{C::ReconstructionDeviceKernel::FP64,
-                                                       C::ReconstructionDeviceKernel::FP64Pipelined};
+                                                       C::ReconstructionDeviceKernel::FP64V2};
     // Comparison policies have one deliberately bounded C=5/M=19 fixture.
     // Other shapes retain their full CPU/general/production sweep coverage.
     if (components == 5 && plan.NRecDOF() == 19 && !plan.Settings().storage.Raw())
@@ -743,8 +743,8 @@ TEST_CASE("Raw VR packs B and the full inverse independently while using the FP6
         const auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings, capabilities);
         const auto resident = plan.Place(device, context);
         const auto buffers = resident.ResidentBuffers();
-        CHECK_FALSE(resident.SupportsKernel(C::ReconstructionDeviceKernel::FP64));
-        CHECK(resident.SupportsKernel(C::ReconstructionDeviceKernel::FP64Pipelined));
+        CHECK(resident.SupportsKernel(C::ReconstructionDeviceKernel::FP64));
+        CHECK(resident.SupportsKernel(C::ReconstructionDeviceKernel::FP64V2));
         for (const auto &[name, reduced] : {std::pair{"rawMatrixB", packed.first}, std::pair{"localInverse", packed.second}})
         {
             const auto originalBytes = bytes(fullBuffers, name);
@@ -760,13 +760,14 @@ TEST_CASE("Raw VR packs B and the full inverse independently while using the FP6
         auto work = resident.BuildWorkspace(components);
         auto deviceBoundary = resident.PlaceBoundaryValues(plan.BuildBoundaryValues(components));
         resident.SubmitReconstructionIterTo(engine, stream, deviceMean, deviceInput, work, deviceBoundary,
-                                            C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP64Pipelined);
+                                            C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP64V2);
         engine.Synchronize();
         resident.CheckStatus(work);
         Equal(referenceWork.temporary, work.temporary, 2e-5);
     }
 }
 
+#ifdef DNDS_CFV_CUDA_ENABLE_V1_KERNELS
 TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate device matrix storage")
 {
     const auto device = R::Device::CUDA(0);
@@ -787,11 +788,11 @@ TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate d
         auto reduced = cpu.Place(device, context, options);
         CHECK(reduced.SupportsKernel(C::ReconstructionDeviceKernel::FP32));
         CHECK(reduced.SupportsKernel(C::ReconstructionDeviceKernel::FP32FullAccumulation));
-#ifdef DNDS_USE_CCCL_COMPUTE
+#    ifdef DNDS_USE_CCCL_COMPUTE
         CHECK(reduced.SupportsKernel(C::ReconstructionDeviceKernel::FP32FloatFloatAccumulation));
-#else
+#    else
         CHECK_FALSE(reduced.SupportsKernel(C::ReconstructionDeviceKernel::FP32FloatFloatAccumulation));
-#endif
+#    endif
         CHECK_FALSE(full.SupportsKernel(C::ReconstructionDeviceKernel::FP32FullAccumulation));
         CHECK_FALSE(reduced.SupportsKernel(C::ReconstructionDeviceKernel::FP64));
         const auto fullBuffers = full.ResidentBuffers(), smallBuffers = reduced.ResidentBuffers();
@@ -834,10 +835,10 @@ TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate d
         const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
         CHECK_THROWS(full.SubmitReconstructionIterTo(engine, stream, deviceMean, deviceInput, deviceWork, deviceBoundary,
                                                      C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP32FullAccumulation));
-#ifndef DNDS_USE_CCCL_COMPUTE
+#    ifndef DNDS_USE_CCCL_COMPUTE
         CHECK_THROWS(reduced.SubmitReconstructionIterTo(engine, stream, deviceMean, deviceInput, accumulationWork, deviceBoundary,
                                                         C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP32FloatFloatAccumulation));
-#endif
+#    endif
         // Compare each sweep with exactly the same input. This isolates local
         // arithmetic error instead of mixing it with iterative error growth.
         for (int iteration = 0; iteration < 3; ++iteration)
@@ -909,7 +910,7 @@ TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate d
         cpu.DoReconstructionIterLimitedTo(mean, input, work, boundary, target, penalty);
         auto limitedWork = full.BuildWorkspace(components, std::vector<I>{1});
         const auto fullBoundary = full.PlaceBoundaryValues(boundary);
-        for (const auto kernel : {C::ReconstructionDeviceKernel::FP64, C::ReconstructionDeviceKernel::FP64Pipelined})
+        for (const auto kernel : {C::ReconstructionDeviceKernel::FP64, C::ReconstructionDeviceKernel::FP64V2})
         {
             full.SubmitReconstructionIterLimitedTo(engine, stream, deviceMean, deviceInput, limitedWork, fullBoundary,
                                                    deviceTarget, devicePenalty, C::ReconstructionRegion::All, kernel);
@@ -989,6 +990,8 @@ TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate d
     }
 }
 
+#endif
+
 TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and direct MPI split work" * doctest::test_suite("halo"))
 {
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
@@ -1052,7 +1055,7 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
                 else
                     pending = deviceHalo.Begin(R::ExecutionContext::CUDA(0));
                 const auto kernel = step == 3 && shape.Kind() == R::RowLayoutKind::Table
-                                        ? C::ReconstructionDeviceKernel::FP64Pipelined
+                                        ? C::ReconstructionDeviceKernel::FP64V2
                                         : C::ReconstructionDeviceKernel::FP64;
                 resident.SubmitReconstructionIterTo(engine, stream, deviceMean, coefficients, work, deviceBC, C::ReconstructionRegion::Core, kernel);
                 if (nccl)

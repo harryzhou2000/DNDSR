@@ -10,6 +10,13 @@ namespace DNDS::CFV::Detail
             args.options.Validate();
             ValidateSweepArguments(args, args.limited);
             const auto &plan = args.plan;
+            if (arithmetic == ReconstructionSweepArithmetic::V2Auto || arithmetic == ReconstructionSweepArithmetic::V2SIMT ||
+                arithmetic == ReconstructionSweepArithmetic::V2MMA)
+                return DispatchV2(args, arithmetic);
+#ifndef DNDS_CFV_CUDA_ENABLE_V1_KERNELS
+            DNDS_check_throw_info(false, "requested V1 sweep requires DNDS_CFV_CUDA_ENABLE_V1_KERNELS");
+            return {};
+#else
             const auto table = [](auto v, index width)
             { return v.kind == R::RowLayoutKind::Table && v.width == width && v.stride >= width && !v.offsets && !v.sizes && (!v.rows || v.data); };
             const auto field = [&](auto v, index width)
@@ -29,10 +36,10 @@ namespace DNDS::CFV::Detail
                                                       : table(plan.localInverse, inverseWidth);
             DNDS_check_throw_info(arithmetic >= ReconstructionSweepArithmetic::FP64 && arithmetic <= ReconstructionSweepArithmetic::TF32Synchronous,
                                   "unknown VR arithmetic selector");
-#ifndef DNDS_USE_CCCL_COMPUTE
+#    ifndef DNDS_USE_CCCL_COMPUTE
             DNDS_check_throw_info(arithmetic != ReconstructionSweepArithmetic::FloatFloat && arithmetic != ReconstructionSweepArithmetic::FP32FloatFloatAccumulation,
                                   "float-float VR requires DNDS_USE_CCCL_COMPUTE");
-#endif
+#    endif
             DNDS_check_throw_info(args.context.device.space == R::MemorySpace::CUDA && plan.quantized == quantized && !(quantized && plan.raw) &&
                                       plan.n > 0 && plan.n <= 19 && args.output.Width() % plan.n == 0 &&
                                       args.selection.RowCount() >= 0 && args.selection.RowCount() <= plan.owned &&
@@ -104,6 +111,7 @@ namespace DNDS::CFV::Detail
             }
             DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "optimized VR launch failed");
             return resource;
+#endif
         }
     }
     void LaunchStagedJacobi(R::ExecutionContext context, ReconstructionDeviceView plan, Runtime::RowSelection selection,
@@ -116,9 +124,9 @@ namespace DNDS::CFV::Detail
     void LaunchLimitedStagedJacobi(R::ExecutionContext context, ReconstructionDeviceView plan, Runtime::RowSelection selection,
                                    DevicePeriodicBlocks vectors, R::PairReadView<real> mean, R::PairReadView<real> input,
                                    R::ArrayView<const real> boundary, R::ArrayView<real> output, R::ArrayView<const int> status,
-                                   R::ArrayView<const real> target, R::ArrayView<const real> alpha, const ReconstructionSweepLaunch &options)
+                                   R::ArrayView<const real> target, R::ArrayView<const real> alpha, const ReconstructionSweepLaunch &options, ReconstructionSweepArithmetic arithmetic)
     {
-        (void)Dispatch({context, plan, selection, vectors, mean, input, boundary, output, status, options, true, target, alpha, true}, ReconstructionSweepArithmetic::FP64);
+        (void)Dispatch({context, plan, selection, vectors, mean, input, boundary, output, status, options, true, target, alpha, true}, arithmetic);
     }
     ReconstructionSweepResources InspectStagedJacobi(R::ExecutionContext context, ReconstructionDeviceView plan, Runtime::RowSelection selection,
                                                      DevicePeriodicBlocks vectors, R::PairReadView<real> mean, R::PairReadView<real> input,

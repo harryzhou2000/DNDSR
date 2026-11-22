@@ -2,7 +2,7 @@
 // Fixed-input scans of actual prepared CFV publications. Timing excludes
 // construction and placement; the locality leg uses the normal Geom transition.
 #include "CFV/Plans/FiniteVolumePlan.hpp"
-#include "CFV/Detail/ReconstructionDeviceKernels.hpp"
+#include "CFV/Detail/ReconstructionSweepArguments.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
 #include "Geom/Transition/LocalCellOrdering.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
@@ -24,12 +24,32 @@ static void Check(cudaError_t result)
 static void Run(int argc, char **argv)
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);
-    DNDS_check_throw_info(mpi.size == 1 && argc == 6, "usage: sweep_benchmark periodic-mesh catalog.json precomputed|raw-full|raw-triangle|quantized subpartitions repetitions (np1)");
+    DNDS_check_throw_info(mpi.size == 1 && (argc == 6 || argc == 10), "usage: sweep_benchmark periodic-mesh catalog.json precomputed|raw-full|raw-triangle|quantized subpartitions repetitions [dimension degree rule components] (np1)");
     const std::string representation = argv[3];
     const int partitions = std::stoi(argv[4]), repetitions = std::stoi(argv[5]);
     DNDS_check_throw_info(partitions >= 0 && repetitions > 0, "invalid sweep benchmark controls");
+    const int dim = argc == 10 ? std::stoi(argv[6]) : 3, degree = argc == 10 ? std::stoi(argv[7]) : 3;
+    const int rule = argc == 10 ? std::stoi(argv[8]) : 5;
+    const I components = argc == 10 ? std::stoi(argv[9]) : 5;
+    DNDS_check_throw_info((dim == 2 || dim == 3) && degree >= 1 && degree <= 3 && rule > 0 && components > 0, "invalid VR benchmark shape");
     J catalog;
     std::ifstream(argv[2]) >> catalog;
+    // An object can additionally supply physical zone IDs and a frozen LVR penalty.
+    // The original array of kernel choices remains a valid unlimited benchmark.
+    std::map<std::string, I> zones;
+    double penalty = 0;
+    if (catalog.is_object())
+    {
+        zones = catalog.value("boundaryIds", zones);
+        penalty = catalog.value("penalty", 0.);
+        catalog = J(catalog.at("kernels"));
+    }
+    DNDS_check_throw_info(penalty >= 0 && penalty <= 1, "invalid LVR benchmark penalty");
+    const auto boundaryId = [&](const std::string &name) -> I
+    {
+        const auto it = zones.find(name);
+        return it == zones.end() ? G::FBC_Name_2_ID_Default(name) : it->second;
+    };
     G::NativePeriodicImportOptions periodic;
     constexpr double length = 6.2831853071795864769;
     for (int d = 0; d < 3; ++d)
@@ -38,28 +58,30 @@ static void Run(int argc, char **argv)
         periodic.frames.translation[d + 1].map()[d] = length;
     }
     const double setupStart = MPI_Wtime();
-    auto mesh = G::UnstructuredMesh::FromNative(mpi, G::ReadNativeCGNS(mpi, argv[1], 3, G::FBC_Name_2_ID_Default, 0, {1, true}, periodic));
+    auto mesh = G::UnstructuredMesh::FromNative(mpi, G::ReadNativeCGNS(mpi, argv[1], dim, boundaryId, 0, {1, true}, periodic));
     mesh->PrepareNativeTopology();
     const double imported = MPI_Wtime();
     if (partitions)
         mesh->ReorderLocalCells(G::LocalCellOrderingSettings{partitions, G::CellCoreSplit::None, false});
     const double reordered = MPI_Wtime();
     C::ReconstructionSettings settings;
-    settings.maxOrder = 3;
-    settings.intOrder = 5;
+    settings.maxOrder = degree;
+    settings.intOrder = rule;
     settings.cacheDiffBase = false;
     settings.functional.dirWeightScheme = C::ReconstructionFunctionalSettings::DirectionalWeight::HQM_OPT;
     settings.functional.geomWeightScheme = C::ReconstructionFunctionalSettings::GeometricWeight::HQM_SD;
     settings.functional.scaleType = C::ReconstructionFunctionalSettings::LengthScale::BaryDiff;
+    if (representation == "raw-packed-b")
+        settings.storage.rawBPrecision = "fp32";
     if (representation != "precomputed" && representation != "quantized")
     {
-        DNDS_check_throw_info(representation == "raw-full" || representation == "raw-triangle", "unknown sweep representation");
+        DNDS_check_throw_info(representation == "raw-full" || representation == "raw-triangle" || representation == "raw-packed-b", "unknown sweep representation");
         settings.storage.representation = "raw";
         settings.storage.faceCoupling = true;
         settings.storage.inverseTriangle = representation == "raw-triangle";
     }
     C::FiniteVolumeMetricOptions metricOptions;
-    metricOptions.integrationOrder = 5;
+    metricOptions.integrationOrder = rule;
     metricOptions.collectivePreflight = false;
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, metricOptions);
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings, C::ReconstructionCapabilities::ForSweeps(false));
@@ -70,7 +92,6 @@ static void Run(int argc, char **argv)
     const auto context = stream.Context();
     auto resident = plan.Place(device, context);
     double placed = MPI_Wtime();
-    constexpr I components = 5;
     auto mean = metrics.BuildField(components), coefficients = plan.BuildCoefficients(components);
     {
         const auto state = mesh->CurrentNativeState();
@@ -96,7 +117,19 @@ static void Run(int argc, char **argv)
     const auto boundary = plan.BuildBoundaryValues(components);
     auto db = resident.PlaceBoundaryValues(boundary);
     auto workspace = resident.BuildWorkspace(components);
-    resident.SubmitReconstructionIterTo(engine, stream, dm, du, workspace, db, C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP64);
+    R::Array<double> hostPenalty(R::RowLayout::Dense(penalty ? metrics.NumCell() : 0, 1));
+    if (penalty)
+    {
+        auto write = hostPenalty.Write();
+        for (I i = 0; i < metrics.NumCell(); ++i)
+            write.View()(i, 0) = (i % 4 == 0) ? 1 : (i % 4 == 1) ? 0
+                                                                 : penalty;
+    }
+    auto devicePenalty = hostPenalty.To(device);
+    if (penalty)
+        resident.SubmitReconstructionIterLimitedTo(engine, stream, dm, du, workspace, db, du, devicePenalty, C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP64);
+    else
+        resident.SubmitReconstructionIterTo(engine, stream, dm, du, workspace, db, C::ReconstructionRegion::All, C::ReconstructionDeviceKernel::FP64);
     engine.Synchronize();
     const auto reference = workspace.temporary.Owned().To(R::Device::Host());
     if (const auto *snapshot = std::getenv("DNDS_VR_SWEEP_SNAPSHOT"))
@@ -147,6 +180,7 @@ static void Run(int argc, char **argv)
     const auto co = du.Owned().Read(context), cg = du.Ghost().Read(context);
     const auto bc = db.values.Read(context);
     const auto starts = workspace.devicePeriodicVectorStarts.Read(context);
+    const auto penaltyRead = devicePenalty.Read(context);
     auto status = workspace.deviceStatus.Write(context);
     auto output = workspace.temporary.Owned().Write(context);
     const DNDS::Runtime::RowSelection selection{DNDS::Runtime::RowSelectionShape::AllRows(metrics.NumCell())};
@@ -160,7 +194,10 @@ static void Run(int argc, char **argv)
     const auto arithmeticFor = [](const J &row)
     {
         const auto kernel = row.at("kernel").get<std::string>();
-        return kernel == "float-float"           ? D::ReconstructionSweepArithmetic::FloatFloat
+        return kernel == "v2"                    ? D::ReconstructionSweepArithmetic::V2Auto
+               : kernel == "v2-simt"             ? D::ReconstructionSweepArithmetic::V2SIMT
+               : kernel == "v2-mma"              ? D::ReconstructionSweepArithmetic::V2MMA
+               : kernel == "float-float"         ? D::ReconstructionSweepArithmetic::FloatFloat
                : kernel == "tensor"              ? D::ReconstructionSweepArithmetic::FP64TensorCore
                : kernel == "quantized-simt"      ? D::ReconstructionSweepArithmetic::FP32
                : kernel == "quantized-tensor"    ? D::ReconstructionSweepArithmetic::TF32
@@ -171,16 +208,33 @@ static void Run(int argc, char **argv)
                : kernel == "matrix-shared"       ? D::ReconstructionSweepArithmetic::FP64MatrixShared
                                                  : D::ReconstructionSweepArithmetic::FP64;
     };
+    const auto limited = [&](const J &row, bool execute) -> D::ReconstructionSweepResources
+    {
+        D::StagedSweepArguments a{context, view, selection, {starts.View()}, {mo.View(), mg.View()}, {co.View(), cg.View()}, bc.View(), output.View(), status.View().ConstView(), optionsFor(row), execute, co.View(), penaltyRead.View(), true};
+        D::ValidateSweepArguments(a, true);
+        if (row.at("kernel") == "general")
+        {
+            D::GeneralSweepArguments args{context, view, selection, a.vectors, a.mean, a.input, a.boundary, a.output, a.status, a.target, a.alpha};
+            if (!execute)
+                return D::InspectGeneral(args, true);
+            D::RunGeneralLimited(args);
+            return {};
+        }
+        DNDS_check_throw_info(row.at("kernel").get<std::string>().rfind("v2", 0) == 0, "limited timing supports general and V2");
+        return D::DispatchV2(a, arithmeticFor(row));
+    };
     const auto launch = [&](const J &row)
     {
         const auto kernel = row.at("kernel").get<std::string>();
-        if (kernel == "general")
+        if (penalty)
+            limited(row, true);
+        else if (kernel == "general")
             D::LaunchJacobi(context, view, selection, {starts.View()}, {mo.View(), mg.View()}, {co.View(), cg.View()}, bc.View(), output.View(), status.View().ConstView());
         else if (kernel == "matrix-shared")
             D::LaunchJacobiMatrixShared(context, view, selection, {starts.View()}, {mo.View(), mg.View()}, {co.View(), cg.View()}, bc.View(), output.View(), status.View().ConstView());
         else
         {
-            DNDS_check_throw_info(kernel == "simt" || kernel == "tensor" || kernel == "float-float" || kernel == "quantized-simt" || kernel == "quantized-tensor" ||
+            DNDS_check_throw_info(kernel == "v2" || kernel == "v2-simt" || kernel == "v2-mma" || kernel == "simt" || kernel == "tensor" || kernel == "float-float" || kernel == "quantized-simt" || kernel == "quantized-tensor" ||
                                       kernel == "fp32" || kernel == "fp32Accum" || kernel == "fp32FloatFloatAccum" || kernel == "tf32",
                                   "unknown retained sweep kernel");
             D::LaunchStagedJacobi(context, view, selection, {starts.View()}, {mo.View(), mg.View()}, {co.View(), cg.View()},
@@ -192,14 +246,17 @@ static void Run(int argc, char **argv)
     for (const auto &row : catalog)
     {
         J record = row;
+        record["modes"] = plan.NRecDOF();
+        record["components"] = components;
+        record["penalty"] = penalty;
         record["representation"] = representation;
         record["subpartitions"] = partitions;
         record["device"] = properties.name;
         const auto kernel = row.at("kernel").get<std::string>();
         const bool narrow = kernel == "quantized-simt" || kernel == "quantized-tensor" || kernel == "fp32" ||
                             kernel == "fp32Accum" || kernel == "fp32FloatFloatAccum" || kernel == "tf32";
-        const bool raw = representation == "raw-full" || representation == "raw-triangle";
-        if ((raw && kernel != "general" && kernel != "simt") ||
+        const bool raw = representation == "raw-full" || representation == "raw-triangle" || representation == "raw-packed-b";
+        if ((raw && kernel != "general" && kernel != "simt" && kernel.rfind("v2", 0) != 0) ||
             (representation == "quantized" && kernel != "general" && !narrow) ||
             (representation != "quantized" && narrow))
         {
@@ -216,8 +273,7 @@ static void Run(int argc, char **argv)
         }
         if (row.at("kernel") != "general" && row.at("kernel") != "matrix-shared")
         {
-            const auto resource = D::InspectStagedJacobi(context, view, selection, {starts.View()}, {mo.View(), mg.View()},
-                                                         {co.View(), cg.View()}, bc.View(), output.View(), status.View().ConstView(), optionsFor(row), arithmeticFor(row));
+            const auto resource = penalty ? limited(row, false) : D::InspectStagedJacobi(context, view, selection, {starts.View()}, {mo.View(), mg.View()}, {co.View(), cg.View()}, bc.View(), output.View(), status.View().ConstView(), optionsFor(row), arithmeticFor(row));
             record["resources"] = {{"shared_bytes", resource.sharedBytes}, {"registers_per_thread", resource.registersPerThread}, {"resident_blocks_per_sm", resource.activeBlocksPerSM}, {"grid_blocks", resource.gridBlocks}, {"threads_per_block", resource.threads}};
         }
         launch(row);

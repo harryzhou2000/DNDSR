@@ -95,6 +95,10 @@ TEST_CASE("Stage-once VR pipelines preserve complete modal batches and queued de
             // Production FP64 plus general reference cover every profile.
             // Each optional comparison policy retains only its fixed fixture.
             const bool comparison = candidate != 0 && candidate != 6;
+#ifndef DNDS_CFV_CUDA_ENABLE_V1_KERNELS
+            if (comparison)
+                continue;
+#endif
             if (comparison && (profile.fixture != 2 || profile.degree != 3 || profile.components != 5 || profile.raw))
                 continue;
             const bool tensor = candidate == 2 || candidate == 4;
@@ -114,7 +118,7 @@ TEST_CASE("Stage-once VR pipelines preserve complete modal batches and queued de
                                                                                             : candidate == 1   ? C::ReconstructionDeviceKernel::FloatFloatPipelined
                                                                                             : candidate == 5   ? C::ReconstructionDeviceKernel::FP64MatrixShared
                                                                                             : candidate == 6   ? C::ReconstructionDeviceKernel::FP64
-                                                                                                               : C::ReconstructionDeviceKernel::FP64Pipelined;
+                                                                                                               : C::ReconstructionDeviceKernel::FP64V2;
             if (!resident.SupportsKernel(kernel))
             {
                 REQUIRE((tensor || candidate == 1)); // Float-float is an optional build capability.
@@ -197,7 +201,7 @@ TEST_CASE("CUDA VR launch policy rejects a non-warp thread count")
     CHECK_THROWS(launch.Validate());
 }
 
-#ifdef DNDS_USE_CCCL_COMPUTE
+#if defined(DNDS_USE_CCCL_COMPUTE) && defined(DNDS_CFV_CUDA_ENABLE_V1_KERNELS)
 TEST_CASE("Float-float VR preserves low limbs through a cancelling modal product")
 {
     namespace D = C::Detail;

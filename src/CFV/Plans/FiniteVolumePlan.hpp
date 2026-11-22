@@ -418,8 +418,16 @@ namespace DNDS::CFV
         /// FP32-quantized maps and full FP32 neighbor-buffered SIMT update.
         FP32Pipelined,
         /// FP32 maps, TF32-rounded tensor products and FP32 update arithmetic.
-        TF32Pipelined
+        TF32Pipelined,
+        FP64V2,
+        FP64V2SIMT,
+        FP64V2MMA
     };
+    inline bool IsV2Sweep(ReconstructionDeviceKernel kernel)
+    {
+        return kernel == ReconstructionDeviceKernel::FP64V2 || kernel == ReconstructionDeviceKernel::FP64V2SIMT ||
+               kernel == ReconstructionDeviceKernel::FP64V2MMA;
+    }
     struct ResidentBufferInfo
     {
         std::string name;

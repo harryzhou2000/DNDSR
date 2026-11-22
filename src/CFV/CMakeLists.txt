@@ -53,7 +53,22 @@ Operators/FiniteVolumePlan_Linear.cpp
 )
 if (DNDS_USE_CUDA)
 list(APPEND CPPS Operators/CUDA/CharacteristicKernels_CUDA.cu Operators/CUDA/GradientKernels_CUDA.cu Operators/CUDA/LimitedVRKernels_CUDA.cu Operators/CUDA/PolynomialSamplingKernels_CUDA.cu Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu)
-list(APPEND CPPS Operators/CUDA/ReconstructionDeviceKernels_Staged.cu
+option(DNDS_CFV_CUDA_ENABLE_V1_KERNELS "Build historical CFV CUDA sweep comparison kernels" OFF)
+list(APPEND CPPS Operators/CUDA/ReconstructionDeviceKernels_Staged.cu Operators/CUDA/ReconstructionDevice_General_FP64.cu
+    Operators/CUDA/ReconstructionSweepV2.cu)
+set(_catalog "")
+foreach(M IN ITEMS 2 3 5 9 19)
+    foreach(C IN ITEMS 4 5 6 7)
+        set(_tu "${CMAKE_CURRENT_BINARY_DIR}/sweep_v2/M${M}C${C}.cu")
+        configure_file(Operators/CUDA/ReconstructionSweepV2_Shape.cu.in "${_tu}" @ONLY)
+        list(APPEND CPPS "${_tu}")
+        string(APPEND _catalog "CFV_V2_SHAPE(${M}, ${C})\n")
+        dnds_cuda_kernel_assertions("${_tu}")
+    endforeach()
+endforeach()
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sweep_v2/catalog.inc" CONTENT "${_catalog}")
+if(DNDS_CFV_CUDA_ENABLE_V1_KERNELS)
+list(APPEND CPPS
     Operators/CUDA/ReconstructionDeviceKernels_Staged_FP64.cu
     Operators/CUDA/ReconstructionDeviceKernels_Staged_FP64_M2.cu
     Operators/CUDA/ReconstructionDeviceKernels_Staged_FP64_M3.cu
@@ -61,8 +76,8 @@ list(APPEND CPPS Operators/CUDA/ReconstructionDeviceKernels_Staged.cu
     Operators/CUDA/ReconstructionDeviceKernels_Staged_FP64_M9.cu
     Operators/CUDA/ReconstructionDeviceKernels_Staged_FP64_M19.cu
     Operators/CUDA/ReconstructionDeviceKernels_Staged_FloatFloat.cu
-    Operators/CUDA/ReconstructionDeviceKernels_Staged_FP32.cu
-    Operators/CUDA/ReconstructionDevice_General_FP64.cu)
+    Operators/CUDA/ReconstructionDeviceKernels_Staged_FP32.cu)
+endif()
 list(APPEND CPPS Operators/CUDA/DistributedInterfaceSamplingKernels.cu)
 list(APPEND CPPS Operators/CUDA/ReconstructionAMGKernels_CUDA.cu)
 # Register only this explicitly enumerated numerical CUDA catalog. Legacy CUDA
@@ -81,6 +96,12 @@ dnds_add_lib(${LIBNAME}        "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
 
 dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS_SHARED}" "${DNDS_PCH_TARGETS_FAST}"
             ON ON ON) # SHARED, FAST, EXCLUDE
+foreach(_target IN ITEMS cfv cfv_shared)
+    target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    if(DNDS_USE_CUDA AND DNDS_CFV_CUDA_ENABLE_V1_KERNELS)
+        target_compile_definitions(${_target} PUBLIC DNDS_CFV_CUDA_ENABLE_V1_KERNELS)
+    endif()
+endforeach()
 # Public headers and inline accessors expose the underlying native module.
 target_link_libraries(${LIBNAME}_shared INTERFACE geom_shared)
 

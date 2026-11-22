@@ -86,7 +86,7 @@ TEST_CASE("Contiguous VR payloads and raw face storage preserve oriented distrib
                         CHECK(table.payloadBytes == uint64_t(mesh->NumFaceProc() * plan.NRecDOF() * plan.NRecDOF()) * sizeof(double));
                 }
             auto resident = plan.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
-            CHECK(resident.SupportsKernel(C::ReconstructionDeviceKernel::FP64Pipelined));
+            CHECK(resident.SupportsKernel(C::ReconstructionDeviceKernel::FP64V2));
             if (profile.alignment)
             {
                 const auto read = resident.AcquireResidentRead();
@@ -126,7 +126,7 @@ TEST_CASE("Contiguous VR payloads and raw face storage preserve oriented distrib
             auto deviceWork = resident.BuildWorkspace(components, std::vector<I>{1});
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
-            for (const auto kernel : {C::ReconstructionDeviceKernel::FP64, C::ReconstructionDeviceKernel::FP64Pipelined})
+            for (const auto kernel : {C::ReconstructionDeviceKernel::FP64, C::ReconstructionDeviceKernel::FP64V2})
             {
                 resident.SubmitReconstructionIterLimitedTo(engine, stream, dm, du, deviceWork, db, dt, da,
                                                            C::ReconstructionRegion::All, kernel);

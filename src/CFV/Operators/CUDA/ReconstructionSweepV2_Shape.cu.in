@@ -1,0 +1,9 @@
+#include "CFV/Operators/CUDA/ReconstructionSweepV2.cuh"
+
+namespace DNDS::CFV::Detail::V2
+{
+    ReconstructionSweepResources M@M@C@C@(const StagedSweepArguments &a, bool mma, int threads)
+    {
+        return Shape<@M@, @C@>(a, mma, threads);
+    }
+}

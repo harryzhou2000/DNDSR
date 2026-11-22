@@ -132,7 +132,7 @@ TEST_CASE("Limited CUDA Jacobi matches CPU relaxation and excludes neighbors for
     const auto compare = [&]
     {
         plan.DoReconstructionIterLimitedTo(mean, input, reference, bc, target, alpha);
-        for (const auto kernel : {C::ReconstructionDeviceKernel::FP64, C::ReconstructionDeviceKernel::FP64Pipelined})
+        for (const auto kernel : {C::ReconstructionDeviceKernel::FP64, C::ReconstructionDeviceKernel::FP64V2})
         {
             {
                 auto ghost = di.Ghost().Write(context);
