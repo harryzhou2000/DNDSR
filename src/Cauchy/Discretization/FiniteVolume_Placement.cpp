@@ -81,7 +81,7 @@ namespace DNDS::Cauchy
                 samplingPlacement.Seed(_data->reconstruction->SamplingCellGeometry(), placed->reconstruction->SamplingCellGeometry());
             }
             DNDS_check_throw_info(solver.UsesAMG() || placed->reconstruction->SupportsKernel(placed->reconstructionKernel),
-                                  "requested CFV reconstruction kernel is unsupported on this CUDA device");
+                                  "requested CFV reconstruction kernel is unsupported on this device/build (legacy selectors require DNDS_CFV_CUDA_ENABLE_V1_KERNELS)");
         }
         placed->stencil = _data->stencil.Placed(placed->metrics, context);
         const auto moveField = [&](const auto &source, const char *name)

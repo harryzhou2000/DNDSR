@@ -472,7 +472,11 @@ TEST_CASE("Domain reconstruction selection runs quantized maps and shared or dir
         }
     }
     std::optional<R::Array<double>> reference;
-    for (const std::string kernel : {"fp64", "fp32", "fp64Direct"})
+    std::vector<std::string> kernels{"fp64", "fp64V2", "fp64Direct"};
+#ifdef DNDS_CFV_CUDA_ENABLE_V1_KERNELS
+    kernels.emplace_back("fp32");
+#endif
+    for (const auto &kernel : kernels)
     {
         CAPTURE(kernel);
         settings.execution.reconstructionKernel = kernel == "fp64Direct" ? "fp64" : kernel;
