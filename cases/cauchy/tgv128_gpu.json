@@ -62,7 +62,7 @@
     "execution": {
       "device": "cuda", "deviceOrdinal": 0,
       "layout": "aos", "fieldGrouping": "coupled",
-      "reconstructionKernel": "fp64Pipelined",
+      "reconstructionKernel": "auto",
       "kernels": {"rhsMapping": "ctaSegments", "rhsReduction": "segmented", "rhsBlockSize": 128, "polynomialPPThreads": 512},
       "overlap": false, "checkAccess": false, "haloFreshnessChecks": false
     }

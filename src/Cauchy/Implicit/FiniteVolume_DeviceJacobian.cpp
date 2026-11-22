@@ -111,6 +111,8 @@ namespace DNDS::Cauchy
                 q.residualScale = scale;
                 q.active = active;
                 q.physicalBoundary = physicalBoundary;
+                q.sstScalarColumns = scratch->owner->settings.execution.kernels.acmSSTScalarJacobian &&
+                                     scratch->owner->settings.equation.rans.model == "KOmegaSST";
                 q.frame = frame;
                 for (const auto &rows : JacobianRowBatches(scratch->stencil.View(), owned.RowCount(), scratch->owner->settings.execution.overlap))
                     CUDA::PrepareACMFluxJacobian(where,q,rows,status); }, R::ReadAs<R::TableRows>(field.Owned()), R::ReadAs<R::TableRows>(field.Ghost()), R::ReadAs<R::TableRows>(inversePseudoTime), R::ReadAs<R::TableRows>(*auxiliary.faceSpectralRadius), R::ReadAs<R::TableRows>(incoming), R::ReadAs<R::FixedRows<1>>(output.OffDiagonal().OffsetArray()), R::ReadWriteAs<R::UniformTableRows>(output.Diagonal()), R::WriteAs<R::UniformTableRows>(blocks), R::WriteAs<R::FixedRows<1>>(scratch->rowsStatus));

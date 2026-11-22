@@ -38,19 +38,15 @@ namespace DNDS::Cauchy
             // clear warmed-update gain before paying for CTA face packages.
             const int degree = numerics.cfv.maxOrder, rule = numerics.RHSIntegrationOrder();
             const bool acmCTA = a100Polynomial && settings.mesh.dimension == 3 && !numerics.firstOrderConvection &&
-                                ((degree == 2 && rule >= 4) || (degree == 3 && rule >= 2));
+                                ((degree == 2 && (rule >= 4 || (rule == 3 && settings.equation.rans.model == "KOmegaSST"))) ||
+                                 (degree == 3 && rule >= 2));
             kernels.rhsMapping = fp64 && acmCTA ? "ctaSegments" : "thread";
         }
         if (acm && kernels.rhsReduction == "auto")
             kernels.rhsReduction = "serial";
         if (execution.reconstructionKernel == "auto")
         {
-            // The matrix-shared selector remains a fixed comparison fixture.
-            const bool measuredFlow4 = a100P3 && acm && withoutRANS;
-            const bool packedRaw = numerics.cfv.storage.PackedRawB() || numerics.cfv.storage.PackedInverse();
-            const bool usePipeline = packedRaw || ((measuredFlow5 || measuredFlow4) &&
-                                                   !numerics.reconstructionSolver.UsesAMG() && numerics.limiter != "LVR");
-            execution.reconstructionKernel = usePipeline ? "fp64Pipelined" : "fp64";
+            execution.reconstructionKernel = a100Polynomial && !numerics.reconstructionSolver.UsesAMG() ? "fp64V2" : "fp64";
         }
         if (!kernels.polynomialPPThreads)
             kernels.polynomialPPThreads = measuredFlow5 ? 512 : 128;

@@ -35,6 +35,7 @@ namespace DNDS::Cauchy::CUDA
         std::array<bool, 6> active;
         EquationPhysicsProfile profile;
         bool physicalBoundary = true;
+        bool sstScalarColumns = false;
         RigidFrameParameters frame;
         LinearReadRows incoming;
     };

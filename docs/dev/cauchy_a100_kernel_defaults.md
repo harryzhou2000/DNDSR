@@ -10,21 +10,26 @@ five, A100 defaults are:
 | Operator | Automatic selection |
 | --- | --- |
 | RHS | `ctaSegments`, deterministic segmented reduction, 128 threads by default |
-| VR Jacobi | `fp64Pipelined`, neighbor-buffered SIMT, default 32-thread block per cell |
+| VR Jacobi | `fp64V2`, one warp per cell for 3D P3, FP64 MMA on compact full-inverse or precomputed tables |
 | Polynomial PP | Warp per cell, 512 threads per block |
 | Diagonal inverse | `guardedLU`, retaining the condition guard and filtered SVD fallback |
 | Linear Jacobi | Existing thread-per-cell, compact matrix storage |
 
-The VR matrix representation remains independent: raw face-shared B/full or
-triangular AInv and precomputed AInvB are not interchanged. No FP32, float-float,
-tensor-core arithmetic, storage padding, reordering or overlap is enabled by
-this policy. Those choices are separately configurable.
+Cauchy selects `fp64V2` for A100 combined AoS polynomial relaxation. CFV
+selects the mapping from the **placed** tables. For C4–7, M2/M3 use eight
+SIMT lanes per cell. M5/M9/M19 use one warp per cell. M5 with FP32 raw B
+uses SIMT for C4–6 and MMA for C7. Limited M5/C6 also selects SIMT for
+precomputed and FP64 raw matrices. The remaining M5 cases and all M9/M19
+cases use FP64 MMA when the device supports it. M5 precomputed MMA uses
+64 threads per block, the other presets use 128. The existing
+`numerics.cfv.cudaSweep` settings override launch dimensions.
 
-Explicit selectors retain their arithmetic/mapping meaning. Plan 61-6 bounds
-the comparison-only selectors, including `"fp64MatrixShared"`, to their
-single-grid flow5/19-mode precomputed non-LVR fixture. Other shapes use the
-general `"fp64"` or production `"fp64Pipelined"` path; an explicit unavailable
-comparison request fails. `"auto"` allows the measured A100 default.
+General FP64 covers arbitrary component widths, padded storage, a triangular
+inverse, and limited sweeps at M2/M3. `fp64V2SIMT` and `fp64V2MMA` force
+the compact optimized routes and report unsupported shapes. B and inverse
+storage precisions remain independent. The legacy pipeline and comparison
+selectors require a build with `DNDS_CFV_CUDA_ENABLE_V1_KERNELS=ON`.
+
 `execution.kernels.rhsMapping`, `rhsReduction`,
 and `polynomialPPThreads` override their respective automatic choices. Existing
 `DNDS_CAUCHY_CUDA_MODAL_PP_*` environment overrides still take precedence.
@@ -33,11 +38,17 @@ and `polynomialPPThreads` override their respective automatic choices. Existing
 
 Outside the measured A100 shape, FP64 RHS uses the same CTA mapping because it
 is the sole consolidated mapping, not because every shape was benchmarked.
-Reduced-precision flow5 comparisons use thread mapping. VR uses general FP64,
-and PP uses 128 threads. Automatic LVR also uses
-general FP64; an explicit `fp64Pipelined` LVR selection is supported separately.
-Unsupported explicit
-selections still fail; automatic selection never falls back to CPU.
+Reduced-precision flow5 comparisons use thread mapping. ACM/SST P2/Q3 in
+3D on A100 uses CTA segments for modal FP64 face flux. P3 with face rule
+order at least two retains CTA segments. Direct-gradient and mean face
+states use the face-thread route.
+
+On the 3D DoubleEllipse ACM/SST P3 benchmark (six components, 128
+threads), the face-thread and CTA-segment kernels took 30.95 and
+20.78 ms per update at Q3, and 70.37 and 38.87 ms at Q5. These are
+face-flux kernel times. For assembled ACM/SST matrices,
+`execution.kernels.acmSSTScalarJacobian` enables the interior scalar-column
+optimization. Set it to false for full-row reference assembly.
 
 `FiniteVolume::Settings()` on the placed plan exposes its concrete spatial
 choices. The canonical input/resolved configuration retains the requested

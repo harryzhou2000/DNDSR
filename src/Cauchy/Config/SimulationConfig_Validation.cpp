@@ -311,6 +311,12 @@ namespace DNDS::Cauchy
             return Kernel::FP64MatrixShared;
         if (reconstructionKernel == "floatFloatPipelined")
             return Kernel::FloatFloatPipelined;
+        if (reconstructionKernel == "fp64V2")
+            return Kernel::FP64V2;
+        if (reconstructionKernel == "fp64V2SIMT")
+            return Kernel::FP64V2SIMT;
+        if (reconstructionKernel == "fp64V2MMA")
+            return Kernel::FP64V2MMA;
         if (reconstructionKernel == "fp64Pipelined")
             return Kernel::FP64Pipelined;
         if (reconstructionKernel == "fp64TensorAsync")
@@ -351,7 +357,7 @@ namespace DNDS::Cauchy
         const auto &storage = s.numerics.cfv.storage;
         require(!(storage.PackedRawB() || storage.PackedInverse()) ||
                     (cuda && storage.Raw() && s.numerics.reconstruction == "variational" && !amgVR &&
-                     (s.execution.reconstructionKernel == "auto" || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64Pipelined)),
+                     (reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64 || IsV2Sweep(reconstructionKernel) || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64Pipelined)),
                 "FP32 raw matrix storage requires CUDA variational relaxation with reconstructionKernel=auto or fp64Pipelined");
         require(cuda || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64,
                 "nondefault reconstruction kernel requires CUDA");
@@ -405,7 +411,7 @@ namespace DNDS::Cauchy
                         "one RHS launch requires one common reduced arithmetic type");
                 reducedArithmetic = *precision;
             }
-        require(s.numerics.limiter != "LVR" || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64 ||
+        require(s.numerics.limiter != "LVR" || IsV2Sweep(reconstructionKernel) || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64 ||
                     reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64Pipelined,
                 "LVR currently requires the fp64 or fp64Pipelined reconstruction kernel");
         require(s.execution.device == "cpu" || cuda, "residual/BC/reconstruction backend " + s.execution.device);
@@ -447,7 +453,7 @@ namespace DNDS::Cauchy
         }
         const bool mixture = s.equation.eos == "idealGasMixture";
         const bool rans = s.equation.rans.model != "none", extended = mixture || rans;
-        const bool comparisonSweep = reconstructionKernel != CFV::ReconstructionDeviceKernel::FP64 &&
+        const bool comparisonSweep = !IsV2Sweep(reconstructionKernel) && reconstructionKernel != CFV::ReconstructionDeviceKernel::FP64 &&
                                      reconstructionKernel != CFV::ReconstructionDeviceKernel::FP64Pipelined;
         require(!comparisonSweep || (s.mesh.dimension == 3 && s.numerics.reconstruction == "variational" &&
                                      s.numerics.cfv.maxOrder == 3 && !extended && !acm &&

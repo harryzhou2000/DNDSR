@@ -44,11 +44,11 @@ namespace DNDS::Cauchy::ACM
     /// derivative maps stored unknowns directly into the owning cell frame.
     /// Weight includes face measure and stage residual coefficient, with a
     /// positive sign because the integrated spatial residual is -div(F).
-    template <int C, class Evaluate, class Block>
+    template <int C, int Columns = C, class Evaluate, class Block>
     DNDS_DEVICE_CALLABLE NumericalStatus AddACMFluxDerivative(const std::array<real, C> &base, real weight,
                                                               const Evaluate &evaluate, Block &&matrix)
     {
-        for (int j = 0; j < C; ++j)
+        for (int j = 0; j < Columns; ++j)
         {
             const real step = 1e-7 * std::max(real(1), std::abs(base[j]));
             auto plus = base, minus = base;
@@ -73,7 +73,7 @@ namespace DNDS::Cauchy::ACM
     /// First-order matrix row in stored coordinates. The rank-local state view
     /// maps logical components; offsets and canonical incidence slots identify
     /// disjoint destination blocks. CPU rows and CUDA threads share the math.
-    template <int C, class Request>
+    template <int C, bool SSTScalarColumns = false, class Request>
     DNDS_DEVICE_CALLABLE NumericalStatus AssembleRow(const Request &request, const FiniteVolumeStencilView &stencil, index cell)
     {
         using State = std::array<real, C>;
@@ -175,6 +175,44 @@ namespace DNDS::Cauchy::ACM
             };
             const auto leftFlux = [&](const State &q, State &out)
             { return flux(q, remote, out); };
+            if constexpr (SSTScalarColumns)
+            {
+                static_assert(C == 6);
+                if (!boundary && !sample.changesFrame && sample.other != cell)
+                {
+                    if (sample.jacobianColumn == UnInitIndex)
+                        return NumericalStatus{NumericalError::InvalidInput}.At(cell, sample.face);
+                    auto block = DenseBlock<C>(request.offDiagonal(cell, sample.jacobianColumn), request.offDiagonal.rowMajorBlocks);
+                    const auto rightFlux = [&](const State &q, State &out)
+                    { return flux(own, q, out); };
+                    if (const auto st = AddACMFluxDerivative<C, 4>(own, weight, leftFlux, diagonal); !st)
+                        return st.At(cell, sample.face);
+                    if (const auto st = AddACMFluxDerivative<C, 4>(remote, weight, rightFlux, block); !st)
+                        return st.At(cell, sample.face);
+
+                    // Pressure flux and upwind direction depend on flow4 alone. An
+                    // SST perturbation has one nonzero row in its derivative column.
+                    const real gridNormal = ACM::NormalSpeed(request.frame.GridVelocity(sample.ownPoint), sample.normal);
+                    State baseFlux{};
+                    ACM::NumericalFlux(request.physics, own, remote, sample.normal, baseFlux, 4, gridNormal);
+                    const real transport = baseFlux[3] - gridNormal;
+                    const auto scalarFlux = [&](real left, real right)
+                    { return ACM::TransportedScalarFlux(transport, left, right) - viscous * (right - left); };
+                    for (int j = 4; j < C; ++j)
+                    {
+                        const real l = own[j], r = remote[j];
+                        const real dl = 1e-7 * std::max(real(1), std::abs(l)), dr = 1e-7 * std::max(real(1), std::abs(r));
+                        const real lp = l + dl, lm = l - dl, rp = r + dr, rm = r - dr;
+                        const real vl = (weight / (lp - lm)) * (scalarFlux(lp, r) - scalarFlux(lm, r));
+                        const real vr = (weight / (rp - rm)) * (scalarFlux(l, rp) - scalarFlux(l, rm));
+                        if (!std::isfinite(vl) || !std::isfinite(vr))
+                            return NumericalStatus{NumericalError::InvalidState}.At(cell, sample.face);
+                        diagonal(j, j) += vl;
+                        block(j, j) += vr;
+                    }
+                    continue;
+                }
+            }
             if (const auto status = AddACMFluxDerivative<C>(own, weight, leftFlux, diagonal); !status)
                 return status.At(cell, sample.face);
             if (boundary)

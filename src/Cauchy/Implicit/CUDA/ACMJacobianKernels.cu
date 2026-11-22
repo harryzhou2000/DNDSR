@@ -8,13 +8,13 @@ namespace DNDS::Cauchy::CUDA
     namespace R = Runtime;
     namespace
     {
-        template <int C>
+        template <int C, bool SSTScalarColumns = false>
         __global__ void AssembleACMFluxJacobianRows(ACMJacobianInput request, R::RowSelection rows, ACMJacobianStatusRows status)
         {
             for (index slot = index(blockIdx.x) * blockDim.x + threadIdx.x; slot < rows.RowCount(); slot += index(blockDim.x) * gridDim.x)
             {
                 const index cell = rows.RowAt(slot);
-                status(cell, 0) = ACM::AssembleRow<C>(request, request.stencil(0, 0), cell);
+                status(cell, 0) = ACM::AssembleRow<C, SSTScalarColumns>(request, request.stencil(0, 0), cell);
             }
         }
     }
@@ -46,6 +46,8 @@ namespace DNDS::Cauchy::CUDA
             AssembleACMFluxJacobianRows<4><<<blocks, 64, 0, stream>>>(q, rows, status);
         else if (q.profile == EquationPhysicsProfile::ACMSA)
             AssembleACMFluxJacobianRows<5><<<blocks, 64, 0, stream>>>(q, rows, status);
+        else if (q.sstScalarColumns)
+            AssembleACMFluxJacobianRows<6, true><<<blocks, 64, 0, stream>>>(q, rows, status);
         else
             AssembleACMFluxJacobianRows<6><<<blocks, 64, 0, stream>>>(q, rows, status);
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA ACM sparse assembly launch failed");

@@ -80,6 +80,7 @@ namespace DNDS::Cauchy
         std::string rhsMapping = "auto", rhsReduction = "auto";
         std::optional<int> rhsGridBlocks, rhsBlockSize;
         bool rhsDoubleBuffer = false;
+        bool acmSSTScalarJacobian = true;
         std::optional<bool> rhsHoistFaceRows;
         int polynomialPPThreads = 0;
         DNDS_DECLARE_CONFIG(KernelExecutionSettings)
@@ -93,13 +94,14 @@ namespace DNDS::Cauchy
             DNDS_FIELD(rhsReduction, "auto selects segmented CTA reduction; explicit serial, segmented, boundedTree, or warpTree with a cross-warp fallback");
             config.field_optional(&T::rhsGridBlocks, "rhsGridBlocks", "CUDA RHS maximum grid blocks; null selects automatically, 0 explicitly uses the mapping default cap");
             config.field_optional(&T::rhsBlockSize, "rhsBlockSize", "CUDA RHS threads per block: null selects automatically, or use 64, 128, 256 or 512");
+            DNDS_FIELD(acmSSTScalarJacobian, "Reuse the unchanged interior transport speed in the two CUDA ACM/SST scalar derivative columns; false evaluates every full flux perturbation");
             DNDS_FIELD(rhsDoubleBuffer, "Experimental two-bank FP64 CTA staging");
             config.field_optional(&T::rhsHoistFaceRows, "rhsHoistFaceRows", "FP64 modal face-thread row binding; null selects automatically");
             DNDS_FIELD(polynomialPPThreads, "CUDA polynomial PP block size: 0 selects the device/shape default (512 for measured A100 P3 flow5, otherwise 128); explicit 128/256/512 or the existing environment override is preserved");
         }
         bool Default() const
         {
-            return stateInputLayout == "aos" && reconstructionInputLayout == "aos" &&
+            return acmSSTScalarJacobian && stateInputLayout == "aos" && reconstructionInputLayout == "aos" &&
                    polynomialArithmetic == "fp64" && dissipationArithmetic == "fp64" && fluxArithmetic == "fp64" && (rhsMapping == "auto" || rhsMapping == "thread") &&
                    rhsBlockSize.value_or(128) == 128 && !rhsDoubleBuffer && !rhsHoistFaceRows.value_or(false) &&
                    (rhsReduction == "auto" || rhsReduction == "serial") && rhsGridBlocks.value_or(0) == 0 && polynomialPPThreads == 0;
@@ -141,7 +143,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(transferPreflight, "MPI launch validation: collective (default) or abortOnFailure (local checks, fatal MPI abort, no per-launch global agreement); setup remains collective");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(communicationExecution, "MPI payload execution: caller (default) or worker (CPU Direct/HostPacked, requires MPI_THREAD_MULTIPLE)");
-            DNDS_FIELD(reconstructionKernel, "auto selects fp64Pipelined for measured A100 P3 flow5 relaxation, otherwise fp64. AMG reconstruction uses its solver setting instead. Explicit comparison kernels retain their C5/M19 precomputed non-LVR fixture; fp64/fp64Pipelined support the production shapes and LVR. Launch dimensions: numerics.cfv.cudaSweep. Precision is never reduced automatically; nondefault kernels require CUDA.");
+            DNDS_FIELD(reconstructionKernel, "auto uses fp64V2 on A100 combined AoS variational relaxation. fp64V2SIMT and fp64V2MMA require a supported compact shape. fp64 uses general FP64 arithmetic. Historical pipeline and comparison selectors require DNDS_CFV_CUDA_ENABLE_V1_KERNELS. Launch dimensions use numerics.cfv.cudaSweep.");
             config.field_section(&T::kernels, "kernels", "Operator-local CUDA input layout and compute arithmetic policies");
             DNDS_FIELD(checkAccess, "Validate declared scheduled accesses at submission");
             config.field_optional(&T::coreFirstCellOrdering, "coreFirstCellOrdering", "Place all node-star core cells before dependent cells within the rank during mesh setup; defaults to overlap");

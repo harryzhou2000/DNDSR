@@ -47,7 +47,7 @@
       "linear": {"method": "amgx", "stopping": "fixedCount", "iterations": 3,
         "matrixStorage": {"amgxStorage": "native", "indices": "int32"}}
     },
-    "execution": {"device": "cuda", "deviceOrdinal": 0, "hostThreads": 16, "reconstructionKernel": "fp64Pipelined", "layout": "aos", "fieldGrouping": "coupled", "overlap": false}
+    "execution": {"device": "cuda", "deviceOrdinal": 0, "hostThreads": 16, "reconstructionKernel": "auto", "layout": "aos", "fieldGrouping": "coupled", "overlap": false}
   },
   "time": {"steady": true, "method": "bdf1", "steps": 1},
   "output": {

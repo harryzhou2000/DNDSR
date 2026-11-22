@@ -24,8 +24,11 @@ namespace DNDS::CFV::Detail
                               compact(p.faceSide) && compact(p.rotationActive) && compact(a.vectors.starts) && compact(a.status);
         if (eligible && c >= 4 && c <= 7)
         {
+            // On A100 the M5/C6 LVR update favors warp SIMT for all three
+            // coupling formats. The unlimited update has a different crossover.
+            const bool preferM5MMA = (!p.packedRawB || c == 7) && !(a.limited && c == 6);
             const bool mma = arithmetic == ReconstructionSweepArithmetic::V2MMA ||
-                             (automatic && m >= 5 && (m != 5 || !p.packedRawB || c == 7) && FP64TensorCoreAvailable(a.context.device));
+                             (automatic && m >= 5 && (m != 5 || preferM5MMA) && FP64TensorCoreAvailable(a.context.device));
             DNDS_check_throw_info(!mma || (m >= 5 && FP64TensorCoreAvailable(a.context.device)), "V2 warp MMA requires M5, M9 or M19 and FP64 tensor cores");
             const int threads = a.options.threads ? a.options.threads : m == 5 && !p.raw && mma ? 64
                                                                                                 : 128;

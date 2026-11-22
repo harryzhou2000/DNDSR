@@ -103,6 +103,11 @@ namespace DNDS::Cauchy::ACM
         out[3] = -w.plus * f(w.minus) * minus - w.minus * f(w.plus) * plus;
     }
 
+    DNDS_DEVICE_CALLABLE inline real TransportedScalarFlux(real transport, real left, real right) noexcept
+    {
+        return transport * (transport >= 0 ? left : right);
+    }
+
     template <class Left, class Right, class Normal, class Flux>
     DNDS_DEVICE_CALLABLE inline void NumericalFlux(const Parameters &p, const Left &l, const Right &r,
                                                    const Normal &n, Flux &flux, int width = 4, real gridNormal = 0) noexcept
@@ -126,6 +131,6 @@ namespace DNDS::Cauchy::ACM
         flux[3] = 0.5 * (ul + ur - dp);
         const real transport = flux[3] - gridNormal;
         for (int j = 4; j < width; ++j)
-            flux[j] = transport * (transport >= 0 ? l[j] : r[j]);
+            flux[j] = TransportedScalarFlux(transport, l[j], r[j]);
     }
 }

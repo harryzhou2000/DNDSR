@@ -67,7 +67,7 @@ namespace DNDS::Cauchy
                 placed->reconstructionKernel == CFV::ReconstructionDeviceKernel::TF32TensorCore)
                 options.matrixPrecision = CFV::ReconstructionMatrixPrecision::FP32;
             DNDS_check_throw_info(_data->settings.numerics.limiter != "LVR" ||
-                                      (placed->reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64 ||
+                                      (IsV2Sweep(placed->reconstructionKernel) || placed->reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64 ||
                                        placed->reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64Pipelined),
                                   "LVR requires general fp64 or production fp64Pipelined reconstruction");
             placed->reconstruction = _data->reconstruction->Place(device, context, options);

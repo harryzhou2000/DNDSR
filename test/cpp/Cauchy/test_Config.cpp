@@ -19,7 +19,7 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     C::ResolveAutomaticCUDAKernels(a100, true, true);
     CHECK(a100.execution.kernels.rhsMapping == "auto");
     CHECK(a100.execution.kernels.rhsReduction == "auto");
-    CHECK(a100.execution.reconstructionKernel == "fp64Pipelined");
+    CHECK(a100.execution.reconstructionKernel == "fp64V2");
     CHECK(a100.execution.kernels.polynomialPPThreads == 512);
     CHECK(a100.numerics.cfv.storage.representation == base.numerics.cfv.storage.representation);
     auto other = base;
@@ -40,7 +40,7 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     auto limited = base;
     limited.numerics.limiter = "LVR";
     C::ResolveAutomaticCUDAKernels(limited, true, true);
-    CHECK(limited.execution.reconstructionKernel == "fp64");
+    CHECK(limited.execution.reconstructionKernel == "fp64V2");
     CHECK(C::ExecutionSettings{}.kernels.Default());
     CHECK(C::ExecutionSettings{}.ReconstructionKernel() == DNDS::CFV::ReconstructionDeviceKernel::FP64);
     CHECK(C::ResolveAutomaticCUDAInverse("auto", DNDS::Runtime::Device::Host()) == "batchedSVD");
@@ -50,7 +50,7 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     C::ResolveAutomaticCUDAKernels(acm, true, true);
     CHECK(acm.execution.kernels.rhsMapping == "ctaSegments");
     CHECK(acm.execution.kernels.rhsReduction == "serial");
-    CHECK(acm.execution.reconstructionKernel == "fp64Pipelined");
+    CHECK(acm.execution.reconstructionKernel == "fp64V2");
     const std::array<std::array<bool, 3>, 3> acmUsesCTA{{{false, false, false}, {false, false, true}, {false, true, true}}};
     for (int degree : {1, 2, 3})
         for (int rule : {1, 3, 5})
@@ -64,7 +64,7 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     base.mesh.dimension = 2;
     C::ResolveAutomaticCUDAKernels(base, true, true);
     CHECK(base.execution.kernels.rhsMapping == "thread");
-    CHECK(base.execution.reconstructionKernel == "fp64Pipelined");
+    CHECK(base.execution.reconstructionKernel == "fp64V2");
 }
 
 TEST_CASE("CUDA RHS launch selection respects measured profiles and explicit values")

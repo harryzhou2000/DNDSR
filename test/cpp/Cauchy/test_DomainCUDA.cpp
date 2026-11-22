@@ -125,7 +125,7 @@ TEST_CASE("ACM device correction matches CPU on flow4 and mechanical SA and SST"
                     : "mpi";
             settings.execution.device = cpu ? "cpu" : "cuda";
             settings.execution.kernels.rhsMapping = cpu ? "auto" : mapping;
-            settings.execution.reconstructionKernel = !cpu && polynomial ? "fp64Pipelined" : "fp64";
+            settings.execution.reconstructionKernel = !cpu && polynomial ? "fp64V2" : "fp64";
             C::Domain domain("acm", mesh, settings, time);
             CHECK(domain.CaptureStateSnapshot(false).PressureGauge() == std::optional<DNDS::real>(0));
             REQUIRE(domain.Advance(.0001).accepted);
@@ -319,7 +319,7 @@ TEST_CASE("Automatic A100 kernels advance raw P3 flow with frozen explicit refer
         const auto &resolved = domain.Discretization().Settings().execution;
         if (automatic && C::IsA100Device(R::Device::CUDA(0)))
         {
-            CHECK(resolved.reconstructionKernel == "fp64Pipelined");
+            CHECK(resolved.reconstructionKernel == "fp64V2");
             CHECK(resolved.kernels.rhsMapping == "auto");
             CHECK(resolved.kernels.rhsReduction == "auto");
             CHECK(resolved.kernels.polynomialPPThreads == 512);
