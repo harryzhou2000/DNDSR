@@ -9,6 +9,8 @@
 #include "Geom/Connectivity/ConnectivityInterpolateRows.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
+#include <cstdio>
+#include <fmt/format.h>
 #include <map>
 #include <cmath>
 #include <limits>
@@ -355,8 +357,9 @@ namespace DNDS::Geom
             int status = METIS_OK;
             if (owned && nParts > 1)
             {
-                int activeSize = 0;
+                int activeSize = 0, activeRank = 0;
                 MPI_Comm_size(active.value, &activeSize);
+                MPI_Comm_rank(active.value, &activeRank);
                 idx_t nCon = 1, zero = 0, edgeCut = 0;
                 if (activeSize == 1)
                 {
@@ -377,7 +380,7 @@ namespace DNDS::Geom
                     settings[METIS_OPTION_CONTIG] = 1;
                     settings[METIS_OPTION_SEED] = options.metisSeed;
                     settings[METIS_OPTION_NUMBERING] = 0;
-                    settings[METIS_OPTION_DBGLVL] = METIS_DBG_TIME;
+                    settings[METIS_OPTION_DBGLVL] = METIS_DBG_INFO | METIS_DBG_TIME;
                     idx_t vertices = global;
                     auto partition = options.metisType == "RB" ? METIS_PartGraphRecursive : METIS_PartGraphKway;
                     status = partition(&vertices, &nCon, xadj.data(), adjacency.data(), nullptr, nullptr,
@@ -388,7 +391,7 @@ namespace DNDS::Geom
                 {
                     std::array<real_t, 1> tolerance{real_t(1) + real_t(options.metisUfactor) / real_t(1000)};
                     idx_t weighted = options.edgeWeightMethod ? 1 : 0;
-                    std::array<idx_t, 3> settings{1, 0, idx_t(options.metisSeed)};
+                    std::array<idx_t, 3> settings{1, PARMETIS_DBGLVL_INFO | PARMETIS_DBGLVL_TIME, idx_t(options.metisSeed)};
                     bool best = false;
                     for (int cut = 0; cut < options.metisNcuts; ++cut)
                     {
@@ -406,6 +409,15 @@ namespace DNDS::Geom
                             part = candidate;
                         }
                     }
+                }
+                // The first nonempty input rank reports the accepted cut, including
+                // when the serial mesh reader is not domain rank zero.
+                if (status == METIS_OK && activeRank == 0)
+                {
+                    fmt::print(stdout, "[mesh/partition] {} {} cells={} parts={} tries={} seed={} maxLoadRatio={:.3f} edgeWeightMethod={} selectedEdgeCut={}\n",
+                               activeSize == 1 ? "METIS" : "ParMETIS", options.metisType, global, nParts,
+                               options.metisNcuts, options.metisSeed, 1.0 + options.metisUfactor / 1000.0, options.edgeWeightMethod, edgeCut);
+                    std::fflush(stdout);
                 }
             }
             std::vector<MPI_int> targets;
@@ -436,7 +448,9 @@ namespace DNDS::Geom
         MPI_Allreduce(MPI_IN_PLACE, &active, 1, MPI_INT, MPI_SUM, mpi.comm);
         source.LocalStage(mpi, [&]
                           { DNDS_check_throw_info(options.metisType != "RB" || active <= 1, "owned RB partition requires one reader cell rank"); });
-        const bool primaryCellGraph = options.edgeWeightMethod == 0 && source.relations[size_t(MeshRelation::CellCells)];
+        // Primary vertex matching can inspect only locally owned neighbor cells.
+        // Distributed ingress needs facial closure across the old rank boundaries.
+        const bool primaryCellGraph = active <= 1 && options.edgeWeightMethod == 0 && source.relations[size_t(MeshRelation::CellCells)];
         auto graph = primaryCellGraph
                          ? detail::BuildOwnedPrimaryCellGraph(source, mpi)
                          : detail::BuildOwnedPartitionGraph(source, mpi, options.edgeWeightMethod);
@@ -510,7 +524,7 @@ namespace DNDS::Geom
                         DNDS_check_throw_info(source.OriginalEntityId(kind, row) == ids.View()(size_t(row), 0),
                                               "topology preparation changed original owned row order");
                 } });
-        const bool primaryCellGraph = !source.Requirements().faces && options.edgeWeightMethod == 0 &&
+        const bool primaryCellGraph = activeRanks <= 1 && !source.Requirements().faces && options.edgeWeightMethod == 0 &&
                                       owned.relations[size_t(MeshRelation::CellCells)];
         auto graph = readerGraph
                          ? detail::BuildReaderPartitionGraph(source, mpi)

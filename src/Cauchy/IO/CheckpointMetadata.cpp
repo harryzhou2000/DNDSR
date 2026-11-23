@@ -134,7 +134,7 @@ namespace DNDS::Cauchy::CheckpointMetadata
             {
                 // Archive paths, ownership and optional persisted wall vectors
                 // describe mesh I/O. The mesh envelope checks physical identity.
-                for (const char *key : {"file", "partitionOutput", "partitionWallDistance", "repartition"})
+                for (const char *key : {"file", "partition", "partitionOutput", "partitionWallDistance", "repartition"})
                     settings["mesh"].erase(key);
             }
             if (mode == CheckpointLoadMode::MeansOnly)

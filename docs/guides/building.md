@@ -291,8 +291,7 @@ Key options (set via `-D<OPTION>=<VALUE>` or in a preset):
 `DNDS_CAUCHY_ENABLE_2D` and `DNDS_CAUCHY_ENABLE_3D` default to `ON`.
 Enable at least one family and one dimension. For example, configure with
 `-DDNDS_CAUCHY_ENABLE_ACM=OFF -DDNDS_CAUCHY_ENABLE_3D=OFF` for
-compressible 2D cases. The original spelling `DNDS_CAUCHY_ENBALE_3D` is
-accepted as an input alias and sets the canonical cache entry for that configure.
+compressible 2D cases.
 
 The CPU flux catalog, CUDA flux catalog and CUDA volume-source instantiations
 use these selections. A compressible-only build also omits the generic ACM

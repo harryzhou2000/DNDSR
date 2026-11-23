@@ -29,7 +29,7 @@ namespace DNDS::Cauchy
             OMP::set_serial_ingress_OMP();
             DNDS_check_throw_info(!domain.settings.mesh.file.empty(),
                                   "Cauchy mesh path is empty");
-            Geom::PartitionOptions partition;
+            const auto &partition = domain.settings.mesh.partition;
             const auto mapper = [ids = domain.settings.mesh.boundaryIds](
                                     const std::string &name)
             {

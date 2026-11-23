@@ -94,7 +94,7 @@ class RHSCodeGenerationTests(unittest.TestCase):
             configure = ["cmake", "-S", str(source), "-B", str(build)]
             subprocess.run(configure, check=True, capture_output=True)
             self.assertEqual((build / "selected").read_text(), "PerfectGas;ACM:2;3")
-            subprocess.run(configure + ["-DDNDS_CAUCHY_ENABLE_COMPRESSIBLE=OFF", "-DDNDS_CAUCHY_ENBALE_3D=OFF"],
+            subprocess.run(configure + ["-DDNDS_CAUCHY_ENABLE_COMPRESSIBLE=OFF", "-DDNDS_CAUCHY_ENABLE_3D=OFF"],
                            check=True, capture_output=True)
             self.assertEqual((build / "selected").read_text(), "ACM:2")
             for disabled in ("ACM", "2D"):

@@ -1,12 +1,5 @@
 include_guard(GLOBAL)
 
-# Accept the original misspelling as an input alias. Keep one authoritative
-# cache entry so a later reconfigure cannot silently restore an old setting.
-if(DEFINED DNDS_CAUCHY_ENBALE_3D)
-    message(STATUS "Mapping DNDS_CAUCHY_ENBALE_3D to DNDS_CAUCHY_ENABLE_3D")
-    set(DNDS_CAUCHY_ENABLE_3D "${DNDS_CAUCHY_ENBALE_3D}" CACHE BOOL "Build Cauchy for 3D meshes" FORCE)
-    unset(DNDS_CAUCHY_ENBALE_3D CACHE)
-endif()
 option(DNDS_CAUCHY_ENABLE_COMPRESSIBLE "Build Cauchy for compressible equations" ON)
 option(DNDS_CAUCHY_ENABLE_ACM "Build Cauchy for artificial compressibility" ON)
 option(DNDS_CAUCHY_ENABLE_2D "Build Cauchy for 2D meshes" ON)

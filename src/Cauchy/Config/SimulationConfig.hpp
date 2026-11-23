@@ -3,6 +3,7 @@
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
 #include "CFV/Math/LimitedVR.hpp"
+#include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Cauchy/Core/DomainPlacement.hpp"
 #include "Cauchy/Riemann/RiemannFlux.hpp"
 #include "Cauchy/Motion/RigidMotion.hpp"
@@ -154,6 +155,7 @@ namespace DNDS::Cauchy
     struct MeshSettings
     {
         std::string file, partitionOutput;
+        Geom::PartitionOptions partition;
         bool partitionWallDistance = false, repartition = false;
         int dimension = 2;
         int elevation = 0, bisect = 0;
@@ -163,6 +165,7 @@ namespace DNDS::Cauchy
         DNDS_DECLARE_CONFIG(MeshSettings)
         {
             DNDS_FIELD(file, "CGNS file or distributed .dnds.h5 mesh archive; an injected mesh needs no file");
+            DNDS_FIELD(partition, "Cell graph partitioning options for CGNS import and distributed mesh repartition");
             DNDS_FIELD(partitionOutput, "Output archive base or .dnds.h5 path for partition-only runs; empty uses Euler mesh naming");
             DNDS_FIELD(partitionWallDistance, "Include nodal distance vectors to no-slip walls in a partition-only archive");
             DNDS_FIELD(repartition, "Redistribute a distributed H5 mesh onto the current domain ranks; false restores its saved partitions");

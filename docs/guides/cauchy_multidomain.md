@@ -110,6 +110,17 @@ set of no-slip zones changes. A matching rank count restores ownership by
 default. Set `mesh.repartition=true` for a new computing partition, including
 when the domain communicator size changes.
 
+Partitioning uses the per-domain `mesh.partition` settings. The default
+`metisUfactor=20` requests a maximum cell count of 1.02 times the mean.
+`metisNcuts=3` tries three cuts. Distributed ParMETIS uses successive seeds
+starting at `metisSeed=0` and retains the smallest edge cut. The default
+`metisType="KWAY"` supports both serial and distributed input graphs.
+`"RB"` requires a single input cell-owning rank. `edgeWeightMethod=0` counts
+cut graph edges equally; `1` weights them by scaled face diameter.
+Library diagnostics and the selected cut are written to stdout during
+partitioning and appear in captured job logs. Restoring saved partitions
+without repartitioning bypasses both libraries.
+
 ## Solution restart shape
 
 For multiple domains, `Simulation::WriteCheckpoint("restart.h5")` creates:
