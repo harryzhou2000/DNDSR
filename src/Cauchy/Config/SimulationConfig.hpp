@@ -181,6 +181,7 @@ namespace DNDS::Cauchy
     {
         real fixScale = 1, incrementScale = 1, dLambda = 0, referenceMach = .1, pressureStencilMin = 1e300;
         bool useStencil = true;
+        std::string rotation = "none", secondaryFlux;
         DNDS_DECLARE_CONFIG(RiemannSettings)
         {
             DNDS_FIELD(fixScale, "Entropy and H-correction scale");
@@ -189,8 +190,17 @@ namespace DNDS::Cauchy
             DNDS_FIELD(referenceMach, "Positive AUSM+-up reference Mach cutoff");
             DNDS_FIELD(pressureStencilMin, "AUSMPW+ stencil pressure upper bound; exact scalar input when useStencil is false");
             DNDS_FIELD(useStencil, "Supply cell-face-cell wave/pressure stencils to fluxes that use them; false keeps the explicit scalar inputs");
+            DNDS_FIELD(rotation, "Rotated flux axis: none, velocityJump (cell mean velocities), or faceNormal (face-center normal)");
+            DNDS_FIELD(secondaryFlux, "Riemann solver along the rotation axis; empty uses the primary numerics.flux solver");
         }
-        Riemann::FluxSettings KernelSettings() const { return {dLambda, fixScale, incrementScale, referenceMach, pressureStencilMin}; }
+        Riemann::FluxSettings KernelSettings(Riemann::Solver primary) const
+        {
+            const auto mode = rotation == "none"           ? Riemann::RotationMode::None
+                              : rotation == "velocityJump" ? Riemann::RotationMode::VelocityJump
+                                                           : Riemann::RotationMode::FaceNormal;
+            const auto secondary = secondaryFlux.empty() ? primary : Riemann::RiemannFlux::Resolve(secondaryFlux).Kind();
+            return {dLambda, fixScale, incrementScale, referenceMach, pressureStencilMin, {mode, secondary}};
+        }
     };
     struct RANSStateSettings
     {

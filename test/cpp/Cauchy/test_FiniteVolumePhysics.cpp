@@ -863,7 +863,7 @@ TEST_CASE("Direct P1 mixture PP shares one thermal factor across split flow and 
     C::DomainSettings settings;
     settings.numerics.reconstruction = "gradient";
     settings.numerics.gradient = "leastSquares";
-    settings.numerics.limiter = "none";
+    settings.numerics.p1Limiter = "none";
     settings.numerics.positivity = true;
     settings.numerics.positivityBetaCutoff = 0;
     settings.numerics.faceFallback = false;

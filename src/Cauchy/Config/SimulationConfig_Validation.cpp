@@ -69,7 +69,14 @@ namespace DNDS::Cauchy
         numerics.cfv.Validate();
         numerics.limitedVR.Validate();
         const auto &riemann = numerics.riemann;
-        DNDS_check_throw_info((numerics.flux != "Roe_M3" && numerics.flux != "Roe_M5") || riemann.fixScale > 0,
+        DNDS_check_throw_info(riemann.rotation == "none" || riemann.rotation == "velocityJump" || riemann.rotation == "faceNormal",
+                              "unknown Cauchy Riemann rotation " + riemann.rotation);
+        DNDS_check_throw_info(riemann.secondaryFlux.empty() ||
+                                  (riemann.rotation != "none" && Riemann::RiemannFlux::Available(riemann.secondaryFlux)),
+                              "a secondary Riemann solver requires rotation and a supported solver name");
+        DNDS_check_throw_info((numerics.flux != "Roe_M3" && numerics.flux != "Roe_M5" &&
+                               riemann.secondaryFlux != "Roe_M3" && riemann.secondaryFlux != "Roe_M5") ||
+                                  riemann.fixScale > 0,
                               "low-dissipation Roe flux requires a positive fixScale divisor");
         DNDS_check_throw_info(std::isfinite(riemann.fixScale) && riemann.fixScale >= 0 && std::isfinite(riemann.incrementScale) && riemann.incrementScale >= 0 &&
                                   std::isfinite(riemann.dLambda) && riemann.dLambda >= 0 && std::isfinite(riemann.referenceMach) && riemann.referenceMach > 0 &&
@@ -455,6 +462,8 @@ namespace DNDS::Cauchy
                 full(s.implicit.ResolveCoarseLevel(l));
         }
         const bool mixture = s.equation.eos == "idealGasMixture";
+        const auto &riemann = s.numerics.riemann;
+        require(riemann.rotation == "none" || (!acm && !mixture), "rotated Riemann flux requires a perfect-gas compressible equation");
         const bool rans = s.equation.rans.model != "none", extended = mixture || rans;
         const bool comparisonSweep = !IsV2Sweep(reconstructionKernel) && reconstructionKernel != CFV::ReconstructionDeviceKernel::FP64 &&
                                      reconstructionKernel != CFV::ReconstructionDeviceKernel::FP64Pipelined;
@@ -473,6 +482,12 @@ namespace DNDS::Cauchy
             const auto solver = Riemann::RiemannFlux::Resolve(s.numerics.flux).Kind();
             require(solver >= Riemann::Solver::Roe && solver <= Riemann::Solver::Roe_M9,
                     "reduced dissipation currently requires the Roe family");
+            if (!riemann.secondaryFlux.empty())
+            {
+                const auto secondary = Riemann::RiemannFlux::Resolve(riemann.secondaryFlux).Kind();
+                require(secondary >= Riemann::Solver::Roe && secondary <= Riemann::Solver::Roe_M9,
+                        "reduced dissipation requires a Roe-family secondary flux");
+            }
         }
         const auto requireLinear = [&](const ImplicitSettings &implicit, const std::string &level)
         {
@@ -542,8 +557,7 @@ namespace DNDS::Cauchy
             const auto flux = Riemann::RiemannFlux::Resolve(s.numerics.flux);
             require((!mixture || flux.Kind() == Riemann::Solver::Rusanov) && !s.numerics.faceFallback,
                     "extended equation thermodynamic flux preparation/face fallback");
-            require(!s.numerics.riemann.useStencil ||
-                        (!flux.UsesTransverseSignal() && (!mixture || !flux.UsesPressureStencil())),
+            require(!mixture || !riemann.useStencil || (!flux.UsesTransverseSignal() && !flux.UsesPressureStencil()),
                     "extended equation wave/pressure stencil auxiliary inputs");
             require(s.numerics.limiter == "none" || s.numerics.limiter == "Barth" || s.numerics.limiter == "WBAP" ||
                         (!mixture && s.numerics.limiter == "LVR"),

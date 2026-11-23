@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "UnsafeMathComparison.hpp"
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "Cauchy/Physics/RANSPoint.hpp"
@@ -133,13 +134,13 @@ TEST_CASE("RANS model and point gathering follow logical blocks across split and
                                                            .002, 3.5, 1.4, .1, .03);
                     for (int j = 0; j < 5; ++j)
                     {
-                        CHECK(point.state[j] == 2 + .01 * iCell + .1 * j);
+                        CHECK(CauchyTest::EqualWithUnsafeMath(point.state[j], 2 + .01 * iCell + .1 * j));
                         for (int d = 0; d < 3; ++d)
                             CHECK(point.gradient(d, j) == flowGradient(j, d));
                     }
                     for (int j = 0; j < n; ++j)
                     {
-                        CHECK(point.state[5 + j] == .02 + .001 * iCell + .3 * j);
+                        CHECK(CauchyTest::EqualWithUnsafeMath(point.state[5 + j], .02 + .001 * iCell + .3 * j));
                         for (int d = 0; d < 3; ++d)
                             CHECK(point.gradient(d, 5 + j) == scalarGradient(j, d));
                     }

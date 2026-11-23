@@ -66,6 +66,11 @@ namespace DNDS::Cauchy::CUDA
     {
         DNDS_check_throw_info(std::isfinite(time) && components >= (mechanical ? 4 : 5) && components <= (mechanical ? 6 : 7) && (dimension == 2 || dimension == 3), "invalid CUDA RHS shape/profile");
         DNDS_check_throw_info(solver >= Riemann::Solver::Rusanov && solver <= Riemann::Solver::AUSMPlusUp2, "unknown CUDA Riemann solver");
+        const auto rotation = fluxPolicy.settings.rotation;
+        DNDS_check_throw_info(!rotation.Enabled() ||
+                                  (!mechanical && rotation.mode <= Riemann::RotationMode::FaceNormal &&
+                                   rotation.secondary >= Riemann::Solver::Rusanov && rotation.secondary <= Riemann::Solver::AUSMPlusUp2),
+                              "invalid CUDA rotated Riemann dispatch");
         DNDS_check_throw_info(direct || firstOrder || (modes > 0 && modes <= 19), "RHS polynomial degree/shape is missing");
         DNDS_check_throw_info(!primitiveGradient || components == 5, "primitive viscous gradients require pure flow5");
         DNDS_check_throw_info(!produceLow || components == 5, "low-order flux blending applies to flow5 only");
@@ -104,7 +109,9 @@ namespace DNDS::Cauchy::CUDA
         DNDS_check_throw_info(selected == P::FP64 || components == 5, "reduced RHS arithmetic is specialized for flow5");
         DNDS_check_throw_info(fluxPrecision == P::FP64 || (!primitiveGradient && dissipationPrecision == P::FP64),
                               "full reduced flux uses conservative gradients and includes its own dissipation");
-        DNDS_check_throw_info(dissipationPrecision == P::FP64 || (solver >= Riemann::Solver::Roe && solver <= Riemann::Solver::Roe_M9),
+        const auto roe = [](Riemann::Solver kind)
+        { return kind >= Riemann::Solver::Roe && kind <= Riemann::Solver::Roe_M9; };
+        DNDS_check_throw_info(dissipationPrecision == P::FP64 || (roe(solver) && (!rotation.Enabled() || roe(rotation.secondary))),
                               "reduced dissipation currently requires the Roe family");
     }
 }

@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "UnsafeMathComparison.hpp"
 #include "Cauchy/Core/DomainPlacement.hpp"
 #include "Cauchy/Implicit/NonlinearSolve.hpp"
 #include "Cauchy/Physics/PhysicsResources.hpp"
@@ -131,7 +132,7 @@ TEST_CASE("Production single-stage policy preserves frozen/updated traces and re
                             CHECK(exchange.published);
                             const auto packet = exchange.packet.Read();
                             for (I iDomain = 0; iDomain < 2; ++iDomain)
-                                CHECK(packet.View()(iDomain, 0) == donors[size_t(iDomain)]);
+                                CHECK(CauchyTest::EqualWithUnsafeMath(packet.View()(iDomain, 0), donors[size_t(iDomain)]));
                         };
                         problem.measure = [&, domain](auto &norms)
                         {
@@ -149,7 +150,7 @@ TEST_CASE("Production single-stage policy preserves frozen/updated traces and re
                             const auto packet = exchange.packet.Read();
                             local[size_t(domain)] = .5 * local[size_t(domain)] +
                                                     .25 * packet.View()(1 - domain, 0) + .1 * (domain + 1);
-                            CHECK(local[size_t(domain)] == expected[size_t(domain)]);
+                            CHECK(CauchyTest::EqualWithUnsafeMath(local[size_t(domain)], expected[size_t(domain)]));
                         };
                         sessions.push_back(C::NonlinearSession::Prepare(setup, 2, std::move(problem)));
                     }

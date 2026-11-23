@@ -3,7 +3,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeSampleKernels.hpp"
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"
 #include "Cauchy/Discretization/ViscousFlux.hpp"
-#include "Cauchy/Riemann/RiemannFluxMath.hpp"
+#include "Cauchy/Physics/PerfectGasCompute.hpp"
 #include <cstdio>
 #include <cstdlib>
 
@@ -281,8 +281,10 @@ namespace DNDS::Cauchy::CPU
                             minimum = std::min(minimum, pressureInput(sample.other, 0));
                         fluxSettings.pressureStencilMin = std::min(fluxSettings.pressureStencilMin, minimum);
                     }
-                    const auto preparedFlux = PreparePerfectGasRiemann(gas, fluxOperator.Kind(), leftFlux, rightFlux, leftMeanData, rightMeanData, normal, gridVelocity);
-                    auto flux = Riemann::Math::Evaluate(fluxOperator.Kind(), preparedFlux.Input(leftFlux, rightFlux, normal, gridVelocity), fluxSettings).flux;
+                    const auto faceNormal = fluxSettings.rotation.Enabled() ? request.stencil.FluxFaceNormal(iFace, side) : normal;
+                    auto flux = EvaluatePerfectGasRiemann(gas, fluxOperator.Kind(), leftFlux, rightFlux, leftMeanData, rightMeanData,
+                                                          normal, gridVelocity, faceNormal, fluxSettings)
+                                    .flux;
                     FlowState lowFlux{};
                     if (produceLow)
                         lowFlux = wallFluxState ? Riemann::Rusanov(leftFlux, rightFlux, normal, gridVelocity) : Riemann::Rusanov(leftMeanData, rightMeanData, normal, gridVelocity);

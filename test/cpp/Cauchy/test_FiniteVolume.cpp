@@ -805,7 +805,7 @@ TEST_CASE("Cauchy direct P1 owns Barth and thermal PP without variational storag
         C::DomainSettings settings;
         settings.numerics.reconstruction = "gradient";
         settings.numerics.gradient = "leastSquares";
-        settings.numerics.limiter = limiter;
+        settings.numerics.p1Limiter = limiter;
         settings.numerics.positivity = positivity;
         settings.numerics.positivityBetaCutoff = 0;
         settings.numerics.faceFallback = false;
@@ -2441,6 +2441,7 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
     const auto mesh = CFVTest::CartesianHexes(mpi, 16);
     for (const std::string flux : {"rusanov", "Roe_M9", "AUSMPWPlus"})
     {
+        CAPTURE(flux);
         C::DomainSettings settings;
         settings.mesh.dimension = 3;
         settings.boundaries["7"].kind = "extrapolate";
@@ -2452,6 +2453,7 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
         C::FiniteVolume fv(mesh, settings, equation);
         auto state = fv.Metrics().BuildField(5), reference = fv.Metrics().BuildField(5);
         auto full = fv.Metrics().BuildField(5), split = fv.Metrics().BuildField(5);
+        auto uncachedResult = fv.Metrics().BuildField(5);
         {
             auto write = state.Owned().Write();
             const auto values = write.View<R::UniformTableRows>();
@@ -2500,7 +2502,8 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<C::RHSFlowRows>()}));
             auto uncached = input;
             uncached.auxiliary.meanThermodynamics.reset();
-            diagnostics.Merge(rhs.ApplyBorrowedChecked(uncached, {output.View<C::RHSFlowRows>()}));
+            auto uncachedOutput = uncachedResult.Owned().Write();
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(uncached, {uncachedOutput.View<C::RHSFlowRows>()}));
             auto missing = input;
             if (auxiliary.cellWaveJump)
             {
@@ -2530,12 +2533,16 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             input.coefficients.ghost = ghost.View<R::UniformTableRows>();
             diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<C::RHSFlowRows>()}, DNDS::CFV::ReconstructionRegion::HaloDependent));
         }
-        auto a = reference.Owned().Read(), b = full.Owned().Read(), c = split.Owned().Read();
+        auto a = reference.Owned().Read(), b = full.Owned().Read(), c = split.Owned().Read(), d = uncachedResult.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
             {
                 CHECK(a.View()(iCell, j) == b.View()(iCell, j));
                 CHECK(b.View()(iCell, j) == c.View()(iCell, j));
+                // Inline EOS evaluation can round differently from the cached
+                // property kernel. Keep exact checks for the same operands.
+                CHECK(std::abs(d.View()(iCell, j) - b.View()(iCell, j)) <=
+                      8 * std::numeric_limits<DNDS::real>::epsilon() * std::max(1., std::abs(b.View()(iCell, j))));
             }
         CHECK(state.Owned().Version() == meanVersion);
         CHECK(coefficients.Owned().Version() == coefficientVersion);

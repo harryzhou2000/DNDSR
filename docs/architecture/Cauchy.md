@@ -629,6 +629,23 @@ The face combines its parents' maxima/minima. The pointwise Riemann module
 still receives equation-prepared pressure and sound speeds, without EOS calls.
 This restores the H-correction input that legacy Euler supplies to Roe_M9.
 
+For perfect-gas compressible flow, including coupled RANS, set
+`numerics.riemann.rotation` to `velocityJump` for Euler-style rotated fluxes.
+`numerics.flux` selects the primary solver for the direction perpendicular
+to the jump in cell-mean velocity. `numerics.riemann.secondaryFlux` selects
+the solver along the jump. An empty secondary selection uses the primary
+solver for both directions. The flux is the sum of the two directional
+fluxes weighted by their projections onto the quadrature normal. For
+`faceNormal` rotation the secondary axis is the face-center normal.
+A negligible velocity jump uses the primary solver on the quadrature
+normal. `none` is the default.
+
+CPU and CUDA runtime RHS kernels share this dispatch. Spatial preparation
+uses the union of both solvers' stencil requirements. The low-order
+positivity flux keeps its face-normal Rusanov definition. When the frozen
+Roe Jacobian is selected, it uses the combined wave magnitudes with the
+existing face-normal characteristic basis.
+
 With spatial preparation enabled, `dLambda` is a signal floor and
 `pressureStencilMin` a pressure upper bound. Set `useStencil=false` for exact
 manual scalar inputs and reproduction of the earlier no-stencil Cauchy path.

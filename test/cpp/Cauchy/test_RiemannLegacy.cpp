@@ -4,6 +4,7 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Euler/Gas.hpp"
 #include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Physics/PerfectGasCompute.hpp"
 
 namespace C = DNDS::Cauchy;
 namespace F = C::Riemann;
@@ -86,6 +87,60 @@ TEST_CASE("Every selected flux exposes explicit common-input requirements and mi
     }
     CHECK_NOTHROW(F::RiemannFlux::Resolve("rusanov").Validate({state, state, {1, 0, 0}}));
     CHECK_FALSE(F::RiemannFlux::Available("unknown"));
+}
+
+TEST_CASE("Rotated M9/M2 combines Euler fluxes along the selected axes")
+{
+    const auto equation = C::EquationSystem::Resolve(C::EquationSettings{});
+    const auto &gas = equation.Gas();
+    const auto left = equation.PrepareFluxState(gas.Conservative({1.2, .4, -.2, .3, 1.1}));
+    const auto right = equation.PrepareFluxState(gas.Conservative({.8, -.3, .1, .5, .7}));
+    const auto meanL = equation.PrepareFluxState(gas.Conservative({1.1, -.25, 0, 0, .9}));
+    const auto meanR = equation.PrepareFluxState(gas.Conservative({.9, .5, 0, 0, .8}));
+    const C::Vector3 normal{.6, .8, 0}, x{1, 0, 0}, reverse{-.6, -.8, 0}, grid{.1, -.2, 0};
+    F::FluxSettings settings{.35, 1.2, .85, .12};
+    const auto legacy = [&](L::RiemannSolverType solver, const C::Vector3 &direction)
+    {
+        Eigen::Matrix<double, 5, 1> flux;
+        F::FluxResult result{};
+        L::InviscidFlux_IdealGas_Dispatcher<3>(
+            solver, Eigen::Map<const Eigen::Matrix<double, 5, 1>>(left.flow.conservative.data()),
+            Eigen::Map<const Eigen::Matrix<double, 5, 1>>(right.flow.conservative.data()),
+            Eigen::Map<const Eigen::Matrix<double, 5, 1>>(meanL.flow.conservative.data()),
+            Eigen::Map<const Eigen::Matrix<double, 5, 1>>(meanR.flow.conservative.data()),
+            Eigen::Map<const Eigen::Vector3d>(grid.data()), Eigen::Map<const Eigen::Vector3d>(direction.data()),
+            gas.gamma, gas.gamma, flux, settings.dLambda, settings.fixScale, settings.incrementScale, [] {},
+            result.acousticMinus, result.contact, result.acousticPlus);
+        for (int j = 0; j < 5; ++j)
+            result.flux[j] = flux[j];
+        return result;
+    };
+    const auto secondary = legacy(L::Roe_M2, x);
+    const auto primary = legacy(L::Roe_M9, {0, 1, 0});
+    const auto unrotated = legacy(L::Roe_M9, normal);
+    for (const auto mode : {F::RotationMode::VelocityJump, F::RotationMode::FaceNormal})
+    {
+        settings.rotation = {mode, F::Solver::Roe_M2};
+        const auto rotated = C::EvaluatePerfectGasRiemann(gas, F::Solver::Roe_M9, left, right, meanL, meanR, normal, grid, x, settings);
+        const auto reversed = C::EvaluatePerfectGasRiemann(gas, F::Solver::Roe_M9, right, left, meanR, meanL, reverse, grid,
+                                                           C::Vector3{-1, 0, 0}, settings);
+        const auto aligned = C::EvaluatePerfectGasRiemann(gas, F::Solver::Roe_M9, left, right, meanL, meanR, x, grid, x, settings);
+        const auto fallback = C::EvaluatePerfectGasRiemann(gas, F::Solver::Roe_M9, left, right, meanL, meanL, normal, grid, x, settings);
+        auto plainSettings = settings;
+        plainSettings.rotation = {};
+        const auto plain = C::EvaluatePerfectGasRiemann(gas, F::Solver::Roe_M9, left, right, meanL, meanL, normal, grid, x, plainSettings);
+        CHECK(rotated.rotated);
+        CHECK_FALSE(fallback.rotated);
+        CHECK(fallback.flux == plain.flux);
+        CHECK(std::abs(rotated.flux[0] - unrotated.flux[0]) > 1e-3);
+        CHECK(rotated.contact == doctest::Approx(std::hypot(primary.contact, secondary.contact)).epsilon(1e-13));
+        for (int j = 0; j < 5; ++j)
+        {
+            CHECK(rotated.flux[j] == doctest::Approx(.8 * primary.flux[j] + .6 * secondary.flux[j]).epsilon(1e-12));
+            CHECK(reversed.flux[j] == doctest::Approx(-rotated.flux[j]).epsilon(1e-12));
+            CHECK(aligned.flux[j] == doctest::Approx(secondary.flux[j]).epsilon(1e-12));
+        }
+    }
 }
 TEST_CASE("All Euler fluxes satisfy stationary face consistency and reversal independently of legacy")
 {

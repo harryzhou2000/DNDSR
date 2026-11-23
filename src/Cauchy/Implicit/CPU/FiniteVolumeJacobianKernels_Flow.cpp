@@ -1,7 +1,7 @@
 #include "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp"
 #include "DNDS/Core/OMP.hpp"
 #include "Cauchy/Physics/PerfectGasCharacteristics.hpp"
-#include "Cauchy/Physics/RiemannPreparation.hpp"
+#include "Cauchy/Physics/PerfectGasCompute.hpp"
 namespace DNDS::Cauchy::CPU
 {
     using Matrix = Eigen::Matrix<real, 5, 5>;
@@ -207,7 +207,6 @@ namespace DNDS::Cauchy::CPU
                     if (!leftPrepared) return leftPrepared.status.At(iCell, sample.point);
                     if (!rightPrepared) return rightPrepared.status.At(iCell, sample.point);
                     const auto &leftData = leftPrepared.value, &rightData = rightPrepared.value;
-                    const auto model = PreparePerfectGasRiemann(gas, flux.Kind(), leftData, rightData, leftData, rightData, normal, gridVelocity);
                     auto settings = request.fluxSettings;
                     if (packet.cellWaveJump)
                     {
@@ -223,7 +222,8 @@ namespace DNDS::Cauchy::CPU
                             minimum = std::min(minimum, (*packet.cellPressureMinimum)(sample.other, 0));
                         settings.pressureStencilMin = std::min(settings.pressureStencilMin, minimum);
                     }
-                    const auto signals = flux.Evaluate(model.Input(leftData, rightData, normal, gridVelocity), settings);
+                    const auto signals = EvaluatePerfectGasRiemann(gas, flux.Kind(), leftData, rightData, leftData, rightData,
+                                                                    normal, gridVelocity, normal, settings);
                     if (request.magnitudes)
                     {
                         (*request.magnitudes)(entry, 0) = signals.contact;

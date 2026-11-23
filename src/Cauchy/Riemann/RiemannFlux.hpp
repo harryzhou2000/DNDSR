@@ -54,6 +54,19 @@ namespace DNDS::Cauchy::Riemann
         AUSMPlusUp2
     };
 
+    enum class RotationMode
+    {
+        None,
+        VelocityJump,
+        FaceNormal
+    };
+    struct Rotation
+    {
+        RotationMode mode = RotationMode::None;
+        Solver secondary = Solver::Rusanov;
+        DNDS_DEVICE_CALLABLE bool Enabled() const noexcept { return mode != RotationMode::None; }
+    };
+
     /// Pure scheme metadata, shared by host preparation and device point code.
     DNDS_DEVICE_CALLABLE constexpr Requirements RequiredInputs(Solver solver)
     {
@@ -110,6 +123,7 @@ namespace DNDS::Cauchy::Riemann
     {
         FlowStateT<Scalar> flux;
         Scalar acousticMinus, contact, acousticPlus;
+        bool rotated = false;
     };
     using FluxResult = FluxResultT<real>;
     template <class Scalar>
@@ -117,6 +131,7 @@ namespace DNDS::Cauchy::Riemann
     {
         Scalar dLambda = 0, fixScale = 1, incrementScale = 1;
         Scalar referenceMach = Scalar(.1), pressureStencilMin = DNDS::Math::ScalarMaxFinite<Scalar>();
+        Rotation rotation{};
     };
     using FluxSettings = FluxSettingsT<real>;
 
@@ -178,9 +193,9 @@ namespace DNDS::Cauchy::Riemann
     class RiemannFlux
     {
         Solver _solver;
-        explicit RiemannFlux(Solver solver) : _solver(solver) {}
 
     public:
+        explicit RiemannFlux(Solver solver) noexcept : _solver(solver) {}
         static RiemannFlux Resolve(const std::string &name);
         static bool Available(const std::string &name);
         DNDS_DEVICE_CALLABLE Solver Kind() const { return _solver; }

@@ -25,7 +25,8 @@ def main():
 
     def run(*arguments, success=True):
         result = subprocess.run(
-            [args.mpi, "-np", str(args.np), str(args.exe), *map(str, arguments)],
+            [args.mpi, "-np", str(args.np), str(args.exe),
+             *map(str, arguments)],
             cwd=args.source, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, timeout=60,
         )
@@ -58,7 +59,8 @@ def main():
                                       "-k", "/domains/0/settings/execution/overlap", "-v", "false"))
             assert resolved["time"]["dt"] == 2e-5
             assert not resolved["domains"][0]["settings"]["execution"]["overlap"]
-            assert "paired" in run(config, "--check-config", "-k", "/time/dt", success=False)
+            assert "paired" in run(
+                config, "--check-config", "-k", "/time/dt", success=False)
         run(config)
         first = json.loads((folder / "first-summary.json").read_text())
         assert first["steps"] == 2 and math.isclose(first["time"], 2e-5)
@@ -83,13 +85,23 @@ def main():
         accepted = [int(row["step"]) for row in rows
                     if int(row["stage"]) == -1 and int(row["iteration"]) == -1]
         assert accepted == [0, 1, 2] and len(rows) == len(accepted)
-        assert all(0 < float(row["min_rho"]) < float(row["max_rho"]) for row in rows)
-        assert all(None not in row and all(not value or math.isfinite(float(value))
-                                          for value in row.values()) for row in rows)
+        assert all(0 < float(row["min_rho"]) < float(
+            row["max_rho"]) for row in rows)
+        for row in rows:
+            assert None not in row
+            for column, value in row.items():
+                if row["step"] == "0" and column == "residual_l2":
+                    # No residual has been computed at initialization.
+                    assert math.isnan(float(value))
+                else:
+                    assert not value or math.isfinite(
+                        float(value)), (row["step"], column, value)
         assert (folder / "first-D0-final.vtkhdf").exists()
         assert (folder / "first-D0-final_bnd.vtkhdf").exists()
-        snapshot = json.loads((folder / "first-final-manifest.json").read_text())
-        boundary, = (item for item in snapshot["artifacts"] if item["kind"] == "boundary")
+        snapshot = json.loads(
+            (folder / "first-final-manifest.json").read_text())
+        boundary, = (
+            item for item in snapshot["artifacts"] if item["kind"] == "boundary")
         assert Path(boundary["path"]).name == "first-D0-final_bnd.vtkhdf"
         assert not boundary["facialFluxes"]["available"]
         run(config, "--restart", folder / "first-D0-final.h5", "-k", "/output/prefix",
@@ -110,8 +122,10 @@ def main():
         exact_config.write_text(json.dumps(exact))
         exact_stdout = run(exact_config)
         with (folder / "exact-D0-history.csv").open() as history:
-            observed = [row for row in csv.DictReader(history) if row["status"] == "0"]
-            assert observed and all(float(row["min_rho"]) < float(row["max_rho"]) for row in observed)
+            observed = [row for row in csv.DictReader(
+                history) if row["status"] == "0"]
+            assert observed and all(float(row["min_rho"]) < float(
+                row["max_rho"]) for row in observed)
         internal = sorted(folder.glob("exact-D0-S1_0_*.h5"))
         assert internal
         for path in internal:
@@ -119,16 +133,20 @@ def main():
             announcement = f"Writing checkpoint and visualization {path.stem.removeprefix('exact-')}"
             before_write, found, _ = exact_stdout.partition(announcement)
             assert found
-            assert re.search(rf"Internal === Step \[\s*1,\s*0,\s*{iteration}\]", before_write)
+            assert re.search(
+                rf"Internal === Step \[\s*1,\s*0,\s*{iteration}\]", before_write)
         assert all(path.with_name(path.stem + "-manifest.json").is_file()
                    for path in internal)
         run(exact_config, "--restart", internal[0], "-k", "/output/prefix", "-v",
             json.dumps(str(folder / "exact_resumed")))
-        exact_resumed = json.loads((folder / "exact_resumed-summary.json").read_text())
-        assert exact_resumed["steps"] == 1 and math.isclose(exact_resumed["time"], 1e-5)
+        exact_resumed = json.loads(
+            (folder / "exact_resumed-summary.json").read_text())
+        assert exact_resumed["steps"] == 1 and math.isclose(
+            exact_resumed["time"], 1e-5)
         assert exact_resumed["status"] == "target-reached"
         selected = json.loads(exact_config.read_text())
-        selected["defaults"]["implicit"] = {"minIterations": 3, "iterations": 3}
+        selected["defaults"]["implicit"] = {
+            "minIterations": 3, "iterations": 3}
         selected["output"].update({
             "prefix": str(folder / "selected"),
             "implicit": {"checkpointInterval": 2, "visualizationInterval": 0},
@@ -146,10 +164,13 @@ def main():
             "selected-D0-S1_0_2.vtkhdf", "selected-D0-S1_0_2_bnd.vtkhdf",
             "selected-D0-S1.vtkhdf", "selected-D0-S1_bnd.vtkhdf"}
         for iteration, kinds in ((1, ["checkpoint"]), (2, ["checkpoint", "volume", "boundary"])):
-            manifest = json.loads((folder / f"selected-D0-S1_0_{iteration}-manifest.json").read_text())
-            assert (manifest["step"], manifest["stage"], manifest["iteration"]) == (1, 0, iteration)
+            manifest = json.loads(
+                (folder / f"selected-D0-S1_0_{iteration}-manifest.json").read_text())
+            assert (manifest["step"], manifest["stage"],
+                    manifest["iteration"]) == (1, 0, iteration)
             assert manifest["restartScope"] == "exact_internal"
-            assert [artifact["kind"] for artifact in manifest["artifacts"]] == kinds
+            assert [artifact["kind"]
+                    for artifact in manifest["artifacts"]] == kinds
         if args.np == 1:
             invalid = run(selected_config, "--check-config",
                           "-k", "/output/checkpointSnapshots/0/iteration",
@@ -183,12 +204,16 @@ def main():
         multi["output"]["prefix"] = str(folder / "multi_resumed")
         multi_config.write_text(json.dumps(multi))
         run(multi_config, "--restart", folder / "multi-final.h5")
-        continued = json.loads((folder / "multi_resumed-summary.json").read_text())
-        assert continued["steps"] == 2 and math.isclose(continued["time"], 2e-5)
+        continued = json.loads(
+            (folder / "multi_resumed-summary.json").read_text())
+        assert continued["steps"] == 2 and math.isclose(
+            continued["time"], 2e-5)
         assert continued["status"] == "target-reached"
         for i_domain in range(2):
-            assert (folder / f"multi_resumed-D{i_domain}-final.vtkhdf").exists()
-    print(f"Cauchy frontend np={args.np}: CLI, histories, output and single/multi-domain restart passed")
+            assert (
+                folder / f"multi_resumed-D{i_domain}-final.vtkhdf").exists()
+    print(
+        f"Cauchy frontend np={args.np}: CLI, histories, output and single/multi-domain restart passed")
 
 
 if __name__ == "__main__":

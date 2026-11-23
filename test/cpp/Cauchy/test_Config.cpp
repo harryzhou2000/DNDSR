@@ -401,6 +401,26 @@ TEST_CASE("Configured RANS exposes Euler DES and QCR controls without a unit-len
     CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
 }
 
+TEST_CASE("Rotated Riemann settings resolve an independent secondary solver and reject unused selections")
+{
+    C::Json input;
+    auto &numerics = input["defaults"]["numerics"];
+    numerics["flux"] = "Roe_M9";
+    auto &riemann = numerics["riemann"];
+    riemann = {{"rotation", "velocityJump"}, {"secondaryFlux", "Roe_M2"}};
+    const auto settings = C::SimulationConfig::Resolve(input, 1).Domains()[0].settings.numerics.riemann;
+    const auto kernel = settings.KernelSettings(C::Riemann::Solver::Roe_M9);
+    CHECK(kernel.rotation.mode == C::Riemann::RotationMode::VelocityJump);
+    CHECK(kernel.rotation.secondary == C::Riemann::Solver::Roe_M2);
+    riemann["secondaryFlux"] = "invalid";
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+    riemann["secondaryFlux"] = "Roe_M3";
+    riemann["fixScale"] = 0;
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+    riemann = {{"rotation", "none"}, {"secondaryFlux", "Roe_M2"}};
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+}
+
 TEST_CASE("Halo freshness audits are opt-in and the collective check switch overrides them")
 {
     const auto defaults = C::SimulationConfig::Resolve(C::Json::object(), 1);

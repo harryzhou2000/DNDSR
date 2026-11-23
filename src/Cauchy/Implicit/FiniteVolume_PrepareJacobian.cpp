@@ -186,7 +186,7 @@ namespace DNDS::Cauchy
         bind(auxiliary.cellWaveJump, 1, packet.cellWaveJump);
         bind(auxiliary.cellPressureMinimum, 3, packet.cellPressureMinimum);
         DNDS_check_throw_info(!controls.roeDissipation || !_data->settings.numerics.riemann.useStencil ||
-                                  ((!_data->flux.UsesTransverseSignal() || packet.cellWaveJump) && (!_data->flux.UsesPressureStencil() || packet.cellPressureMinimum)),
+                                  ((!_data->fluxPolicy.transverseSignal || packet.cellWaveJump) && (!_data->fluxPolicy.pressureStencil || packet.cellPressureMinimum)),
                               "Roe Jacobian requires the configured flux's prepared stencil signals");
         const auto radius = face.View<R::UniformTableRows>(), inverseTau = pseudo.View<R::UniformTableRows>();
         DNDS_check_throw_info(radius.RowCount() == _data->stencil.stencilFaces.RowCount() && radius.Width() == 2, "Jacobian face spectral shape differs");
@@ -230,7 +230,7 @@ namespace DNDS::Cauchy
         if (magnitudeWrite)
             request.magnitudes = magnitudeWrite->View<R::FixedRows<3>>();
         request.frame = frame;
-        request.fluxSettings = _data->settings.numerics.riemann.KernelSettings();
+        request.fluxSettings = _data->fluxPolicy.settings;
         request.time = time;
         request.physicalMass = controls.physicalMass;
         request.scale = controls.residualScale;

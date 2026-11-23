@@ -437,8 +437,14 @@ namespace DNDS::Cauchy::CPU
                         minimum = std::min(minimum, request.pressureMinimum(sample.other, 0));
                     fluxSettings.pressureStencilMin = std::min(fluxSettings.pressureStencilMin, minimum);
                 }
-                const auto preparedFlux = equation.PrepareRiemann(fluxOperator, leftData, rightData, meanLeftData, meanRightData, normal, grid);
-                const auto convection = Riemann::Math::Evaluate(fluxOperator.Kind(), preparedFlux.Input(leftData, rightData, normal, grid), fluxSettings);
+                const auto faceNormal = fluxSettings.rotation.Enabled() ? request.stencil.FluxFaceNormal(sample.face, sample.side) : normal;
+                const auto convection = Riemann::Math::EvaluateDirections(
+                    fluxOperator.Kind(), fluxSettings.rotation, meanLeftData.flow.conservative, meanRightData.flow.conservative, normal, faceNormal,
+                    [&](Riemann::Solver kind, const Vector3 &direction)
+                    {
+                        const auto prepared = equation.PrepareRiemann(Riemann::RiemannFlux(kind), leftData, rightData, meanLeftData, meanRightData, direction, grid);
+                        return Riemann::Math::Evaluate(kind, prepared.Input(leftData, rightData, direction, grid), fluxSettings);
+                    });
                 const auto &flowFlux = convection.flux;
                 FlowState lowFlowFlux{};
                 if (request.produceLow)
@@ -454,7 +460,7 @@ namespace DNDS::Cauchy::CPU
                 // acoustic flux. Roe's prepared contact magnitude is the
                 // Euler velocity/entropy-fix policy. Rusanov's diagnostic
                 // contact is acoustic, so use an explicit velocity speed.
-                const real alpha = rusanovFlux
+                const real alpha = rusanovFlux && !convection.rotated
                                        ? .5 * (std::abs(speedLeft) + std::abs(speedRight))
                                        : convection.contact;
                 for (index j = 0; j < width; ++j)

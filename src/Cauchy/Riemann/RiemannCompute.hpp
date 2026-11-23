@@ -79,7 +79,7 @@ namespace DNDS::Cauchy::Riemann
             // infinity merely by converting the canonical default.
             const real maximum = DNDS::Math::ScalarCast<real>(DNDS::Math::ScalarMaxFinite<Scalar>());
             return {Scalar(settings.dLambda), Scalar(settings.fixScale), Scalar(settings.incrementScale),
-                    Scalar(settings.referenceMach), Scalar(DNDS::Math::ScalarMin(settings.pressureStencilMin, maximum))};
+                    Scalar(settings.referenceMach), Scalar(DNDS::Math::ScalarMin(settings.pressureStencilMin, maximum)), settings.rotation};
         }
         template <class Scalar>
         DNDS_DEVICE_CALLABLE inline FluxResult Convert(const FluxResultT<Scalar> &input) noexcept
@@ -90,6 +90,7 @@ namespace DNDS::Cauchy::Riemann
             result.acousticMinus = DNDS::Math::ScalarCast<real>(input.acousticMinus);
             result.contact = DNDS::Math::ScalarCast<real>(input.contact);
             result.acousticPlus = DNDS::Math::ScalarCast<real>(input.acousticPlus);
+            result.rotated = input.rotated;
             return result;
         }
     }

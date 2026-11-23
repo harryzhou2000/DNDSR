@@ -41,12 +41,17 @@ namespace DNDS::Cauchy::Riemann::Math
         return result;
     }
     template <class Scalar>
-    DNDS_DEVICE_CALLABLE inline Vector3T<Scalar> Velocity(const AcousticStateT<Scalar> &state)
+    DNDS_DEVICE_CALLABLE inline Vector3T<Scalar> Velocity(const FlowStateT<Scalar> &state)
     {
         Vector3T<Scalar> result;
         for (int d = 0; d < 3; ++d)
-            result[d] = state.flow.conservative[1 + d] / state.flow.conservative[0];
+            result[d] = state[1 + d] / state[0];
         return result;
+    }
+    template <class Scalar>
+    DNDS_DEVICE_CALLABLE inline Vector3T<Scalar> Velocity(const AcousticStateT<Scalar> &state)
+    {
+        return Velocity(state.flow.conservative);
     }
     template <class Scalar>
     DNDS_DEVICE_CALLABLE inline Vector3T<Scalar> Relative(Vector3T<Scalar> velocity, const Vector3T<Scalar> &grid)
@@ -61,6 +66,69 @@ namespace DNDS::Cauchy::Riemann::Math
     DNDS_DEVICE_CALLABLE inline const AcousticStateT<Scalar> &Mean(const FluxInputT<Scalar> &input, bool left) { return left ? (input.leftMean ? *input.leftMean : input.left) : (input.rightMean ? *input.rightMean : input.right); }
     DNDS_DEVICE_CALLABLE inline bool AUSM(Solver kind) { return kind >= Solver::AUSMPWPlus; }
     DNDS_DEVICE_CALLABLE inline bool Roe(Solver kind) { return kind >= Solver::Roe && kind <= Solver::Roe_M9; }
+
+    /// Euler's rotated flux: the secondary solver acts along the mean
+    /// velocity jump (or the face-center normal), and the primary solver
+    /// along the orthogonal remainder of the quadrature normal.
+    /// EvaluateDirection prepares any direction-dependent thermodynamics
+    /// and dispatches the solver for that direction.
+    template <class Scalar, class EvaluateDirection>
+    DNDS_DEVICE_CALLABLE inline FluxResultT<Scalar> EvaluateDirections(
+        Solver primary, Rotation rotation, const FlowStateT<Scalar> &leftMean, const FlowStateT<Scalar> &rightMean,
+        const Vector3T<Scalar> &normal, const Vector3T<Scalar> &faceNormal, EvaluateDirection evaluate) noexcept
+    {
+        if (!rotation.Enabled())
+            return evaluate(primary, normal);
+
+        const auto leftVelocity = Velocity(leftMean), rightVelocity = Velocity(rightMean);
+        Vector3T<Scalar> axis{};
+        for (int d = 0; d < 3; ++d)
+            axis[d] = rightVelocity[d] - leftVelocity[d];
+        const Scalar jump = DNDS::Math::ScalarSqrt(Dot(axis, axis));
+        const Scalar speed = DNDS::Math::ScalarSqrt(Dot(leftVelocity, leftVelocity)) +
+                             DNDS::Math::ScalarSqrt(Dot(rightVelocity, rightVelocity));
+        if (jump <= Scalar(10 * smallReal) * speed || jump <= Scalar(1e-100))
+            return evaluate(primary, normal);
+
+        if (rotation.mode == RotationMode::FaceNormal)
+            axis = faceNormal;
+        else
+        {
+            const Scalar orientation = Dot(axis, faceNormal) < 0 ? Scalar(-1) : Scalar(1);
+            for (auto &value : axis)
+                value = orientation * value / jump;
+        }
+        const Scalar secondaryWeight = Dot(axis, normal);
+        Vector3T<Scalar> tangent{};
+        for (int d = 0; d < 3; ++d)
+            tangent[d] = normal[d] - secondaryWeight * axis[d];
+        const Scalar primaryWeight = DNDS::Math::ScalarSqrt(Dot(tangent, tangent));
+        // At alignment the remainder has no flux contribution or usable
+        // direction. Evaluate on the actual normal to retain a unit vector.
+        if (primaryWeight <= Scalar(8) * DNDS::Math::ScalarEpsilon<Scalar>())
+        {
+            auto aligned = evaluate(rotation.secondary, normal);
+            aligned.rotated = true;
+            return aligned;
+        }
+        for (auto &value : tangent)
+            value /= primaryWeight;
+        const auto secondary = evaluate(rotation.secondary, axis);
+        auto result = evaluate(primary, tangent);
+        for (int j = 0; j < 5; ++j)
+            result.flux[j] = primaryWeight * result.flux[j] + secondaryWeight * secondary.flux[j];
+        const auto acoustic = [](const FluxResultT<Scalar> &waves)
+        {
+            return DNDS::Math::ScalarMax(DNDS::Math::ScalarAbs(waves.acousticMinus - waves.contact),
+                                         DNDS::Math::ScalarAbs(waves.acousticPlus - waves.contact));
+        };
+        const Scalar sound = DNDS::Math::ScalarMax(acoustic(result), acoustic(secondary));
+        result.contact = DNDS::Math::ScalarSqrt(result.contact * result.contact + secondary.contact * secondary.contact);
+        result.acousticMinus = DNDS::Math::ScalarAbs(result.contact - sound);
+        result.acousticPlus = result.contact + sound;
+        result.rotated = true;
+        return result;
+    }
     template <class Scalar>
     DNDS_DEVICE_CALLABLE inline void EntropyFix(int scheme, Scalar aL, Scalar aR, Scalar a, Scalar uL, Scalar uR, Scalar u, Scalar velocityMagnitude, const FluxSettingsT<Scalar> &settings, FluxResultT<Scalar> &result)
     {

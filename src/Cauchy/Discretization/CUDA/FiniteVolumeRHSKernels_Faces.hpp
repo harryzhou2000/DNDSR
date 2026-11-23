@@ -159,7 +159,7 @@ namespace DNDS::Cauchy::CUDA::Detail
             return rightData.status.At(sample.cell, sample.point);
         const auto &leftFlow = leftData.value.flow.conservative, &rightFlow = rightData.value.flow.conservative;
         auto meanLeftData = leftData.value, meanRightData = rightData.value;
-        if (Riemann::RequiredInputs(controls.solver).meanStates || controls.produceLow)
+        if (Riemann::RequiredInputs(controls.solver).meanStates || controls.fluxPolicy.settings.rotation.Enabled() || controls.produceLow)
         {
             PerfectGasKernelPoint<Components> mean;
             MeanPoint(fields, sample.cell, mean);
@@ -215,15 +215,17 @@ namespace DNDS::Cauchy::CUDA::Detail
             settings.pressureStencilMin = std::min(settings.pressureStencilMin, minimum);
         }
         Riemann::FluxResult convection;
+        const auto faceNormal = settings.rotation.Enabled() ? geometry.stencil.FluxFaceNormal(sample.face, sample.side) : sample.normal;
         if constexpr (std::is_same_v<FluxScalar, real>)
         {
-            const auto prepared = PreparePerfectGasRiemann(gas, controls.solver, leftData.value, rightData.value, meanLeftData, meanRightData, sample.normal, grid);
-            convection = Riemann::EvaluateRoeDissipationCompute<DissipationScalar>(controls.solver, prepared.Input(leftData.value, rightData.value, sample.normal, grid), settings);
+            convection = EvaluatePerfectGasRiemann<DissipationScalar>(gas, controls.solver, leftData.value, rightData.value,
+                                                                      meanLeftData, meanRightData, sample.normal, grid, faceNormal, settings);
         }
         else
         {
             const auto result = TryPerfectGasRiemannCompute<FluxScalar>(gas, controls.solver, leftFlow, rightFlow,
-                                                                        meanLeftData.flow.conservative, meanRightData.flow.conservative, sample.normal, grid, settings);
+                                                                        meanLeftData.flow.conservative, meanRightData.flow.conservative,
+                                                                        sample.normal, grid, settings, &faceNormal);
             if (!result)
                 return result.status.At(sample.cell, sample.point);
             convection = result.value;
@@ -243,7 +245,9 @@ namespace DNDS::Cauchy::CUDA::Detail
             speedLeft += (leftFlow[1 + d] / leftFlow[0] - grid[d]) * sample.normal[d];
             speedRight += (rightFlow[1 + d] / rightFlow[0] - grid[d]) * sample.normal[d];
         }
-        const real alpha = controls.solver == Riemann::Solver::Rusanov ? .5 * (std::abs(speedLeft) + std::abs(speedRight)) : convection.contact;
+        const real alpha = controls.solver == Riemann::Solver::Rusanov && !convection.rotated
+                               ? .5 * (std::abs(speedLeft) + std::abs(speedRight))
+                               : convection.contact;
         for (int j = 5; j < Components; ++j)
             flux[j] = wallFluxState ? face.values[j] * speedLeft : AdvectedScalarFlux(left.values[j], right.values[j], speedLeft, speedRight, alpha);
         // Cauchy omits the former isotropic 2*rho*k/3 momentum flux and energy work.

@@ -80,7 +80,7 @@ namespace DNDS::Cauchy
                                                    { return owner->boundary.At(zone).kind == BoundaryKind::Extrapolate; });
             if (!controls.mechanical && !controls.direct && !controls.firstOrder && controls.viscous && !controls.primitiveGradient &&
                 !controls.distinctViscous && !controls.produceLow && !n.cfv.cacheDiffBase &&
-                !controls.positivity && !controls.faceFallback &&
+                !controls.positivity && !controls.faceFallback && !controls.fluxPolicy.settings.rotation.Enabled() &&
                 (!controls.useStencil || (!controls.fluxPolicy.transverseSignal && !controls.fluxPolicy.pressureStencil)) &&
                 controls.solver == Riemann::Solver::Roe_M1 && !owner->hasInterfaces && !owner->hasRotatedFrames &&
                 !owner->motion.At(0).moving && !owner->settings.execution.overlap &&

@@ -3,7 +3,7 @@
 #include "Cauchy/Implicit/CUDA/FiniteVolumeJacobianKernels.hpp"
 #include "Cauchy/Implicit/CUDA/FrozenJacobianKernels_Point.hpp"
 #include "Cauchy/Boundary/BoundaryJacobian.hpp"
-#include "Cauchy/Physics/RiemannPreparation.hpp"
+#include "Cauchy/Physics/PerfectGasCompute.hpp"
 #include "Cauchy/Physics/PerfectGasPoint.hpp"
 #include "Cauchy/Riemann/RiemannFluxMath.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
@@ -108,7 +108,6 @@ namespace DNDS::Cauchy::CUDA
                         const real leftPressure = q.pressure(iCell, 0);
                         const Riemann::AcousticState leftData{{left, leftPressure}, std::sqrt(p.gas.gamma * leftPressure / left[0])};
                         const Riemann::AcousticState rightData{{flow, pressure}, std::sqrt(p.gas.gamma * pressure / flow[0])};
-                        const auto model = PreparePerfectGasRiemann(p.gas, q.solver, leftData, rightData, leftData, rightData, sample.normal, grid);
                         auto settings = q.fluxSettings;
                         if (q.waveJump.RowCount())
                         {
@@ -124,7 +123,8 @@ namespace DNDS::Cauchy::CUDA
                                 minimum = std::min(minimum, q.pressureMinimum(sample.other, 0));
                             settings.pressureStencilMin = std::min(settings.pressureStencilMin, minimum);
                         }
-                        const auto waves = Riemann::Math::Evaluate(q.solver, model.Input(leftData, rightData, sample.normal, grid), settings);
+                        const auto waves = EvaluatePerfectGasRiemann(p.gas, q.solver, leftData, rightData, leftData, rightData,
+                                                                     sample.normal, grid, sample.normal, settings);
                         signals = {waves.contact, waves.acousticPlus, waves.acousticMinus};
                         for (int j = 0; j < 3; ++j)
                         {

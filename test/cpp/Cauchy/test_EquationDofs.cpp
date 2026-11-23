@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "UnsafeMathComparison.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationViews.hpp"
@@ -1323,7 +1324,7 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
                 const auto block = read.Block(iBlock).owned;
                 for (I iRow = 0; iRow < fixture.rows; ++iRow)
                     for (I j = 0; j < block.ComponentNumber(); ++j)
-                        CHECK(block(iRow, j) == values(iRow, first + j));
+                        CHECK(CauchyTest::EqualWithUnsafeMath(block(iRow, j), values(iRow, first + j)));
                 first += block.ComponentNumber();
             }
         };

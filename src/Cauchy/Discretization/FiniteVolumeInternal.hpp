@@ -30,8 +30,13 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
     /// retain their specialized storage and arithmetic.
     inline FluxKernelPolicy ResolveFluxKernelPolicy(const DomainSettings &settings, const Riemann::RiemannFlux &flux)
     {
-        return {flux.RequiredInputs(), settings.numerics.riemann.KernelSettings(),
-                flux.Kind() == Riemann::Solver::Rusanov, flux.UsesTransverseSignal(), flux.UsesPressureStencil(),
+        const auto kernel = settings.numerics.riemann.KernelSettings(flux.Kind());
+        const auto secondary = Riemann::RiemannFlux(kernel.rotation.secondary);
+        auto required = flux.RequiredInputs();
+        required.meanStates = required.meanStates || kernel.rotation.Enabled();
+        return {required, kernel, flux.Kind() == Riemann::Solver::Rusanov,
+                flux.UsesTransverseSignal() || (kernel.rotation.Enabled() && secondary.UsesTransverseSignal()),
+                flux.UsesPressureStencil() || (kernel.rotation.Enabled() && secondary.UsesPressureStencil()),
                 settings.numerics.noRsOnWall, settings.numerics.noGRPOnWall};
     }
     inline Runtime::RowLayout FieldLayout(const Runtime::RowLayout &prototype, index rows, index width)

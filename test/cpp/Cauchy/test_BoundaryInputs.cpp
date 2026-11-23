@@ -294,6 +294,7 @@ TEST_CASE("P1 least squares uses affine receiver face-center values from an inte
     settings.boundaries["7"].kind = "interface";
     settings.numerics.reconstruction = "gradient";
     settings.numerics.gradient = "leastSquares";
+    settings.numerics.p1Limiter = "none";
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     const auto &metrics = fv.Metrics();
@@ -446,7 +447,9 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
         const auto u = ar.template View<R::UniformTableRows>(), v = br.template View<R::UniformTableRows>();
         for (I iCell = 0; iCell < u.RowCount(); ++iCell)
             for (I j = 0; j < u.Width(); ++j)
-                CHECK(u(iCell, j) == v(iCell, j));
+                // The analytic and packet-fed paths evaluate their inputs
+                // independently. Compare their FV results to roundoff.
+                CHECK(u(iCell, j) == doctest::Approx(v(iCell, j)).epsilon(2e-13).scale(1));
     };
     compare(ra, rb);
     compare(reference.FluxReconstruction(*reconstructionA, *workA).CoupledField(),

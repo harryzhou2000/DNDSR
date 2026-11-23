@@ -582,6 +582,7 @@ TEST_CASE("Physical Strang source composes with transport and preserves retry an
         C::TimeSettings time;
         time.method = method;
         time.sourceSplitting = "strang";
+        time.exactReconstructionRollback = true;
         const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
         C::Domain source("mixture", mesh, settings, time);
         CHECK(source.UsesStrangSource());

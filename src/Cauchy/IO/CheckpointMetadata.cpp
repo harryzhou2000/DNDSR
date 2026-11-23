@@ -238,8 +238,15 @@ namespace DNDS::Cauchy::CheckpointMetadata
                 else
                     for (const auto *name : {"positivityReconstruction", "positivityVolumePoints", "positivityCompressToMean", "positivityBetaPower"})
                         numerics.erase(name);
-                if (numerics.contains("riemann") && numerics["riemann"].is_object() && !numerics["riemann"].contains("useStencil"))
-                    numerics["riemann"]["useStencil"] = false;
+                if (auto riemann = numerics.find("riemann"); riemann != numerics.end() && riemann->is_object())
+                {
+                    if (!riemann->contains("useStencil"))
+                        (*riemann)["useStencil"] = false;
+                    if (!riemann->contains("rotation"))
+                        (*riemann)["rotation"] = "none";
+                    if (!riemann->contains("secondaryFlux"))
+                        (*riemann)["secondaryFlux"] = "";
+                }
             }
         }
         return config;

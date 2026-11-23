@@ -212,6 +212,10 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
     };
     constexpr int firstSegmented = int(precisionCases.size());
     constexpr int experimentalVariants = firstSegmented + 11;
+    constexpr int rotatedThread = experimentalVariants + 3;
+    constexpr int rotatedCTA = rotatedThread + 1;
+    constexpr int rotatedReducedDissipation = rotatedCTA + 1;
+    constexpr int rotatedReducedFlux = rotatedCTA + 2;
     const auto experiments = [&](const std::string &model, int reconstruction)
     {
         std::vector<int> cases{0};
@@ -228,6 +232,16 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
             cases.push_back(experimentalVariants + 1);
             cases.push_back(experimentalVariants + 2);
         }
+        if ((model == "none" || model == "SA") && reconstruction == 3)
+        {
+            cases.push_back(rotatedThread);
+            cases.push_back(rotatedCTA);
+        }
+        if (model == "none" && reconstruction == 3)
+        {
+            cases.push_back(rotatedReducedDissipation);
+            cases.push_back(rotatedReducedFlux);
+        }
         return cases;
     };
     for (const int dimension : {2, 3})
@@ -238,7 +252,11 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                     // Retain the canonical model/reconstruction matrix. Experimental
                     // policies add only one uncached P3 flow5 fixture per selection.
                     INFO("dimension=" << dimension << ", model=" << model << ", reconstruction=" << reconstruction << ", experiment=" << experiment);
-                    const auto arithmetic = precisionCases[experiment < firstSegmented ? experiment : 0];
+                    const int precisionCase = experiment < firstSegmented               ? experiment
+                                              : experiment == rotatedReducedDissipation ? 2
+                                              : experiment == rotatedReducedFlux        ? 3
+                                                                                        : 0;
+                    const auto arithmetic = precisionCases[precisionCase];
                     const bool fp32 = std::find(arithmetic.begin(), arithmetic.end(), Precision::FP32) != arithmetic.end();
                     const bool floatFloat = std::find(arithmetic.begin(), arithmetic.end(), Precision::FloatFloat) != arithmetic.end();
                     const real tolerance = fp32 ? 5e-5 : floatFloat ? 2e-10
@@ -316,6 +334,14 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                     // Two points per face exercise idle lanes and both fixed CTA
                     // reductions against the same independent CPU physics oracle.
                     controls.fluxPolicy.required = C::Riemann::RequiredInputs(controls.solver);
+                    const bool rotated = experiment >= rotatedThread;
+                    if (rotated)
+                    {
+                        controls.solver = C::Riemann::Solver::Roe_M9;
+                        controls.fluxPolicy.required = C::Riemann::RequiredInputs(controls.solver);
+                        controls.fluxPolicy.settings.rotation = {C::Riemann::RotationMode::VelocityJump, C::Riemann::Solver::Roe_M2};
+                        controls.mapping = experiment == rotatedCTA ? K::RHSFaceMapping::CTASegments : K::RHSFaceMapping::Thread;
+                    }
                     controls.fluxPolicy.noRsOnWall = reconstruction % 2;
                     controls.fluxPolicy.noGRPOnWall = reconstruction == 2;
                     controls.useStencil = controls.fluxPolicy.transverseSignal = controls.fluxPolicy.pressureStencil = true;
@@ -323,7 +349,8 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                     std::vector<real> mean(3 * width), coef(3 * width * modes), viscous(coef.size()), prepared(3 * 2);
                     for (I iCell = 0; iCell < 3; ++iCell)
                     {
-                        const auto flow = equation.Gas().Conservative({1.2 + .02 * iCell, .2, .05, -.03, 1.1});
+                        const auto flow = equation.Gas().Conservative(
+                            {1.2 + .02 * iCell, .2 + (rotated ? .09 * iCell : 0), .05 - (rotated ? .04 * iCell : 0), -.03, 1.1});
                         const auto acoustic = equation.PrepareFluxState(flow);
                         prepared[2 * iCell] = acoustic.flow.pressure;
                         prepared[2 * iCell + 1] = acoustic.soundSpeed;
@@ -457,8 +484,7 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                         request.time = controls.time;
                         C::BoundaryPointOperator bc(equation);
                         auto worker = equation.MakePointEvaluator({}, {true, true, true});
-                        const auto flux = C::Riemann::RiemannFlux::Resolve(controls.solver == C::Riemann::Solver::Roe_M1 ? "Roe_M1" : model == "SA" ? "Roe_M9"
-                                                                                                                                                    : "AUSMPWPlus");
+                        const auto flux = C::Riemann::RiemannFlux(controls.solver);
                         const auto status = C::CPU::EvaluateEquationFlux(request, equation, bc, flux, worker, own.View(), ghost.View(), result.View(), lowResult.View(), F::ReconstructionRegion::All);
                         CAPTURE(int(status.status.code));
                         CAPTURE(status.status.detail);

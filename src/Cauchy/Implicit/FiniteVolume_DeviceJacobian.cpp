@@ -129,8 +129,8 @@ namespace DNDS::Cauchy
         }
         const auto physics = PerfectGasSpatialParameters::FromEquation(_data->equation, Metrics().Dimension());
         physics.Validate(int(n));
-        const bool wave = controls.roeDissipation && _data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal();
-        const bool pressure = controls.roeDissipation && _data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil();
+        const bool wave = controls.roeDissipation && _data->settings.numerics.riemann.useStencil && _data->fluxPolicy.transverseSignal;
+        const bool pressure = controls.roeDissipation && _data->settings.numerics.riemann.useStencil && _data->fluxPolicy.pressureStencil;
         DNDS_check_throw_info((!wave || auxiliary.cellWaveJump) && (!pressure || auxiliary.cellPressureMinimum),
                               "Roe Jacobian requires the configured flux stencil signals");
         for (const auto *signal : {wave ? &*auxiliary.cellWaveJump : nullptr, pressure ? &*auxiliary.cellPressureMinimum : nullptr})
@@ -219,7 +219,7 @@ namespace DNDS::Cauchy
                 request.wallMean = {mean.data, mean.offsets, mean.rows, mean.width, mean.stride, mean.sizes, mean.kind, mean.device};
             }
             request.parameters = parameters; request.rans = physics.rans.kind;
-            request.solver = scratch->owner->flux.Kind(); request.fluxSettings = scratch->owner->settings.numerics.riemann.KernelSettings();
+            request.solver = scratch->owner->flux.Kind(); request.fluxSettings = scratch->owner->fluxPolicy.settings;
             request.rowMajorBlocks = rowMajorBlocks;
             request.time = time; request.physicalBoundary = controls.scalarBoundaryDerivative;
             for (const auto &rows : JacobianRowBatches(scratch->stencil.View(), diagonal.RowCount(), splitRows))

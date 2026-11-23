@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "UnsafeMathComparison.hpp"
 #include "Cauchy/Physics/PerfectGas.hpp"
 #include "Cauchy/Physics/PerfectGasViscousFlux.hpp"
 #include "Cauchy/Physics/PerfectGasCompute.hpp"
@@ -709,7 +710,9 @@ TEST_CASE("Boundary values and exterior states implement slip no-slip and therma
     CHECK(face.pressure == doctest::Approx(7));
     CHECK(face.density == doctest::Approx(7 / (2 * .8)));
     const auto outside = gas.Primitive(wall.Exterior(gas, state, normal));
-    CHECK(outside.velocity == C::Vector3{-2, 4, -5.4});
+    const C::Vector3 expectedOutside{-2, 4, -5.4};
+    for (int d = 0; d < 3; ++d)
+        CHECK(CauchyTest::EqualWithUnsafeMath(outside.velocity[d], expectedOutside[d]));
     CHECK(outside.density == doctest::Approx(7 / (2 * .8)));
     CHECK(outside.temperature == doctest::Approx(.8));
     C::BoundarySettings config;

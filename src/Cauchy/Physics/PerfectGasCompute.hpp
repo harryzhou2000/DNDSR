@@ -37,6 +37,30 @@ namespace DNDS::Cauchy
         }
     }
 
+    /// Direction-dependent mean waves and face acoustic data are prepared
+    /// independently for each selected solver. All RHS kernel mappings use
+    /// this dispatch, including reduced dissipation precision.
+    template <class DissipationScalar = real, class Scalar>
+    DNDS_DEVICE_CALLABLE inline Riemann::FluxResultT<Scalar> EvaluatePerfectGasRiemann(
+        const PerfectGasT<Scalar> &gas, Riemann::Solver solver,
+        const Riemann::AcousticStateT<Scalar> &left, const Riemann::AcousticStateT<Scalar> &right,
+        const Riemann::AcousticStateT<Scalar> &leftMean, const Riemann::AcousticStateT<Scalar> &rightMean,
+        const Vector3T<Scalar> &normal, const Vector3T<Scalar> &grid, const Vector3T<Scalar> &faceNormal,
+        const Riemann::FluxSettingsT<Scalar> &settings) noexcept
+    {
+        return Riemann::Math::EvaluateDirections(solver, settings.rotation, leftMean.flow.conservative,
+                                                 rightMean.flow.conservative, normal, faceNormal,
+                                                 [&](Riemann::Solver kind, const Vector3T<Scalar> &direction)
+                                                 {
+                                                     const auto prepared = PreparePerfectGasRiemann(gas, kind, left, right, leftMean, rightMean, direction, grid);
+                                                     const auto input = prepared.Input(left, right, direction, grid);
+                                                     if constexpr (std::is_same_v<Scalar, real> && !std::is_same_v<DissipationScalar, real>)
+                                                         return Riemann::EvaluateRoeDissipationCompute<DissipationScalar>(kind, input, settings);
+                                                     else
+                                                         return Riemann::Math::Evaluate(kind, input, settings);
+                                                 });
+    }
+
     /** @brief Full local perfect-gas thermodynamics and convective flux in Scalar.
      * @details Inputs and result are FP64; pressure, acoustics, Roe/AUSM
      * preparation and the numerical flux are all evaluated after narrowing.
@@ -50,7 +74,8 @@ namespace DNDS::Cauchy
     DNDS_DEVICE_CALLABLE inline NumericalResult<Riemann::FluxResult> TryPerfectGasRiemannCompute(
         const PerfectGas &gas, Riemann::Solver solver, const FlowState &left, const FlowState &right,
         const FlowState &leftMean, const FlowState &rightMean, const Vector3 &normal,
-        const Vector3 &gridVelocity = {}, const Riemann::FluxSettings &settings = {}) noexcept
+        const Vector3 &gridVelocity = {}, const Riemann::FluxSettings &settings = {},
+        const Vector3 *faceNormal = nullptr) noexcept
     {
         const auto typedGas = CastPerfectGas<Scalar>(gas);
         const auto typedLeft = PerfectGasComputeDetail::Acoustic(typedGas, PerfectGasComputeDetail::Convert<Scalar>(left));
@@ -60,7 +85,7 @@ namespace DNDS::Cauchy
         if (!typedRight)
             return typedRight.status;
         auto typedLeftMean = typedLeft.value, typedRightMean = typedRight.value;
-        if (Riemann::RequiredInputs(solver).meanStates)
+        if (Riemann::RequiredInputs(solver).meanStates || settings.rotation.Enabled())
         {
             const auto a = PerfectGasComputeDetail::Acoustic(typedGas, PerfectGasComputeDetail::Convert<Scalar>(leftMean));
             if (!a)
@@ -73,13 +98,10 @@ namespace DNDS::Cauchy
         }
         const auto typedNormal = PerfectGasComputeDetail::Convert<Scalar>(normal);
         const auto typedGrid = PerfectGasComputeDetail::Convert<Scalar>(gridVelocity);
-        const auto prepared = PreparePerfectGasRiemann(typedGas, solver, typedLeft.value, typedRight.value,
-                                                       typedLeftMean, typedRightMean, typedNormal, typedGrid);
-        if constexpr (std::is_same_v<Scalar, real>)
-            return PerfectGasComputeDetail::Finish(Riemann::Math::Evaluate(solver, prepared.Input(typedLeft.value, typedRight.value, typedNormal, typedGrid), settings));
-        else
-            return PerfectGasComputeDetail::Finish(Riemann::Math::Evaluate(
-                solver, prepared.Input(typedLeft.value, typedRight.value, typedNormal, typedGrid), Riemann::ComputeDetail::Convert<Scalar>(settings)));
+        const auto typedFaceNormal = faceNormal ? PerfectGasComputeDetail::Convert<Scalar>(*faceNormal) : typedNormal;
+        return PerfectGasComputeDetail::Finish(EvaluatePerfectGasRiemann(
+            typedGas, solver, typedLeft.value, typedRight.value, typedLeftMean, typedRightMean, typedNormal, typedGrid, typedFaceNormal,
+            Riemann::ComputeDetail::Convert<Scalar>(settings)));
     }
 
     /** @brief Full flow5 molecular diffusion in a selected kernel-local scalar.

@@ -155,6 +155,12 @@ namespace DNDS::Cauchy
         {
             return jacobianOffsets.RowCount() ? jacobianOffsets(jacobianOffsets.RowCount() - 1, 0) : 0;
         }
+        DNDS_DEVICE_CALLABLE Vector3 FluxFaceNormal(index iFace, int side) const
+        {
+            const auto left = metric.GetFaceMeanNorm(iFace);
+            const auto normal = side == 0 ? left : Geom::tPoint(-metric.periodic.OtherRotation(iFace, side) * left);
+            return {normal[0], normal[1], normal[2]};
+        }
         DNDS_DEVICE_CALLABLE FiniteVolumeDetail::SampleRecord FaceSample(index iFace, int side, index iPoint,
                                                                          FaceEvaluationLocation location) const
         {
