@@ -5,29 +5,44 @@
 
 namespace DNDS::Cauchy
 {
-    bool IsA100Device(Runtime::Device device)
+    CUDAKernelDeviceProfile ClassifyCUDAKernelDevice(std::string_view name, int major, int minor)
+    {
+        if (major == 8 && minor == 0)
+        {
+            if (name.find("A100") != std::string_view::npos)
+                return CUDAKernelDeviceProfile::A100;
+            if (name.find("A800") != std::string_view::npos)
+                return CUDAKernelDeviceProfile::A800;
+        }
+        return CUDAKernelDeviceProfile::Other;
+    }
+    CUDAKernelDeviceProfile GetCUDAKernelDeviceProfile(Runtime::Device device)
     {
         if (device.space != Runtime::MemorySpace::CUDA)
-            return false;
+            return CUDAKernelDeviceProfile::Other;
 #ifdef DNDS_USE_CUDA
         cudaDeviceProp properties{};
         const auto status = cudaGetDeviceProperties(&properties, device.ordinal);
         DNDS_check_throw_info(status == cudaSuccess, "cannot resolve CUDA kernel defaults for selected device");
-        return properties.major == 8 && properties.minor == 0 &&
-               std::string(properties.name).find("A100") != std::string::npos;
+        return ClassifyCUDAKernelDevice(properties.name, properties.major, properties.minor);
 #else
         DNDS_check_throw_info(false, "CUDA kernel defaults require a CUDA build");
-        return false;
+        return CUDAKernelDeviceProfile::Other;
 #endif
     }
-    void ResolveAutomaticCUDAKernels(DomainSettings &settings, bool a100, bool withoutRANS)
+    bool IsA100Device(Runtime::Device device)
+    {
+        return GetCUDAKernelDeviceProfile(device) == CUDAKernelDeviceProfile::A100;
+    }
+    void ResolveAutomaticCUDAKernels(DomainSettings &settings, CUDAKernelDeviceProfile profile, bool withoutRANS)
     {
         auto &execution = settings.execution;
         auto &kernels = execution.kernels;
         const auto &numerics = settings.numerics;
         const bool acm = settings.equation.system == "incompressibleACM";
-        const bool a100Polynomial = a100 && numerics.reconstruction == "variational" &&
-                                    execution.layout == "aos" && execution.fieldGrouping == "coupled";
+        const bool coupledAoSPolynomial = numerics.reconstruction == "variational" &&
+                                          execution.layout == "aos" && execution.fieldGrouping == "coupled";
+        const bool a100Polynomial = profile == CUDAKernelDeviceProfile::A100 && coupledAoSPolynomial;
         const bool a100P3 = a100Polynomial && numerics.cfv.maxOrder == 3 && numerics.cfv.intOrder <= 5;
         const bool measuredFlow5 = a100P3 && !acm && withoutRANS && settings.mesh.dimension == 3;
         if (acm && kernels.rhsMapping == "auto")
@@ -46,7 +61,9 @@ namespace DNDS::Cauchy
             kernels.rhsReduction = "serial";
         if (execution.reconstructionKernel == "auto")
         {
-            execution.reconstructionKernel = a100Polynomial && !numerics.reconstructionSolver.UsesAMG() ? "fp64V2" : "fp64";
+            const bool v2Polynomial = coupledAoSPolynomial &&
+                                      (profile == CUDAKernelDeviceProfile::A100 || profile == CUDAKernelDeviceProfile::A800);
+            execution.reconstructionKernel = v2Polynomial && !numerics.reconstructionSolver.UsesAMG() ? "fp64V2" : "fp64";
         }
         if (!kernels.polynomialPPThreads)
             kernels.polynomialPPThreads = measuredFlow5 ? 512 : 128;

@@ -29,7 +29,7 @@ namespace DNDS::Cauchy
         // source plan stays usable. Runtime topology/control metadata remain
         // host-owned; replaced numerical payloads do not retain CPU duplicates.
         auto placed = std::make_shared<Data>(*_data);
-        ResolveAutomaticCUDAKernels(placed->settings, IsA100Device(device), !_data->equation.HasRANS());
+        ResolveAutomaticCUDAKernels(placed->settings, GetCUDAKernelDeviceProfile(device), !_data->equation.HasRANS());
         placed->metrics = _data->metrics.Placed(device, context);
         placed->gradient = _data->gradient.Placed(placed->metrics, context);
         CFV::SamplingPlacementMemo samplingPlacement(device, context);

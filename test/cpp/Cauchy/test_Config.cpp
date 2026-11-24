@@ -8,6 +8,7 @@
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
 
 namespace C = DNDS::Cauchy;
+using CUDAProfile = C::CUDAKernelDeviceProfile;
 TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve explicit overrides")
 {
     C::DomainSettings base;
@@ -16,14 +17,14 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     base.numerics.cfv.maxOrder = 3;
     base.numerics.cfv.intOrder = 5;
     auto a100 = base;
-    C::ResolveAutomaticCUDAKernels(a100, true, true);
+    C::ResolveAutomaticCUDAKernels(a100, CUDAProfile::A100, true);
     CHECK(a100.execution.kernels.rhsMapping == "auto");
     CHECK(a100.execution.kernels.rhsReduction == "auto");
     CHECK(a100.execution.reconstructionKernel == "fp64V2");
     CHECK(a100.execution.kernels.polynomialPPThreads == 512);
     CHECK(a100.numerics.cfv.storage.representation == base.numerics.cfv.storage.representation);
     auto other = base;
-    C::ResolveAutomaticCUDAKernels(other, false, true);
+    C::ResolveAutomaticCUDAKernels(other, CUDAProfile::Other, true);
     CHECK(other.execution.kernels.rhsMapping == "auto");
     CHECK(other.execution.reconstructionKernel == "fp64");
     CHECK(other.execution.kernels.polynomialPPThreads == 128);
@@ -32,14 +33,14 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     explicitPolicy.execution.kernels.rhsMapping = "ctaSegments";
     explicitPolicy.execution.kernels.rhsReduction = "serial";
     explicitPolicy.execution.kernels.polynomialPPThreads = 256;
-    C::ResolveAutomaticCUDAKernels(explicitPolicy, true, true);
+    C::ResolveAutomaticCUDAKernels(explicitPolicy, CUDAProfile::A100, true);
     CHECK(explicitPolicy.execution.reconstructionKernel == "fp64");
     CHECK(explicitPolicy.execution.kernels.rhsMapping == "ctaSegments");
     CHECK(explicitPolicy.execution.kernels.rhsReduction == "serial");
     CHECK(explicitPolicy.execution.kernels.polynomialPPThreads == 256);
     auto limited = base;
     limited.numerics.limiter = "LVR";
-    C::ResolveAutomaticCUDAKernels(limited, true, true);
+    C::ResolveAutomaticCUDAKernels(limited, CUDAProfile::A100, true);
     CHECK(limited.execution.reconstructionKernel == "fp64V2");
     CHECK(C::ExecutionSettings{}.kernels.Default());
     CHECK(C::ExecutionSettings{}.ReconstructionKernel() == DNDS::CFV::ReconstructionDeviceKernel::FP64);
@@ -47,7 +48,7 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     CHECK(C::ResolveAutomaticCUDAInverse("guardedLU", DNDS::Runtime::Device::Host()) == "guardedLU");
     base.equation.system = "incompressibleACM";
     auto acm = base;
-    C::ResolveAutomaticCUDAKernels(acm, true, true);
+    C::ResolveAutomaticCUDAKernels(acm, CUDAProfile::A100, true);
     CHECK(acm.execution.kernels.rhsMapping == "ctaSegments");
     CHECK(acm.execution.kernels.rhsReduction == "serial");
     CHECK(acm.execution.reconstructionKernel == "fp64V2");
@@ -58,13 +59,33 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
             auto candidate = base;
             candidate.numerics.cfv.maxOrder = degree;
             candidate.numerics.cfv.intOrder = rule;
-            C::ResolveAutomaticCUDAKernels(candidate, true, true);
+            C::ResolveAutomaticCUDAKernels(candidate, CUDAProfile::A100, true);
             CHECK(candidate.execution.kernels.rhsMapping == (acmUsesCTA[degree - 1][(rule - 1) / 2] ? "ctaSegments" : "thread"));
         }
     base.mesh.dimension = 2;
-    C::ResolveAutomaticCUDAKernels(base, true, true);
+    C::ResolveAutomaticCUDAKernels(base, CUDAProfile::A100, true);
     CHECK(base.execution.kernels.rhsMapping == "thread");
     CHECK(base.execution.reconstructionKernel == "fp64V2");
+}
+
+TEST_CASE("A800 shares the A100 CUDA VR preset and preserves other defaults")
+{
+    const auto profile = C::ClassifyCUDAKernelDevice("NVIDIA A800-SXM4-80GB", 8, 0);
+    REQUIRE(profile == CUDAProfile::A800);
+    CHECK(C::ClassifyCUDAKernelDevice("NVIDIA A800 80GB PCIe", 8, 9) == CUDAProfile::Other);
+    CHECK(C::ClassifyCUDAKernelDevice("NVIDIA A100 80GB PCIe", 8, 0) == CUDAProfile::A100);
+    CHECK(C::ClassifyCUDAKernelDevice("NVIDIA H100 80GB HBM3", 9, 0) == CUDAProfile::Other);
+    C::DomainSettings settings;
+    settings.mesh.dimension = 3;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 3;
+    settings.numerics.cfv.intOrder = 5;
+    C::ResolveAutomaticCUDAKernels(settings, profile, true);
+    CHECK(settings.execution.reconstructionKernel == "fp64V2");
+    CHECK(settings.execution.kernels.polynomialPPThreads == 128);
+    settings.execution.reconstructionKernel = "fp64";
+    C::ResolveAutomaticCUDAKernels(settings, profile, true);
+    CHECK(settings.execution.reconstructionKernel == "fp64");
 }
 
 TEST_CASE("CUDA RHS launch selection respects measured profiles and explicit values")
@@ -153,7 +174,7 @@ TEST_CASE("Native AMG is selected independently for reconstruction and flow")
         CHECK(lower.implicit.linear.method == "amgx");
         CHECK(lower.implicit.linear.matrixStorage.amgxStorage == "native");
     }
-    C::ResolveAutomaticCUDAKernels(settings, true, true);
+    C::ResolveAutomaticCUDAKernels(settings, CUDAProfile::A100, true);
     CHECK(settings.execution.reconstructionKernel == "fp64");
     if (DNDS::Algebra::AmgXPreconditioner::Available())
         CHECK_NOTHROW(C::ResolvedExecutionPlan::Resolve(domain));

@@ -15,7 +15,9 @@ five, A100 defaults are:
 | Diagonal inverse | `guardedLU`, retaining the condition guard and filtered SVD fallback |
 | Linear Jacobi | Existing thread-per-cell, compact matrix storage |
 
-Cauchy selects `fp64V2` for A100 combined AoS polynomial relaxation. CFV
+Cauchy selects `fp64V2` for A100 and A800 combined AoS polynomial relaxation.
+A800 uses the A100 VR preset at compute capability 8.0. The other automatic
+policies in the table retain their own device and shape criteria. CFV
 selects the mapping from the **placed** tables. For C4–7, M2/M3 use eight
 SIMT lanes per cell. M5/M9/M19 use one warp per cell. M5 with FP32 raw B
 uses SIMT for C4–6 and MMA for C7. Limited M5/C6 also selects SIMT for
