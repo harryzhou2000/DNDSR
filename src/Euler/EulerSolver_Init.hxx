@@ -167,7 +167,7 @@ namespace DNDS::Euler
         prepOpts.reorderParts = 1;
 #endif
         prepOpts.buildSerialOut = (config.dataIOControl.outPltMode == 0);
-        std::optional<Geom::NativeOwnedMeshData> ownedForPrepare;
+        Geom::NativeOwnedMeshData ownedForPrepare;
         if (config.dataIOControl.readMeshMode == 0)
         {
             Geom::Periodicity frames;
@@ -195,35 +195,27 @@ namespace DNDS::Euler
             auto nameMapper = [&](const std::string &name) -> Geom::t_index
             { return BCHandler.GetIDFromName(name); };
             const Geom::MeshAuditOptions audit{config.dataIOControl.meshAuditPersistentIdentity, config.dataIOControl.meshAuditClosure};
-            ownedForPrepare.emplace(config.dataIOControl.meshFormat == 1
-                                        ? Geom::ReadAndDeriveNativeMeshFromOpenFOAMOwned(
-                                              mpi, config.dataIOControl.meshFile, config.dataIOControl.meshPartitionOptions,
-                                              config.bcNameMapping, nameMapper, periodic, config.dataIOControl.meshElevation,
-                                              config.dataIOControl.meshDirectBisect, 0, audit)
-                                        : Geom::ReadAndDeriveNativeMeshFromCGNSOwned(
-                                              mpi, gDimLocal, config.dataIOControl.meshFile, config.dataIOControl.meshPartitionOptions,
-                                              nameMapper, periodic, config.dataIOControl.meshElevation,
-                                              config.dataIOControl.meshDirectBisect, 0, audit));
+            ownedForPrepare = config.dataIOControl.meshFormat == 1
+                                  ? Geom::ReadAndDeriveNativeMeshFromOpenFOAMOwned(
+                                        mpi, config.dataIOControl.meshFile, config.dataIOControl.meshPartitionOptions,
+                                        config.bcNameMapping, nameMapper, periodic, config.dataIOControl.meshElevation,
+                                        config.dataIOControl.meshDirectBisect, 0, audit)
+                                  : Geom::ReadAndDeriveNativeMeshFromCGNSOwned(
+                                        mpi, gDimLocal, config.dataIOControl.meshFile, config.dataIOControl.meshPartitionOptions,
+                                        nameMapper, periodic, config.dataIOControl.meshElevation,
+                                        config.dataIOControl.meshDirectBisect, 0, audit);
         }
         else
-            mesh = Geom::ReadNativeMeshFromArchive(
+            ownedForPrepare = Geom::ReadNativeMeshFromArchiveOwned(
                 mpi, Serializer::SerializerFactory(config.dataIOControl.meshPartitionedReaderType),
                 getPartitionedMeshInput(), config.dataIOControl.readMeshMode == 2,
                 config.dataIOControl.meshPartitionOptions);
         OMP::set_full_parallel_OMP();
-        if (ownedForPrepare)
-        {
-            auto prepared = Geom::PrepareNativeMeshForSolverOwned(std::move(*ownedForPrepare), mpi, prepOpts);
-            mesh = Geom::UnstructuredMesh::FromNative(mpi, std::move(prepared));
-            reader->mesh = mesh;
-            if (prepOpts.buildSerialOut)
-                reader->BuildSerialOut();
-        }
-        else
-        {
-            reader->mesh = mesh;
-            Geom::PrepareMesh(*mesh, *reader, prepOpts);
-        }
+        auto prepared = Geom::PrepareNativeMeshForSolverOwned(std::move(ownedForPrepare), mpi, prepOpts);
+        mesh = Geom::UnstructuredMesh::FromNative(mpi, std::move(prepared));
+        reader->mesh = mesh;
+        if (prepOpts.buildSerialOut)
+            reader->BuildSerialOut();
 
         // note: node2cell may contain negative entries for ghost nodes
         // whose cell neighbors are not in the local partition.

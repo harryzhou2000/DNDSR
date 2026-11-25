@@ -1,13 +1,23 @@
 #pragma once
 
 #include "Geom/Transition/NativeMeshAssembler.hpp"
-#include "DNDS/Serializer/SerializerBase.hpp"
+#include "DNDS/Serializer/SerializerFactory.hpp"
 
 namespace DNDS::Geom
 {
+    /// Defaults for partitioned mesh files, independent of solution output.
+    inline Serializer::SerializerFactory DefaultPartitionedMeshWriter()
+    {
+        Serializer::SerializerFactory writer;
+        writer.hdfDeflateLevel = 5;
+        writer.hdfChunkSize = 65536;
+        return writer;
+    }
+
     /// Decode authoritative owned arrays and saved coverage policy without
-    /// materializing ghosts. Matching/direct-partition I/O remains unchanged;
-    /// redistribution or topology construction may precede final assembly.
+    /// materializing ghosts. Primary archives derive inverse and boundary
+    /// incidence from the saved cones before redistribution. Faces and edges
+    /// may be constructed later by solver preparation.
     /// File/schema/codec acceptance stays coordinated independently of optional
     /// compute-transfer preflight. Loading creates fresh default-on contexts;
     /// execution policy is not persisted in the file.

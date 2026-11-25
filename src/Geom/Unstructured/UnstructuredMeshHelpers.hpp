@@ -225,7 +225,7 @@ namespace DNDS::Geom
                                                                               deferNewFacesUntilPreparation));
     }
 
-    /// Open an existing full native or legacy primary archive. Schema detection
+    /// Open an existing native or legacy primary archive. Schema detection
     /// is explicit and collective; legacy decode preserves original IDs but
     /// creates a new namespace because the old format stores none.
     inline NativeOwnedMeshData ReadNativeMeshFromArchiveOwned(
@@ -300,12 +300,6 @@ namespace DNDS::Geom
             NativePartitionOptions options{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
                                            partOpts.edgeWeightMethod, partOpts.metisNcuts, ghostLayers};
             owned = NativeMeshPreparation::PartitionOwned(owned, mpi, options).owned;
-            if (!owned.requirements.faces)
-            {
-                owned = NativeMeshTopology::Build(std::move(owned), mpi);
-                FieldTransferDetail::LocalStage(mpi, [&]
-                                                { owned.ghostSpec = ExtendNativeMeshGhostSpecForTopology(owned, true, false, ghostLayers); });
-            }
         }
         return owned;
     }
@@ -316,6 +310,12 @@ namespace DNDS::Geom
         bool repartition = false, const PartitionOptions &partOpts = {}, int ghostLayers = 1)
     {
         auto owned = ReadNativeMeshFromArchiveOwned(mpi, std::move(factory), inputPath, repartition, partOpts, ghostLayers);
+        if (repartition && !owned.requirements.faces)
+        {
+            owned = NativeMeshTopology::Build(std::move(owned), mpi);
+            FieldTransferDetail::LocalStage(mpi, [&]
+                                            { owned.ghostSpec = ExtendNativeMeshGhostSpecForTopology(owned, true, false, ghostLayers); });
+        }
         return UnstructuredMesh::FromNative(mpi, AssembleNativeMesh(mpi, std::move(owned), ghostLayers));
     }
 
@@ -483,19 +483,16 @@ namespace DNDS::Geom
     // SerializeMesh
     // -----------------------------------------------------------------------
 
-    /** @brief Write a full native archive for matching or redistributed restart.
+    /** @brief Write primary mesh data for matching or redistributed restart.
      *
      *  Rejects nonnative input collectively before creating files or directories.
-     *  The Python equivalent of the C++ ``partitionMeshOnly`` path.  The
-     *  caller controls where this occurs in the pipeline; in Euler solvers it
-     *  occurs before coordinate transforms, boundary mesh extraction, and solver
-     *  setup.  Redistribution is supported by the collective H5 serializer, not
-     *  by per-rank serializers.
+     *  Store node cones and their companions. Derived topology is rebuilt from
+     *  the cones when loading. Redistribution uses the collective H5 serializer.
      */
     inline void SerializeMesh(
         UnstructuredMesh &mesh,
         const std::string &outputPath,
-        Serializer::SerializerFactory &factory)
+        Serializer::SerializerFactory factory = DefaultPartitionedMeshWriter())
     {
         auto &mpi = mesh.getMPI();
         FieldTransferDetail::LocalStage(mpi, [&]
@@ -503,8 +500,10 @@ namespace DNDS::Geom
         auto [pathMod, pathPart] = factory.ModifyFilePath(outputPath, mpi, "part_%d", false);
         Serializer::SerializerBaseSSP serializerP = factory.BuildSerializer(mpi);
 
+        auto owned = NativeMeshAssembler::CaptureOwned(*mesh.CurrentNativeState(), mpi,
+                                                       NativeMeshAssembler::CaptureScope::Primary);
         serializerP->OpenFile(pathMod, false);
-        mesh.WriteNativeArchive(serializerP, "meshPart");
+        WriteNativeMeshArchive(owned, mpi, serializerP, "meshPart");
         serializerP->CloseFile();
     }
 

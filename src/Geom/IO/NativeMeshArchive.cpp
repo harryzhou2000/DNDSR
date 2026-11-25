@@ -1,5 +1,6 @@
 #include "Geom/IO/NativeMeshArchive.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <nlohmann/json.hpp>
@@ -526,7 +527,36 @@ namespace DNDS::Geom
             using Array = typename std::decay_t<decltype(rows)>::value_type;
             using T = std::remove_const_t<std::remove_reference_t<decltype(std::declval<Array>().Read().View()(0, 0))>>;
             rows = ReadRows<T>(serializer, field, mpi, partition, Integer(metadata["companions"][field].at("width"), -1), schema); });
-        return owned;
+        if (owned.relations[size_t(MeshRelation::BoundaryCells)])
+            return owned;
+
+        // Primary archives carry the same authoritative cones as the legacy
+        // Euler archive. Derive partition inputs here and defer faces/edges
+        // to the normal solver preparation after redistribution.
+        std::optional<NativeMeshInput> input;
+        ArchiveStage(mpi, [&]
+                     {
+            const auto &cellNodes = owned.relations[size_t(MeshRelation::CellNodes)];
+            const auto &boundaryNodes = owned.relations[size_t(MeshRelation::BoundaryNodes)];
+            const auto relationCount = std::count_if(owned.relations.begin(), owned.relations.end(),
+                                                     [](const auto &relation) { return relation.has_value(); });
+            DNDS_check_throw_info(owned.spaces.size() == 3 && relationCount == 2 && cellNodes && boundaryNodes &&
+                                      owned.namedRelations.empty() && owned.coords && owned.cellInfo && owned.bndInfo,
+                                  "native primary archive must contain only cell and boundary node cones and their companions");
+            input.emplace(NativeMeshInput{mpi, owned.dimension,
+                                          owned.spaces.at(EntityKind::Cell), owned.spaces.at(EntityKind::Node),
+                                          owned.spaces.at(EntityKind::Bnd), *cellNodes, *boundaryNodes,
+                                          *owned.coords, *owned.cellInfo, *owned.bndInfo, std::move(owned.ids)});
+            input->identity = std::move(owned.identity);
+            input->provenance = std::move(owned.provenance);
+            input->periodic = owned.periodic;
+            input->periodicInfo = owned.periodicInfo;
+            input->cellNodesPbi = std::move(owned.cellNodesPbi);
+            input->boundaryNodesPbi = std::move(owned.bndNodesPbi); });
+        auto primary = NativeMeshBuilder::Build(std::move(*input), {1, true});
+        primary.nodeWallDist = std::move(owned.nodeWallDist);
+        primary.requirements.wallDistance = primary.nodeWallDist.has_value();
+        return primary;
     }
 
     std::shared_ptr<const UnstructuredMeshState> ReadNativeMeshArchive(const MPIInfo &mpi, S::SerializerBaseSSP serializer,

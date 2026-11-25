@@ -44,6 +44,7 @@
 #include "DNDS/Memory/ObjectPool.hpp"
 #include "Solver/Linear.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "Geom/IO/NativeMeshArchive.hpp"
 #include "CFV/Legacy/VariationalReconstruction.hpp"
 #include "Euler/Gas.hpp"
 #include "Euler/EulerEvaluator.hpp"
@@ -626,7 +627,7 @@ namespace DNDS::Euler
                 real rectifyNearPlaneThres = 1e-10;
 
                 Serializer::SerializerFactory restartWriter;
-                Serializer::SerializerFactory meshPartitionedWriter;
+                Serializer::SerializerFactory meshPartitionedWriter = Geom::DefaultPartitionedMeshWriter();
                 std::string meshPartitionedReaderType = "H5";
 
                 std::string getOutPltName() const

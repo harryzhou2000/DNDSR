@@ -171,8 +171,7 @@ namespace DNDS::Cauchy
             auto mesh = ReadPartition(domain, mpi, context, timings, {});
             if (domain.settings.mesh.partitionWallDistance)
                 EnsureDomainWallDistance(mesh, domain.settings, {});
-            Serializer::SerializerFactory writer("H5");
-            Geom::SerializeMesh(*mesh, bases[id], writer);
+            Geom::SerializeMesh(*mesh, bases[id]);
             if (mpi.rank == 0)
                 log() << "Partitioned mesh " << domain.placement.name << ": " << bases[id] << archiveSuffix << std::endl;
         }

@@ -230,18 +230,55 @@ TEST_CASE("Partition-only H5 preserves nodal wall distances in the input frame")
     settings.equation.viscosity = .001;
     const auto config = C::SimulationConfig::ResolveCollective({{"defaults", C::Json(settings)}}, mpi.comm);
     C::WritePartitionedMeshes(config, mpi.comm);
+    if (mpi.rank == 0)
+    {
+        const auto file = H5Fopen(archive.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+        CHECK(file >= 0);
+        if (file >= 0)
+        {
+            CHECK(H5Lexists(file, "/meshPart/fixed_0", H5P_DEFAULT) > 0);
+            CHECK(H5Lexists(file, "/meshPart/fixed_1", H5P_DEFAULT) > 0);
+            CHECK(H5Lexists(file, "/meshPart/fixed_2", H5P_DEFAULT) == 0);
+            CHECK(H5Lexists(file, "/meshPart/fixed_3", H5P_DEFAULT) == 0);
+            CHECK(H5Lexists(file, "/meshPart/ids_1", H5P_DEFAULT) == 0);
+            CHECK(H5Lexists(file, "/meshPart/named_0", H5P_DEFAULT) == 0);
+            const auto nodes = H5Dopen2(file, "/meshPart/coordinates/values", H5P_DEFAULT);
+            CHECK(nodes >= 0);
+            if (nodes >= 0)
+            {
+                const auto properties = H5Dget_create_plist(nodes);
+                hsize_t chunk = 0;
+                CHECK(H5Pget_chunk(properties, 1, &chunk) == 1);
+                CHECK(chunk == 65536);
+                unsigned int flags = 0, level = 0;
+                size_t count = 1;
+                CHECK(H5Pget_filter_by_id2(properties, H5Z_FILTER_DEFLATE, &flags, &count, &level, 0, nullptr, nullptr) >= 0);
+                CHECK(level == 5);
+                H5Pclose(properties);
+                H5Dclose(nodes);
+            }
+            H5Fclose(file);
+        }
+    }
     auto domain = config.Domains().front();
     auto communication = std::make_shared<R::CommunicationContext>(mpi.comm);
     C::DomainSetupTimings timing;
     const auto original = C::EnsureDomainWallDistance(C::ReadDomainMesh(domain, mpi, communication, timing, {}), settings, {});
-    std::map<DNDS::index, double> reference;
-    for (DNDS::index i = 0; i < original->NumNodeProc(); ++i)
+    std::vector<double> reference(size_t(original->Entities(DNDS::Geom::EntityKind::Node).NumGlobal()));
+    for (DNDS::index i = 0; i < original->NumNode(); ++i)
         reference[original->OriginalEntityId(DNDS::Geom::EntityKind::Node, i)] = original->NodeWallDist(i).norm();
+    MPI_Allreduce(MPI_IN_PLACE, reference.data(), int(reference.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
     domain.settings.mesh.file = archive;
-    const auto restored = C::ReadDomainMesh(domain, mpi, communication, timing, {});
-    REQUIRE(restored->HasNodeWallDist());
-    for (DNDS::index i = 0; i < restored->NumNodeProc(); ++i)
-        CHECK(restored->NodeWallDist(i).norm() == doctest::Approx(reference.at(restored->OriginalEntityId(DNDS::Geom::EntityKind::Node, i))).scale(1));
+    for (bool repartition : {false, true})
+    {
+        domain.settings.mesh.repartition = repartition;
+        const auto restored = C::ReadDomainMesh(domain, mpi, communication, timing, {});
+        REQUIRE(restored->HasNodeWallDist());
+        CHECK(restored->Entities(DNDS::Geom::EntityKind::Face).NumGlobal() ==
+              original->Entities(DNDS::Geom::EntityKind::Face).NumGlobal());
+        for (DNDS::index i = 0; i < restored->NumNodeProc(); ++i)
+            CHECK(restored->NodeWallDist(i).norm() == doctest::Approx(reference.at(restored->OriginalEntityId(DNDS::Geom::EntityKind::Node, i))).scale(1));
+    }
     if (mpi.rank == 0)
         std::filesystem::remove(archive);
 }

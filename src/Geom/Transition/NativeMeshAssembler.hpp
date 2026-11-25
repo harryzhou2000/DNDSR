@@ -22,7 +22,14 @@ namespace DNDS::Geom
     class NativeMeshAssembler
     {
     public:
-        static NativeOwnedMeshData CaptureOwned(const UnstructuredMeshState &source, const MPIInfo &mpi);
+        enum class CaptureScope
+        {
+            Full,
+            Primary ///< Cell and boundary node cones, primary IDs, and their companions.
+        };
+
+        static NativeOwnedMeshData CaptureOwned(const UnstructuredMeshState &source, const MPIInfo &mpi,
+                                                CaptureScope scope = CaptureScope::Full);
         static std::shared_ptr<const UnstructuredMeshState> Build(const MPIInfo &mpi, NativeOwnedMeshData owned,
                                                                   const GhostSpec &specification);
     };

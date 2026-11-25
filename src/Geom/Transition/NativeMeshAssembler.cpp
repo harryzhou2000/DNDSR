@@ -126,9 +126,15 @@ namespace DNDS::Geom
         return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     }
 
-    NativeOwnedMeshData NativeMeshAssembler::CaptureOwned(const UnstructuredMeshState &source, const MPIInfo &mpi)
+    NativeOwnedMeshData NativeMeshAssembler::CaptureOwned(const UnstructuredMeshState &source, const MPIInfo &mpi,
+                                                          CaptureScope scope)
     {
         NativeOwnedMeshData result;
+        const bool primary = scope == CaptureScope::Primary;
+        const auto captureFamily = [primary](EntityKind kind)
+        {
+            return !primary || kind == EntityKind::Cell || kind == EntityKind::Node || kind == EntityKind::Bnd;
+        };
         const auto cell = source._spaces.find(EntityKind::Cell);
         if (cell != source._spaces.end())
             result.communication = cell->second.identity.Communication();
@@ -140,14 +146,34 @@ namespace DNDS::Geom
             result.retainedRead = std::make_shared<MeshReadAccess>(source.Snapshot(Runtime::Device::Host()).AcquireRead());
             result.identity = {source.MeshNamespace(), source.IdHighWater()};
             result.provenance = source.Provenance();
+            if (primary)
+            {
+                for (auto kind : {EntityKind::Face, EntityKind::Edge})
+                {
+                    result.identity.nextIds.erase(kind);
+                    if (result.provenance)
+                    {
+                        result.provenance->sourceIds.erase(kind);
+                        result.provenance->sourceKinds.erase(kind);
+                    }
+                }
+                if (result.provenance && result.provenance->sourceIds.empty())
+                    result.provenance.reset();
+            }
             if (result.provenance)
                 for (const auto &[kind, values] : result.provenance->sourceIds)
                     result.retainedProvenance.push_back(std::make_shared<Runtime::Array<index>::ReadLease>(values.Read()));
-            result.requirements = source.Requirements();
+            if (primary)
+                result.requirements.wallDistance = source.Requirements().wallDistance;
+            else
+                result.requirements = source.Requirements();
             result.audit = source.AuditOptions();
-            result.ghostSpec = source.GhostSpecification();
-            for (int part = 0; part < source.NLocalParts(); ++part)
-                result.localPartRanges.push_back(source.LocalPartRanges(part));
+            if (!primary)
+            {
+                result.ghostSpec = source.GhostSpecification();
+                for (int part = 0; part < source.NLocalParts(); ++part)
+                    result.localPartRanges.push_back(source.LocalPartRanges(part));
+            }
             result.dimension = snapshot.semantics.dim;
             result.periodic = snapshot.semantics.isPeriodic;
             result.periodicInfo = snapshot.semantics.periodicInfo;
@@ -171,30 +197,37 @@ namespace DNDS::Geom
                 return result;
             };
             for (size_t slot = 0; slot < snapshot.relations.size(); ++slot)
-                if (snapshot.relations[slot])
+                if (snapshot.relations[slot] &&
+                    (!primary || slot == size_t(MeshRelation::CellNodes) || slot == size_t(MeshRelation::BoundaryNodes)))
                 {
                     auto array = global(FacadeKey(slot), *snapshot.relations[slot], Adj_PointToLocal);
                     result.relations[slot] = std::move(array);
                 }
             result.cellCellsComplete = source.Requirements().inverse &&
                                        result.relations[size_t(MeshRelation::CellCells)].has_value();
-            for (const auto &[key, relation] : source._namedRelations)
-                result.namedRelations.emplace(key, global(key, relation.data.rows, relation.data.state));
+            if (!primary)
+                for (const auto &[key, relation] : source._namedRelations)
+                    result.namedRelations.emplace(key, global(key, relation.data.rows, relation.data.state));
             auto capture = [](auto &destination, const auto &pair) { if (pair) destination = pair->owned; };
             capture(result.coords, snapshot.coords);
             capture(result.nodeWallDist, snapshot.nodeWallDist);
             capture(result.cellInfo, snapshot.cellInfo);
             capture(result.bndInfo, snapshot.bndInfo);
-            capture(result.faceInfo, snapshot.faceInfo);
-            capture(result.edgeInfo, snapshot.edgeInfo);
             capture(result.cellNodesPbi, snapshot.cellNodesPbi);
             capture(result.bndNodesPbi, snapshot.bndNodesPbi);
-            capture(result.cellFacesPbi, snapshot.cellFacesPbi);
-            capture(result.faceNodesPbi, snapshot.faceNodesPbi);
-            capture(result.cellEdgesPbi, snapshot.cellEdgesPbi);
-            capture(result.edgeNodesPbi, snapshot.edgeNodesPbi);
+            if (!primary)
+            {
+                capture(result.faceInfo, snapshot.faceInfo);
+                capture(result.edgeInfo, snapshot.edgeInfo);
+                capture(result.cellFacesPbi, snapshot.cellFacesPbi);
+                capture(result.faceNodesPbi, snapshot.faceNodesPbi);
+                capture(result.cellEdgesPbi, snapshot.cellEdgesPbi);
+                capture(result.edgeNodesPbi, snapshot.edgeNodesPbi);
+            }
             for (const auto &[kind, family] : source._spaces)
             {
+                if (!captureFamily(kind))
+                    continue;
                 EntitySpace::CheckCommunicator(family.identity._mpi.comm, mpi.comm);
                 auto read = source._originalIds.at(kind).Read();
                 RArray ids(Runtime::RowLayout::Dense(size_t(family.owned), 1));
@@ -216,7 +249,8 @@ namespace DNDS::Geom
             DNDS_check_throw_info(inventory.size() <= size_t(INT_MAX), "native capture inventory exceeds MPI range"); });
         Agree(mpi, result, inventory);
         for (const auto &[kind, family] : source._spaces)
-            result.spaces.emplace(kind, family.identity.WithGhosts({}));
+            if (captureFamily(kind))
+                result.spaces.emplace(kind, family.identity.WithGhosts({}));
         return result;
     }
 

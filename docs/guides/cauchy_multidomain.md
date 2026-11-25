@@ -116,6 +116,14 @@ FV setup. The default filename follows Euler, for example
 choose another archive path. Domains writing the same source with the same
 rank count need distinct destinations.
 
+Partition-only archives store cell-to-node and boundary-to-node connectivity,
+coordinates, element and boundary tags, and persistent cell, node and boundary
+IDs. Periodic cones retain their ordered image labels and transforms. The
+reader reconstructs the relations needed for partitioning from these cones.
+Faces and optional edges are rebuilt for the final ownership. Older full
+mesh archives remain readable. The partition-only HDF5 writer uses deflate
+level 5 and chunks of 65,536 entries (64 KiB for array payload bytes).
+
 Set `mesh.partitionWallDistance=true` to store the three-component nodal
 distance vectors to the configured no-slip walls. The archive contains the
 input-frame geometry, including requested elevation and bisection. To solve

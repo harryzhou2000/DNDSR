@@ -1334,12 +1334,9 @@ namespace DNDS::Geom
             if (auto found = movedPayloads.find(identity); found != movedPayloads.end())
                 candidate = found->second;
             // Local alias inventories can differ. All ranks must reuse the
-            // SAME earlier collective output, not merely find some local hit.
-            // A local cell permutation has no collective payload output: every
-            // rank completes its local relation loop before the next assembly
-            // collective, so no cross-rank selection is needed here.
-            if (!cellOld2New)
-                candidate = FieldTransferDetail::AgreeAliasCandidate(mpi, candidate, original.size());
+            // same earlier output. Even a local permutation must take the same
+            // branch everywhere to keep the preflight collectives in order.
+            candidate = FieldTransferDetail::AgreeAliasCandidate(mpi, candidate, original.size());
             if (candidate >= 0)
             {
                 source.LocalStage(mpi, [&]
