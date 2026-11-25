@@ -144,6 +144,8 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage([&]
                                               { result = std::make_shared<Workspace>(_data, state, std::move(workers), meanOnly, options.captureBoundaryFlux); });
         result->observeSpatialResidual = options.observeSpatialResidual;
+        if (!meanOnly && _data->reconstruction && n.reconstructionTolerance > 0)
+            result->PrepareReconstructionNorm();
         result->BindHalos(state);
         result->genericFluxOracle = options.rhsKernel == RHSKernelPolicy::Generic;
         if (flow5Profile && state.Device() == R::Device::Host() &&

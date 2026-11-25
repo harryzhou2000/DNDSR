@@ -180,7 +180,7 @@ namespace DNDS::Cauchy
             _state.restoreReconstruction = true;
             return;
         }
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
+        _problem.finiteVolume.Reductions().LocalStage( [&]
                         {
             if (_state.restoreReconstruction)
                 _problem.finiteVolume.RestoreReconstructionGuess(*_state.reconstruction, *_state.reconstructionBackup,

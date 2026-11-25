@@ -501,12 +501,10 @@ namespace DNDS::Cauchy
     std::pair<index, real> FiniteVolume::PositivityReconstructionStats(const Workspace &work) const
     {
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
-        auto result = work.positivity
-                          ? work.positivity->LocalStatistics()
-                          : std::pair<index, real>{work.directPPLimited,
-                                                   work.directPPMinimum};
-        result.first = MPI::AllreduceValue<MPI::Reduction::Sum>(result.first, Metrics().Communicator());
-        result.second = MPI::AllreduceValue<MPI::Reduction::Min>(result.second, Metrics().Communicator());
+        if (work.positivity)
+            return work.positivity->GlobalStatistics();
+        std::pair<index, real> result{Reductions().Value<Runtime::Reduction::Sum>(work.directPPLimited),
+                                      Reductions().Value<Runtime::Reduction::Min>(work.directPPMinimum)};
         return result;
     }
 }

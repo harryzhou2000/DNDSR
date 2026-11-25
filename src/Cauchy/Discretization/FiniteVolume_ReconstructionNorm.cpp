@@ -5,12 +5,8 @@
 
 namespace DNDS::Cauchy
 {
-    void FiniteVolume::Workspace::SubmitReconstructionNorm(
-        R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &current)
+    void FiniteVolume::Workspace::PrepareReconstructionNorm()
     {
-        DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == owner->metrics.Device() &&
-                                  current.Device() == owner->metrics.Device() && current.PhysicalFieldNumber() == index(fields.size()),
-                              "reconstruction norm stream, placement or grouping differs");
         if (!reconstructionNorm)
         {
             const index rows = owner->metrics.NumCell();
@@ -18,9 +14,17 @@ namespace DNDS::Cauchy
             reconstructionNorm.emplace(ReconstructionNormStorage{
                 R::Array<real>(R::RowLayout::Dense(partials, 2), owner->metrics.Device()),
                 R::Array<real>(R::RowLayout::Dense(1, 2), owner->metrics.Device())});
+            reconstructionNorm->global = owner->reductions.Bind(reconstructionNorm->result, reconstructionNorm->result, R::Reduction::Sum);
             reconstructionNorm->partial.SetName("Cauchy/reconstructionNormPartials", DNDS_ALLOCATION_SITE());
             reconstructionNorm->result.SetName("Cauchy/reconstructionNorm", DNDS_ALLOCATION_SITE());
         }
+    }
+    void FiniteVolume::Workspace::SubmitReconstructionNorm(
+        R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &current)
+    {
+        DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == owner->metrics.Device() &&
+                                  current.Device() == owner->metrics.Device() && current.PhysicalFieldNumber() == index(fields.size()),
+                              "reconstruction norm stream, placement or grouping differs");
         std::vector<R::ArrayOperand<real, false, R::UniformTableRows>> reads;
         for (index iField = 0; iField < current.PhysicalFieldNumber(); ++iField)
         {
@@ -53,6 +57,7 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(false, "CUDA reconstruction norms are not built");
 #endif
             } }, std::move(reads), std::move(writes));
+        reconstructionNorm->global->Submit(engine, stream);
     }
     std::array<real, 2> FiniteVolume::Workspace::ReadReconstructionNorm() const
     {
@@ -60,6 +65,7 @@ namespace DNDS::Cauchy
                               "reconstruction norms require a completed segment");
         const auto host = reconstructionNorm->result.To(R::Device::Host());
         const auto read = host.Read();
-        return {read.View()(0, 0), read.View()(0, 1)};
+        std::array<real, 2> values{read.View()(0, 0), read.View()(0, 1)};
+        return values;
     }
 }

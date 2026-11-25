@@ -442,14 +442,16 @@ namespace DNDS::CFV
     {
         _data->communication->LocalStage([&]
                                          { ValidateField(field, field.Width()); });
+        const auto transport = options.provider ? R::TransferTransport::DevicePacked : R::TransferTransport::Direct;
         return R::PayloadPlan(*_data->halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>())
-            .Bind(field.Owned(), field.Ghost(), R::TransferTransport::Direct, std::move(options));
+            .Bind(field.Owned(), field.Ghost(), transport, std::move(options));
     }
     Algebra::DofHalo<> FiniteVolumePlan::BindTrackedHalo(FVField &field, R::TransferOptions options) const
     {
         _data->communication->LocalStage([&]
                                          { ValidateField(field, field.Width()); });
-        return Algebra::DofHalo<>(field, *_data->halo, std::move(options));
+        const auto transport = options.provider ? R::TransferTransport::DevicePacked : R::TransferTransport::Direct;
+        return Algebra::DofHalo<>(field, *_data->halo, std::move(options), transport);
     }
     real FiniteVolumePlan::GetCellVol(index iCell) const
     {

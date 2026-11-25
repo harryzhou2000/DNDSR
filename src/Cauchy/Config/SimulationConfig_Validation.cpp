@@ -4,6 +4,7 @@
 #include "Cauchy/Input/StateInput.hpp"
 #include "DNDS/Config/JsonSchema.hpp"
 #include "DNDS/Algebra/AmgXPreconditioner.hpp"
+#include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "Geom/Quadratures/QuadratureBase.hpp"
 #include <set>
 
@@ -430,7 +431,9 @@ namespace DNDS::Cauchy
 #endif
         require(s.execution.layout == "aos" || s.execution.layout == "soa" || s.execution.layout == "aosoa32", "flow layout " + s.execution.layout);
         require(s.execution.nonlinearReduction == "mpi" || (cuda && s.execution.nonlinearReduction == "nccl"), "nonlinear reduction " + s.execution.nonlinearReduction);
-        require(s.execution.communication == "mpi-direct", "transport " + s.execution.communication);
+        require(s.execution.communication == "mpi-direct" || (cuda && s.execution.communication == "nccl"), "transport " + s.execution.communication);
+        require((s.execution.communication != "nccl" && s.execution.nonlinearReduction != "nccl") ||
+                    Runtime::NCCLTransferProvider::Available(), "NCCL communication requires an NCCL-enabled build");
         require(s.execution.communicationExecution == "caller" || s.execution.communicationExecution == "worker", "communication execution " + s.execution.communicationExecution);
         if (s.execution.communicationExecution == "worker")
         {
@@ -496,8 +499,9 @@ namespace DNDS::Cauchy
             if (provider == "amg")
                 require(!cuda && assembledBlocks, level + " CPU AMG requires assembled host full blocks");
             if (provider == "amgx")
-                require(cuda && assembledBlocks && Algebra::AmgXPreconditioner::Available() && domain.placement.ranks.size() == 1,
-                        level + " AmgX requires assembled CUDA full blocks, one rank and the single-device provider in this build");
+                require(cuda && assembledBlocks && Algebra::AmgXPreconditioner::Available() &&
+                            (domain.placement.ranks.size() == 1 || implicit.linear.matrixStorage.amgxStorage == "upload"),
+                        level + " AmgX requires assembled CUDA full blocks and a compiled provider; multiple ranks require upload storage");
             if (cuda)
             {
                 require(DeviceLinearProvider(provider), level + " CUDA linear solve requires Jacobi, AmgX defect correction or GMRES with Jacobi/AmgX");
@@ -618,6 +622,6 @@ namespace DNDS::Cauchy
                                                                       : "perfectGas/flow5") +
                      (rans ? "+" + s.equation.rans.model : ""),
                  backend + s.numerics.flux, backend + s.equation.transport,
-                 "cfv/" + s.numerics.reconstruction, "cfv/" + s.numerics.limiter, "runtime/mpi-direct"}};
+                 "cfv/" + s.numerics.reconstruction, "cfv/" + s.numerics.limiter, "runtime/" + s.execution.communication}};
     }
 }

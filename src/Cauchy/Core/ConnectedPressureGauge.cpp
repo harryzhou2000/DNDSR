@@ -56,7 +56,7 @@ namespace DNDS::Cauchy
                 continue;
             if (auto &anchor = domains[i])
                 component.measurement.emplace(anchor->_problem.finiteVolume.Metrics(), *anchor->_problem.admissibility,
-                                              anchor->_execution.ComputeStream().Context());
+                                              anchor->_execution.ComputeStream().Context(), anchor->_problem.finiteVolume.Reductions());
             _components.push_back(std::move(component));
         }
         Project(Phase::Initial);

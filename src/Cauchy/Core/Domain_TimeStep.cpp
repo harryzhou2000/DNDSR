@@ -6,15 +6,14 @@ namespace DNDS::Cauchy
 {
     void Domain::ConfigureTimeStep(const TimeSettings &time, int power)
     {
-        const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
-        MPI::LocalStage(mpi, [&]
+        _problem.finiteVolume.Reductions().LocalStage( [&]
                         { time.positivity.Validate(); });
         const auto &control = time.positivity;
         real agreement[]{real(control.enabled), -real(control.enabled), control.relax, -control.relax,
                          control.scale, -control.scale, control.increaseLimit, -control.increaseLimit,
                          real(power), -real(power), real(time.steady), -real(time.steady)};
-        MPI::AllreduceInPlace<MPI::Reduction::Min>(
-            MPI::ContiguousView<real>{agreement, 12}, mpi.comm);
+        _problem.finiteVolume.Reductions().Reduce<Runtime::Reduction::Min>(
+            SpanView<real>{agreement, 12});
         for (int j = 0; j < 12; j += 2)
             DNDS_check_throw_info(agreement[j] == -agreement[j + 1], "physical timestep policy differs between domain ranks");
         _timePP = control;
@@ -22,12 +21,11 @@ namespace DNDS::Cauchy
     }
     PhysicalStepLimit Domain::LimitPhysicalStep(real requestedDt)
     {
-        const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
-        MPI::LocalStage(mpi, [&]
+        _problem.finiteVolume.Reductions().LocalStage( [&]
                         { DNDS_check_throw_info(std::isfinite(requestedDt) && requestedDt > 0, "invalid requested physical timestep"); });
         real agreement[]{requestedDt, -requestedDt};
-        MPI::AllreduceInPlace<MPI::Reduction::Min>(
-            MPI::ContiguousView<real>{agreement, 2}, mpi.comm);
+        _problem.finiteVolume.Reductions().Reduce<Runtime::Reduction::Min>(
+            SpanView<real>{agreement, 2});
         DNDS_check_throw_info(agreement[0] == -agreement[1], "requested physical timestep differs between domain ranks");
         PhysicalStepLimit result{requestedDt};
         if (_steady || !_timePP.enabled)
@@ -35,7 +33,7 @@ namespace DNDS::Cauchy
         if (!_execution.timePPWorkspace)
         {
             std::optional<EquationDofs> residual;
-            MPI::LocalStage(mpi, [&]
+            _problem.finiteVolume.Reductions().LocalStage( [&]
                             { residual.emplace(EquationDofOperations::NewVector(_state.accepted)); });
             auto work = _problem.finiteVolume.BuildMeanWorkspace(_state.accepted, _execution.ChemicalWorkers());
             _execution.timePPResidual = std::move(residual);
@@ -45,15 +43,15 @@ namespace DNDS::Cauchy
         }
         _problem.finiteVolume.EvaluateMean(_state.accepted, *_execution.timePPResidual, *_execution.timePPWorkspace,
                                            _execution.Engine(), _execution.ComputeStream(), _state.time);
-        MPI::LocalStage(mpi, [&]
+        _problem.finiteVolume.Reductions().LocalStage( [&]
                         {
             if (!_execution.timeStages)
                 _execution.timeStages.emplace(_problem.finiteVolume.Metrics(), _execution.ComputeStream().Context());
             result = _execution.timeStages->LimitPhysicalStep(_execution.Engine(), _execution.ComputeStream(),
                 _state.accepted, *_execution.timePPResidual, *_problem.admissibility,
                 requestedDt, _timePP.relax, _timePP.scale, _timeCompressionPower); });
-        result.minimumAlpha = MPI::AllreduceValue<MPI::Reduction::Min>(result.minimumAlpha, mpi.comm);
-        result.limitedCells = MPI::AllreduceValue<MPI::Reduction::Sum>(result.limitedCells, mpi.comm);
+        result.minimumAlpha = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(result.minimumAlpha);
+        result.limitedCells = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Sum>(result.limitedCells);
         if (result.limitedCells)
             result.dt *= result.minimumAlpha;
         // Last accepted dt, never a rejected/prepared proposal, controls growth.

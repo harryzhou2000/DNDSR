@@ -32,12 +32,11 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(work.owner == _data && work.boundaryMomentumCurrent,
                                   "fixed-flow boundary force requires a completed RHS evaluation");
             auto force = work.diagnostics.BoundaryForce(zones);
-            MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-                MPI::ContiguousView<real>{force.data(), 3}, Metrics().Communicator());
+            Reductions().Reduce<Runtime::Reduction::Sum>(
+                SpanView<real>{force.data(), 3});
             return force;
         }
         Vector3 force{};
-        const MPIInfo mpi(Metrics().Communicator());
         auto engine = stream ? stream->LockEngine() : R::EagerEngine{};
         const auto lane = stream ? *stream : engine.CreateCPUStream();
         Metrics().Communication()->LocalStage([&]
@@ -55,8 +54,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(lane.Context().device == Device(), "boundary force needs a matching execution stream");
             if (!work.boundaryForceReduction) work.boundaryForceReduction.emplace(lane.Context());
             force = work.boundaryForceReduction->Evaluate(engine, lane, _data->stencil, _data->boundaryFaces, work.boundaryMomentumFlux, walls); });
-        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-            MPI::ContiguousView<real>{force.data(), 3}, mpi.comm);
+        Reductions().Reduce<Runtime::Reduction::Sum>(SpanView<real>{force.data(), 3});
         return force;
     }
 
@@ -66,10 +64,10 @@ namespace DNDS::Cauchy
         if (work.fixedFlowRHS)
         {
             auto count = work.diagnostics.FaceFallbacks();
-            count = MPI::AllreduceValue<MPI::Reduction::Sum>(count, Metrics().Communicator());
+            count = Reductions().Value<Runtime::Reduction::Sum>(count);
             return count;
         }
-        return MPI::AllreduceValue<MPI::Reduction::Sum>(work.faceFallbacks[0] + work.faceFallbacks[1], Metrics().Communicator());
+        return Reductions().Value<Runtime::Reduction::Sum>(work.faceFallbacks[0] + work.faceFallbacks[1]);
     }
 
     index FiniteVolume::LastCharacteristicFallbacks(const Workspace &work) const

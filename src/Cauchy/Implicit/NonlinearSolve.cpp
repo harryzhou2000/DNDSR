@@ -1,4 +1,5 @@
 #include "Cauchy/Implicit/NonlinearSolve.hpp"
+#include "Cauchy/Core/NumericalReductions.hpp"
 #include "DNDS/Diagnostics/Timeline.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 
@@ -387,10 +388,9 @@ namespace DNDS::Cauchy
         }
         if (communication && collectiveChecks)
         {
-            const auto minimum = MPI::AllreduceValue<MPI::Reduction::Min>(
-                _iteration, communication->Communicator());
-            const auto maximum = MPI::AllreduceValue<MPI::Reduction::Max>(
-                _iteration, communication->Communicator());
+            const auto ops = reductions ? *reductions : NumericalReductions(communication->Communicator());
+            const auto minimum = ops.Value<Runtime::Reduction::Min>(_iteration);
+            const auto maximum = ops.Value<Runtime::Reduction::Max>(_iteration);
             DNDS_check_throw_info(minimum == maximum,
                                   "dislocated domains entered different nonlinear iterations");
         }
@@ -415,8 +415,7 @@ namespace DNDS::Cauchy
         // Termination agreement is part of the algorithm, not a diagnostic
         // preflight. It remains required when collectiveChecks is false.
         if (communication)
-            terminal = MPI::AllreduceValue<MPI::Reduction::Min>(
-                terminal, communication->Communicator());
+            terminal = (reductions ? *reductions : NumericalReductions(communication->Communicator())).Value<Runtime::Reduction::Min>(terminal);
         return terminal != 0;
     }
 
@@ -474,9 +473,7 @@ namespace DNDS::Cauchy
             bounds[3] = std::min(bounds[3], -session.NextIteration());
         }
         if (group.communication)
-            MPI::AllreduceInPlace<MPI::Reduction::Min>(
-                MPI::ContiguousView<index>{bounds, 4},
-                group.communication->Communicator());
+            (group.reductions ? *group.reductions : NumericalReductions(group.communication->Communicator())).Reduce<Runtime::Reduction::Min>(SpanView<index>{bounds, 4});
         DNDS_check_throw_info((bounds[0] || bounds[1]) &&
                                   bounds[2] != std::numeric_limits<index>::max() &&
                                   bounds[2] == -bounds[3],

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DNDS/MPI/MPI.hpp"
+#include "Cauchy/Core/NumericalReductions.hpp"
 #include <cmath>
 
 namespace DNDS::Cauchy
@@ -21,20 +21,24 @@ namespace DNDS::Cauchy
     /// Callers enter on the same live communicator, in the same collective
     /// order on an MPI-permitted thread; summed counts must fit index. Scope agreement and bad
     /// local statistics are checked within the two required reductions.
-    inline AlphaStatistics AgreeAlphaStatistics(index limited, real minimum, AlphaReduction scope, MPI_Comm comm)
+    inline AlphaStatistics AgreeAlphaStatistics(index limited, real minimum, AlphaReduction scope, const NumericalReductions &reductions)
     {
         const int code = int(scope);
         const bool valid = limited >= 0 && std::isfinite(minimum) && minimum >= 0 && minimum <= 1 &&
                            (limited ? minimum < 1 : minimum == 1) && code >= 0 && code <= 2;
         index counts[2]{limited, valid ? 0 : 1};
-        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-            MPI::ContiguousView<index>{counts, 2}, comm);
+        reductions.Reduce<Runtime::Reduction::Sum>(
+            SpanView<index>{counts, 2});
         DNDS_check_throw_info(!counts[1] && counts[0] >= 0, "invalid distributed positivity statistics");
         real minima[3]{minimum, real(code), -real(code)};
-        MPI::AllreduceInPlace<MPI::Reduction::Min>(
-            MPI::ContiguousView<real>{minima, 3}, comm);
+        reductions.Reduce<Runtime::Reduction::Min>(
+            SpanView<real>{minima, 3});
         DNDS_check_throw_info(minima[1] == -minima[2], "positivity reduction policy differs between ranks");
         return {counts[0], minima[0]};
+    }
+    inline AlphaStatistics AgreeAlphaStatistics(index limited, real minimum, AlphaReduction scope, MPI_Comm comm)
+    {
+        return AgreeAlphaStatistics(limited, minimum, scope, NumericalReductions(comm));
     }
     /// Pure row selection after successful agreement. No row-mask lookup or
     /// communication; MinimumLimited leaves every originally unmarked row at1.

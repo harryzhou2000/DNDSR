@@ -5,6 +5,7 @@
 
 namespace DNDS::Cauchy
 {
+    class NumericalReductions;
     /// Immutable setup values shared by prepared domain solve records. This is
     /// configuration, not a controller: no iteration or operator is executed.
     struct NonlinearSolveSetup
@@ -76,6 +77,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<const UpdatePolicy> policy;
         /// Simulation-wide diagnostic choice, resolved from all configured
         /// domains, never rank-local membership (which could deadlock checks).
+        const NumericalReductions *reductions = nullptr;
         bool collectiveChecks = false;
         std::function<void(int coupledStage, index iteration)> refreshInterfaces;
         std::function<void()> finishInterfaces;

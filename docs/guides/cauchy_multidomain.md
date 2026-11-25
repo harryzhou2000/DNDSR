@@ -70,6 +70,23 @@ domain, this search misses that wall. Relative motion can also change which
 wall is nearest. Include this limitation when interpreting turbulence sources
 near a moving interface. The moving-disk SA/SST qualification covers wall-free transport.
 
+## CUDA halo exchanges and reductions
+
+Each domain selects its halo transport with `execution.communication` and its
+numerical reduction backend with `execution.nonlinearReduction`. Set both to
+`"nccl"` for CUDA halo payloads and device all-reductions through NCCL.
+This setting requires a build with NCCL support. The reduction setting applies
+to residual norms, linear products, positivity statistics and state extrema.
+MPI remains available with `nonlinearReduction: "mpi"`.
+
+Numerical operators bind resident results through `NumericalReductions::Bind`
+and submit on the producing stream or a dependent communication stream. The
+NCCL binding reduces device buffers directly. The MPI binding stages CUDA
+operands in pinned host buffers. Host decisions use the same domain interface
+through `Value` and `Reduce`. Mesh and communicator setup, inter-domain
+coordination and output can still call MPI. Transfer preflight and collective
+checks can also issue MPI calls when enabled.
+
 ## Mesh input and HDF archives
 
 The C++ `Simulation` loader reads one CGNS or native distributed H5 mesh per domain

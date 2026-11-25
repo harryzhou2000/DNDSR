@@ -2,6 +2,7 @@ set(CPPS
     Core/DomainMesh.cpp
     Core/DomainPlacement.cpp
     Core/DomainExecutionContext.cpp
+    Core/NumericalReductions.cpp
     Core/DomainComponents.cpp
     Core/Domain_Operations.cpp
     Core/DomainStateSnapshot.cpp

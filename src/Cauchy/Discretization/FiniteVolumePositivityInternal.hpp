@@ -32,6 +32,10 @@ namespace DNDS::Cauchy
             R::Array<NumericalStatus> partialStatus, status;
             R::Array<index> partialCount, count;
             R::Array<real> partialMinimum, minimum;
+            R::Array<index> total;
+            R::Array<real> lowest;
+            std::shared_ptr<const R::GlobalReductionBinding> countSum, minimumValue;
+            std::optional<R::ExecutionStream> producer;
         };
         std::optional<DeviceStorage> device;
         bool pending = false;
@@ -142,6 +146,11 @@ namespace DNDS::Cauchy
                     R::Array<real>(R::RowLayout::Dense(partials, 1), deviceLocation),
                     R::Array<real>(R::RowLayout::Dense(1, 1), deviceLocation)});
                 device->partialStatus.SetName("Cauchy/modalPP/statusPartials", DNDS_ALLOCATION_SITE());
+                const auto scalar = R::RowLayout::Dense(1, 1);
+                device->total = R::Array<index>(scalar, deviceLocation);
+                device->lowest = R::Array<real>(scalar, deviceLocation);
+                device->countSum = owner->reductions.Bind(device->count, device->total, R::Reduction::Sum);
+                device->minimumValue = owner->reductions.Bind(device->minimum, device->lowest, R::Reduction::Min);
                 device->status.SetName("Cauchy/modalPP/statusResult", DNDS_ALLOCATION_SITE());
                 device->partialCount.SetName("Cauchy/modalPP/countPartials", DNDS_ALLOCATION_SITE());
                 device->count.SetName("Cauchy/modalPP/count", DNDS_ALLOCATION_SITE());

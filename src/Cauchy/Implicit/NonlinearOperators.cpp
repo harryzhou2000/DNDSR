@@ -5,8 +5,8 @@ namespace DNDS::Cauchy
 {
     namespace R = Runtime;
     using namespace NonlinearOperatorDetail;
-    NonlinearOperators::Data::Data(CFV::FiniteVolumePlan metrics, AdmissibilityPolicy bounds, R::ExecutionContext where)
-        : context(where), geometry(std::move(metrics)), policy(std::move(bounds)), meanCheck(geometry.Space(), policy, context)
+    NonlinearOperators::Data::Data(CFV::FiniteVolumePlan metrics, AdmissibilityPolicy bounds, R::ExecutionContext where, std::optional<NumericalReductions> backend, bool globalAlphaIn)
+        : context(where), geometry(std::move(metrics)), policy(std::move(bounds)), reductions(backend.value_or(NumericalReductions(geometry.Communication()))), globalAlpha(globalAlphaIn), meanCheck(geometry.Space(), policy, context)
     {
         DNDS_check_throw_info(context.device == geometry.Device(), "nonlinear operator geometry placement differs");
         const auto view = policy.View();
@@ -26,12 +26,17 @@ namespace DNDS::Cauchy
         summary = R::Array<CUDA::NonlinearSummary>(R::RowLayout::Dense(1, 1), context.device);
         partial.SetName("nonlinear/reduction/partials", DNDS_ALLOCATION_SITE());
         summary.SetName("nonlinear/reduction/summary", DNDS_ALLOCATION_SITE());
+        if (globalAlpha)
+        {
+            limitedSum = reductions.BindInPlace<index>(summary.Storage(), offsetof(CUDA::NonlinearSummary, limited), 1, R::Reduction::Sum);
+            alphaMin = reductions.BindInPlace<real>(summary.Storage(), offsetof(CUDA::NonlinearSummary, minimum), 1, R::Reduction::Min);
+        }
 #else
         Unavailable{}();
 #endif
     }
-    NonlinearOperators::NonlinearOperators(CFV::FiniteVolumePlan geometry, AdmissibilityPolicy policy, R::ExecutionContext context)
-        : _data(std::make_shared<Data>(std::move(geometry), std::move(policy), context)) {}
+    NonlinearOperators::NonlinearOperators(CFV::FiniteVolumePlan geometry, AdmissibilityPolicy policy, R::ExecutionContext context, std::optional<NumericalReductions> reductions, bool globalAlpha)
+        : _data(std::make_shared<Data>(std::move(geometry), std::move(policy), context, std::move(reductions), globalAlpha)) {}
     void NonlinearOperators::Data::Check(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state) const
     {
         state.Validate();
@@ -144,8 +149,9 @@ namespace DNDS::Cauchy
     }
     real NonlinearOperators::PressureMean(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state) const
     {
-        auto sum = SubmitPressureSum(engine, stream, state, {})();
-        MPI::AllreduceInPlace<MPI::Reduction::Sum>(MPI::ContiguousView<real>{sum.data(), 2}, _data->geometry.Communicator());
+        if (!_data->pressureSlot)
+            _data->pressureSlot = std::make_shared<NonlinearNormSum>(2, _data->reductions, MPIInfo(_data->geometry.Communicator()).size, stream, stream);
+        auto sum = SubmitPressureSum(engine, stream, state, _data->pressureSlot)();
         DNDS_check_throw_info(sum[1] > 0 && std::isfinite(sum[1]) && std::isfinite(sum[0] / sum[1]),
                               "invalid global pressure gauge integral");
         return sum[0] / sum[1];
@@ -177,7 +183,7 @@ namespace DNDS::Cauchy
         const real offset = pressureMean - PressureMean(engine, stream, candidate);
         SubmitPressureOffset(engine, stream, candidate, offset);
     }
-    std::vector<real> NonlinearOperators::MeasureMeanState(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &mean) const
+    std::vector<real> NonlinearOperators::MeasureMeanState(R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &mean, std::shared_ptr<NonlinearNormSum> global) const
     {
         _data->Check(engine, stream, mean);
         Inputs inputs;
@@ -195,7 +201,7 @@ namespace DNDS::Cauchy
 #else
         const Unavailable device;
 #endif
-        return _data->Reduce(engine, stream, mean.ComponentNumber(), std::move(inputs), {}, host, device).norms;
+        return _data->SubmitReduction(engine, stream, mean.ComponentNumber(), std::move(inputs), {}, host, device, std::move(global))().norms;
     }
     std::vector<real> NonlinearOperators::MeasureRateNorm(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                           const EquationDofs &rate, int normOrder, OptionalRef<const EquationDofs> reference,

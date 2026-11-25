@@ -16,20 +16,17 @@ namespace DNDS::Cauchy
                                       std::isfinite(scale) && scale > 0 && power > 0 && power <= INT_MAX / 2,
                                   "invalid physical timestep PP controls");
         }
-        void AgreeStepControls(const MPIInfo &mpi, real dt, real relax, real scale, int power)
+        void AgreeStepControls(const NumericalReductions &reductions, real dt, real relax, real scale, int power)
         {
             real values[]{dt, -dt, relax, -relax, scale, -scale, real(power), -real(power)};
-            MPI::AllreduceInPlace<MPI::Reduction::Min>(
-                MPI::ContiguousView<real>{values, 8}, mpi.comm);
+            reductions.Reduce<Runtime::Reduction::Min>(SpanView<real>{values, 8});
             for (int j = 0; j < 8; j += 2)
                 DNDS_check_throw_info(values[j] == -values[j + 1], "physical timestep PP controls differ between ranks");
         }
-        void ReduceStepLimit(PhysicalStepLimit &result, const MPIInfo &mpi)
+        void ReduceStepLimit(PhysicalStepLimit &result, const NumericalReductions &reductions)
         {
-            result.minimumAlpha = MPI::AllreduceValue<MPI::Reduction::Min>(
-                result.minimumAlpha, mpi.comm);
-            result.limitedCells = MPI::AllreduceValue<MPI::Reduction::Sum>(
-                result.limitedCells, mpi.comm);
+            result.minimumAlpha = reductions.Value<Runtime::Reduction::Min>(result.minimumAlpha);
+            result.limitedCells = reductions.Value<Runtime::Reduction::Sum>(result.limitedCells);
             if (result.limitedCells)
                 result.dt *= result.minimumAlpha;
         }
@@ -62,7 +59,7 @@ namespace DNDS::Cauchy
                                           std::isfinite(thermal.densityCoefficients[c]) &&
                                           (!thermal.speciesEnergies[c].empty()) == Equation().HasMixture(),
                                       "physical timestep thermal coefficients are missing or invalid"); });
-        AgreeStepControls(mpi, dt, relax, scale, compressionPower);
+        AgreeStepControls(Reductions(), dt, relax, scale, compressionPower);
         PhysicalStepLimit result{dt};
         const auto geometry = Metrics().AcquireRead();
         const auto metric = geometry.HostView();
@@ -73,7 +70,7 @@ namespace DNDS::Cauchy
             const auto mean = meanLayout.View(), rhs = rhsLayout.View();
             const auto resultLocal = RequireNumericalSuccess(CPU::LimitPhysicalStepRows(mean, rhs, metric, thermal, dt, relax, scale, compressionPower), "LimitPhysicalStepRows");
             result.limitedCells = resultLocal.first; result.minimumAlpha = resultLocal.second; });
-        ReduceStepLimit(result, mpi);
+        ReduceStepLimit(result, Reductions());
         return result;
     }
 }

@@ -205,8 +205,7 @@ namespace DNDS::Cauchy
         }
 #ifdef DNDS_USE_CUDA
         if (prototype.Device().space == R::MemorySpace::CUDA && storage.rowMajorBlocks &&
-            storage.indices == LinearIndexStorage::Int32 && offDiagonal == OffDiagonalStorage::Assembled &&
-            (!prototype.Space().Distributed() || MPIInfo(prototype.Space().Communicator()).size == 1))
+            storage.indices == LinearIndexStorage::Int32 && offDiagonal == OffDiagonalStorage::Assembled)
         {
             const R::ExecutionContext context{prototype.Device(), nullptr};
             const auto stencil = _data->stencil.Read(context);

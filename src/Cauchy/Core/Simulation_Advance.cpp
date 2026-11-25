@@ -65,21 +65,21 @@ namespace DNDS::Cauchy
         const TimelineScope timeline("Cauchy/Step", std::int64_t(_step));
         real limits[2]{dt, -dt};
         int valid = std::isfinite(dt) && dt > 0;
-        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _placement.Control());
+        valid = _controlReductions.Value<Runtime::Reduction::Min>(valid);
         DNDS_check_throw_info(valid, "invalid coordinated Cauchy timestep");
-        MPI::AllreduceInPlace<MPI::Reduction::Min>(
-            MPI::ContiguousView<real>{limits, 2}, _placement.Control());
+        _controlReductions.Reduce<Runtime::Reduction::Min>(
+            SpanView<real>{limits, 2});
         DNDS_check_throw_info(limits[0] == -limits[1], "simulation ranks requested different timesteps");
         int targetFlags[2]{int(acceptedTime.has_value()), -int(acceptedTime.has_value())};
-        MPI::AllreduceInPlace<MPI::Reduction::Min>(
-            MPI::ContiguousView<int>{targetFlags, 2}, _placement.Control());
+        _controlReductions.Reduce<Runtime::Reduction::Min>(
+            SpanView<int>{targetFlags, 2});
         DNDS_check_throw_info(targetFlags[0] == -targetFlags[1], "simulation ranks disagree on exact accepted-time snapping");
         real acceptedTarget = acceptedTime.value_or(0);
         if (acceptedTime)
         {
             real targets[2]{acceptedTarget, -acceptedTarget};
-            MPI::AllreduceInPlace<MPI::Reduction::Min>(
-                MPI::ContiguousView<real>{targets, 2}, _placement.Control());
+            _controlReductions.Reduce<Runtime::Reduction::Min>(
+                SpanView<real>{targets, 2});
             DNDS_check_throw_info(targets[0] == -targets[1] && std::isfinite(acceptedTarget) && acceptedTarget > _time,
                                   "simulation ranks requested different or invalid exact accepted times");
             const real expected = _time + dt;
@@ -115,7 +115,7 @@ namespace DNDS::Cauchy
                         else
                             action(iDomain, *_domains[iDomain]);
                     }
-                ready = MPI::AllreduceValue<MPI::Reduction::Min>(ready, _placement.Control());
+                ready = _controlReductions.Value<Runtime::Reduction::Min>(ready);
                 return ready ? StepResult{} : StepResult::Rejected("coordinated " + name + " rejected; accepted states unchanged: " + error);
             };
             const auto ports = [&](bool prepared, int coupledStage)
@@ -201,6 +201,7 @@ namespace DNDS::Cauchy
                 const TimelineScope stageTimeline("Cauchy/Stage", description.stage);
                 NonlinearSolveGroup group;
                 group.communication = _placement.ControlContext();
+                group.reductions = &_controlReductions;
                 group.policy = _updatePolicy;
                 group.collectiveChecks = _nonlinearCollectiveChecks;
                 for (auto &session : sessions)
@@ -242,7 +243,7 @@ namespace DNDS::Cauchy
                 if (auto start = localPhase([&](index, Domain &domain)
                                             {
                     auto &control = domain;
-                    MPI::LocalStage(MPIInfo(control.Communicator()),[&]
+                    control.Discretization().Reductions().LocalStage([&]
                     {
                         control.RequireAcceptedClock(_time, _step);
                     });
@@ -346,7 +347,7 @@ namespace DNDS::Cauchy
                 // and followed by an unrelated control reduction on local failure.
                 try
                 {
-                    MPI::LocalStage(MPIInfo(_placement.Control()), [&]
+                    _controlReductions.LocalStage( [&]
                                     {
                     for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                         if (auto &domain = _domains[iDomain])

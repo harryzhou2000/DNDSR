@@ -249,7 +249,7 @@ namespace DNDS::Cauchy
                 const auto requested = _problem.finiteVolume.Settings().equation.acmPressureMean;
                 auto &engine = _execution.Engine();
                 const auto &lane = _execution.ComputeStream();
-                const NonlinearOperators operators(_problem.finiteVolume.Metrics(), *_problem.admissibility, lane.Context());
+                const NonlinearOperators operators(_problem.finiteVolume.Metrics(), *_problem.admissibility, lane.Context(), _problem.finiteVolume.Reductions());
                 DNDS_check_throw_info(freshMeans || !_problem.finiteVolume.HasInterfaces() || gauge != metadata.end(),
                                       "connected ACM checkpoint lacks the anchor domain pressure datum");
                 if (meansOnly || (freshMeans && !_problem.finiteVolume.HasInterfaces()) || gauge == metadata.end())

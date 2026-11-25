@@ -5,6 +5,9 @@
 
 namespace DNDS::Cauchy::CUDA
 {
+    /// Copy the selected full-CSR rows into the compact rank-local upload buffer.
+    void GatherAMGSlots(Runtime::ExecutionContext context, const Runtime::Array<int> &slots,
+                        const Runtime::Array<real> &source, Runtime::Array<real> &destination);
     /** @brief Build the local geometric aggregation graph for flow AmgX.
      * @details Weights share the supplied CSR slot order. Each face contributes
      * area divided by center-to-center distance in its common periodic image.

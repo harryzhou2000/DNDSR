@@ -279,6 +279,99 @@ int main(int argc, char **argv)
     return result;
 }
 
+TEST_CASE("Numerical reductions on two GPUs use the selected transport")
+{
+    if (mpi.size != 2 || !std::getenv("DNDS_TEST_GPU_UUID"))
+        return;
+    const auto device = R::Device::CUDA(DeviceOrdinal());
+    auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
+    R::EagerEngine engine;
+    const auto lane = engine.CreateStream(std::make_shared<R::CUDALauncher>(device.ordinal));
+    for (bool nccl : {false, true})
+    {
+        if (nccl && !R::NCCLTransferProvider::Available())
+            continue;
+        CAPTURE(nccl);
+        const C::NumericalReductions collectives = nccl ? C::NumericalReductions(context, device) : C::NumericalReductions(context);
+        constexpr int64_t base = (int64_t{1} << 53) + 1;
+        CHECK(collectives.Value<R::Reduction::Sum>(base + mpi.rank) == 2 * base + 1);
+        R::Array<int64_t> host(R::RowLayout::Dense(3, 1));
+        {
+            auto w = host.Write();
+            for (I i = 0; i < 3; ++i)
+                w.View()(i, 0) = base + i - mpi.rank;
+        }
+        auto source = host.To(device);
+        R::Array<int64_t> destination(source.Layout(), device);
+        for (auto op : {R::Reduction::Min, R::Reduction::Max, R::Reduction::Sum})
+        {
+            const auto binding = collectives.Bind(source, destination, op);
+            binding->Submit(engine, lane).WaitHost();
+            const auto result = destination.To(R::Device::Host());
+            const auto read = result.Read();
+            for (I i = 0; i < 3; ++i)
+                CHECK(read.View()(i, 0) == (op == R::Reduction::Min ? base + i - 1 : op == R::Reduction::Max ? base + i : 2 * (base + i) - 1));
+        }
+    }
+}
+
+TEST_CASE("Rank-local AmgX upload extracts owned blocks and refreshes their values")
+{
+    if (mpi.size != 2 || !A::AmgXPreconditioner::Available())
+        return;
+    const auto device = R::Device::CUDA(DeviceOrdinal());
+    const auto communication = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD);
+    const A::DofSpace space(communication, 2, 1, "principal upload test");
+    C::LinearMatrixOptions options;
+    options.rowMajorBlocks = true;
+    options.indices = C::LinearIndexStorage::Int32;
+    constexpr int n = 6;
+    C::LinearProblemContext problem(space, n, {{2, 1}, {0}}, {1}, C::DiagonalStorage::Block,
+                                    C::OffDiagonalStorage::Assembled, device, {}, options);
+    R::EagerEngine engine;
+    const auto lane = engine.CreateStream(std::make_shared<R::CUDALauncher>(device.ordinal));
+    R::Array<real> strengths(R::RowLayout::Dense(3, 1)), diagonal(R::RowLayout::Dense(2, n * n));
+    {
+        auto w = strengths.Write(), d = diagonal.Write();
+        for (int slot = 0; slot < 3; ++slot)
+            w.View()(slot, 0) = slot ? 1 : 20;
+        for (int row = 0; row < 2; ++row)
+            for (int k = 0; k < n * n; ++k)
+                d.View()(row, k) = k % (n + 1) == 0 ? 4 : 0;
+    }
+    problem.SetGeometricWeights(strengths.To(device));
+    problem.Diagonal().CopyFrom(diagonal, lane.Context()).Wait();
+    A::AmgXSettings settings;
+    settings.maxLevels = 1;
+    settings.coarseSweeps = 60;
+    C::LocalAMGPreconditioner preconditioner(problem, settings);
+    for (real coupling : {-.5, -1.})
+    {
+        R::Array<real> blocks(R::RowLayout::Dense(3, n * n)), rhs(R::RowLayout::Dense(2, n));
+        {
+            auto a = blocks.Write(), b = rhs.Write();
+            for (int slot = 0; slot < 3; ++slot)
+                for (int k = 0; k < n * n; ++k)
+                    a.View()(slot, k) = k % (n + 1) == 0 ? (slot ? coupling : -20.) : 0.;
+            for (int row = 0; row < 2; ++row)
+                for (int j = 0; j < n; ++j)
+                    b.View()(row, j) = 4 * Exact(mpi.rank, row, j) + coupling * Exact(mpi.rank, 1 - row, j);
+        }
+        auto values = problem.OffDiagonal().Values();
+        values.CopyFrom(blocks, lane.Context()).Wait();
+        auto input = rhs.To(device);
+        R::Array<real> output(input.Layout(), device);
+        preconditioner.Update(engine, lane, problem);
+        preconditioner.Apply(engine, lane, input, output);
+        const auto host = output.To(R::Device::Host());
+        const auto read = host.Read();
+        for (int row = 0; row < 2; ++row)
+            for (int j = 0; j < n; ++j)
+                CHECK(read.View()(row, j) == doctest::Approx(Exact(mpi.rank, row, j)).epsilon(1e-9));
+    }
+    engine.Close();
+}
+
 TEST_CASE("Copy-free local AmgX consumes native int32 unsorted row-major blocks")
 {
     if (mpi.size != 1 || !A::AmgXPreconditioner::Available())

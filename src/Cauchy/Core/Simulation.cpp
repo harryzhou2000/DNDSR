@@ -107,6 +107,8 @@ namespace DNDS::Cauchy
                 _config.Time(), progress);
             _setupTimings[iDomain].domainSetup = MPI_Wtime() - domainStarted;
         }
+        if (_domains.size() == 1 && _placement.Group(0).ranks.size() == size_t(_placement.Size()))
+            _controlReductions = _domains[0]->Discretization().Reductions();
         if (!_config.Interfaces().empty())
         {
             std::vector<std::optional<FiniteVolume>> local(_domains.size());

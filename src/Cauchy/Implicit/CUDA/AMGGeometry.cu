@@ -35,7 +35,7 @@ namespace DNDS::Cauchy::CUDA
                     if (other == UnInitIndex || other == iCell)
                         continue;
                     const index slot = s.columns(face, side);
-                    if (cells[side] != iCell || other < 0 || other >= rows || slot < 0 ||
+                    if (cells[side] != iCell || other < 0 || slot < 0 ||
                         slot >= end - begin || columns(begin + slot, 0) != other)
                     {
                         atomicOr(error.data, 1);
@@ -64,6 +64,8 @@ namespace DNDS::Cauchy::CUDA
                 for (index k = offsets(iCell, 0); k < offsets(iCell + 1, 0); ++k)
                 {
                     const index other = columns(k, 0);
+                    if (other >= rows)
+                        continue; // Its reciprocal belongs to the neighboring rank.
                     const real w = weights(k, 0);
                     bool reciprocal = false;
                     if (other >= 0 && other < rows && other != iCell && isfinite(w) && w > 0)
@@ -78,6 +80,30 @@ namespace DNDS::Cauchy::CUDA
                         atomicOr(error.data, 4);
                 }
         }
+    }
+
+    namespace
+    {
+        __global__ void GatherRows(const int *slots, const real *source, real *destination, index size, index width)
+        {
+            for (index i = index(blockIdx.x) * blockDim.x + threadIdx.x; i < size; i += index(gridDim.x) * blockDim.x)
+                destination[i] = source[index(slots[i / width]) * width + i % width];
+        }
+    }
+    void GatherAMGSlots(R::ExecutionContext context, const R::Array<int> &slots,
+                        const R::Array<real> &source, R::Array<real> &destination)
+    {
+        const index size = destination.RowCount() * destination.Layout().Width();
+        if (!size)
+            return;
+        const auto ids = slots.Read(context);
+        const auto src = source.Read(context);
+        auto dst = destination.Write(context);
+        const auto stream = R::CUDAStream(context);
+        GatherRows<<<unsigned(std::min<index>(4096, (size + 255) / 256)), 256, 0, stream>>>(
+            ids.View().data, src.View().data, dst.View().data, size, destination.Layout().Width());
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess && cudaStreamSynchronize(stream) == cudaSuccess,
+                              "AmgX principal matrix gather failed");
     }
 
     R::Array<real> BuildAMGGeometricWeights(R::ExecutionContext context, const FiniteVolumeStencilStorage::ReadAccess &stencil,

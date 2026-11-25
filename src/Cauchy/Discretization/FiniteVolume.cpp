@@ -137,6 +137,7 @@ namespace DNDS::Cauchy
         _data = std::move(data);
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }
+    const NumericalReductions &FiniteVolume::Reductions() const { return _data->reductions; }
     R::TransferBinding FiniteVolume::BindHalo(CFV::FVField &field) const { return _data->BindHalo(field); }
     const EquationSystem &FiniteVolume::Equation() const { return _data->equation; }
     const DomainSettings &FiniteVolume::Settings() const { return _data->settings; }
@@ -283,7 +284,7 @@ namespace DNDS::Cauchy
 #endif
             MeanStateCheck check(state.Space(), policy, stream.Context());
             valid = bool(check.Evaluate(engine, stream, state)); });
-        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, Metrics().Communicator());
+        valid = Reductions().Value<R::Reduction::Min>(valid);
         return valid;
     }
 }

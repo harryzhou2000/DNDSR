@@ -162,6 +162,7 @@ namespace DNDS::Cauchy
         struct ReconstructionNormStorage
         {
             R::Array<real> partial, result;
+            std::shared_ptr<const R::GlobalReductionBinding> global;
         };
         std::optional<ReconstructionNormStorage> reconstructionNorm;
         struct CharacteristicSubmission
@@ -436,6 +437,7 @@ namespace DNDS::Cauchy
         /// Queue owned reconstruction update/reference norms, with a bounded
         /// reusable device reduction. Observe only at a requested stopping
         /// interval; the global reduction remains outside the async segment.
+        void PrepareReconstructionNorm();
         void SubmitReconstructionNorm(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &current);
         std::array<real, 2> ReadReconstructionNorm() const;
         void SubmitDeviceGradientLimiter(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, bool barth, CFV::ReconstructionRegion);

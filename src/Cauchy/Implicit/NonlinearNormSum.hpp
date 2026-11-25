@@ -1,7 +1,6 @@
 #pragma once
 
-#include "DNDS/Runtime/Communication/MPIGlobalReduction.hpp"
-#include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
+#include "Cauchy/Core/NumericalReductions.hpp"
 
 #ifdef DNDS_USE_CUDA
 #    include "Cauchy/Implicit/CUDA/NonlinearKernels.hpp"
@@ -14,8 +13,6 @@ namespace DNDS::Cauchy
     class NonlinearNormSum
     {
         Runtime::Array<real> _local, _sum;
-        std::optional<Runtime::Array<real>> _resident;
-        bool _ordinaryMPI = false;
         Runtime::ExecutionStream _lane, _resultLane;
         std::shared_ptr<const Runtime::GlobalReductionBinding> _binding;
         Runtime::StreamEvent _completion;
@@ -26,9 +23,7 @@ namespace DNDS::Cauchy
         /// status survives subsequent operators on the same compute lane.
         Runtime::Array<CUDA::NonlinearSummary> deviceSummary;
 #endif
-        NonlinearNormSum(index count, const std::shared_ptr<Runtime::CommunicationContext> &comm,
-                         const Runtime::ExecutionStream &lane, const std::shared_ptr<Runtime::NCCLTransferProvider> &nccl,
-                         Runtime::Device computeDevice);
+        NonlinearNormSum(index count, const NumericalReductions &reductions, int ranks, const Runtime::ExecutionStream &compute, const Runtime::ExecutionStream &communication);
         Runtime::Array<real> &Local() { return _local; }
         /// The local producer has already written Local() on the compute lane.
         /// Ordinary MPI consumes staged host memory through controller progress.

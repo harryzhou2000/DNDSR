@@ -217,10 +217,13 @@ namespace DNDS::Cauchy
             MPIInfo mpi;
             LinearSolveSettings settings;
             LinearExecution execution;
+            NumericalReductions collectives{execution.reductions.value_or(NumericalReductions(mpi.comm))};
             std::unique_ptr<R::EagerEngine> standaloneEngine;
             R::ExecutionStream compute, communication;
             AlgebraAdapter algebra;
             std::unique_ptr<A::LocalProductWorkspace> reductions;
+            std::vector<std::shared_ptr<const R::GlobalReductionBinding>> productSums;
+            std::shared_ptr<const R::GlobalReductionBinding> finiteMinimum;
             std::unique_ptr<LocalAMGPreconditioner> localAMG;
             std::unique_ptr<CPUAMG> cpuAMG;
             std::unique_ptr<GMRES> gmres;
@@ -337,6 +340,15 @@ namespace DNDS::Cauchy
                 if (prototype.Device() != R::Device::Host())
                     reductions = std::make_unique<A::LocalProductWorkspace>(index(prototype.Space().OwnedRows()), Ops::Width(prototype),
                                                                             settings.subspace + 1, prototype.Device());
+                if (reductions)
+                {
+                    auto values = reductions->Results();
+                    const int prefixes = settings.method == "gmres" ? settings.subspace + 1 : int(settings.stopping != "fixedCount");
+                    for (int count = 1; count <= prefixes; ++count)
+                        productSums.push_back(collectives.BindInPlace<real>(values.Storage(), 0, count, R::Reduction::Sum));
+                    if (execution.collectiveChecks)
+                        finiteMinimum = collectives.BindInPlace<real>(values.Storage(), 0, 1, R::Reduction::Min);
+                }
                 if (settings.method == "gmres")
                     gmres = std::make_unique<GMRES>(prototype, settings.subspace, algebra);
                 else
@@ -567,7 +579,7 @@ namespace DNDS::Cauchy
                 // then queue the small-matrix/coefficient-update phase behind
                 // their completion, instead of exposing this host vector.
                 const LinearProfile::Scope timing(profile, LinearProfile::Products);
-                std::vector<real> local, global(probes.size());
+                std::vector<real> local;
                 Stage([&]
                       {
                     auto engine = compute.LockEngine();
@@ -579,6 +591,7 @@ namespace DNDS::Cauchy
                             reductions->SubmitProduct(engine, compute, Ops::Owned(x), Ops::Owned(*probes[i]), i);
                         }
                         engine.Synchronize();
+                        productSums.at(probes.size() - 1)->Submit(engine, compute).WaitHost();
                         local = reductions->ReadResults(index(probes.size()), compute.Context());
                     }
                     else
@@ -586,10 +599,9 @@ namespace DNDS::Cauchy
                         engine.Synchronize();
                         local = Ops::LocalProducts(x, probes, inverseComponentScales);
                     } });
-                MPI::AllreduceInto<MPI::Reduction::Sum>(
-                    MPI::ContiguousView<const real>{local.data(), local.size()},
-                    MPI::ContiguousView<real>{global.data(), global.size()}, mpi.comm);
-                return global;
+                if (!reductions)
+                    collectives.template Reduce<R::Reduction::Sum>(SpanView<real>{local.data(), index(local.size())});
+                return local;
             }
             bool Finite(const Field &x) const
             {
@@ -602,6 +614,8 @@ namespace DNDS::Cauchy
                     {
                         reductions->SubmitFinite(engine, compute, Ops::Owned(x));
                         engine.Synchronize();
+                        if (finiteMinimum)
+                            finiteMinimum->Submit(engine, compute).WaitHost();
                         valid = reductions->ReadResults(1, compute.Context())[0] == 1;
                     }
                     else
@@ -609,8 +623,9 @@ namespace DNDS::Cauchy
                         engine.Synchronize();
                         valid = Ops::LocalFinite(x);
                     } });
+                if (finiteMinimum) return valid;
                 if (execution.collectiveChecks)
-                    valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);
+                    valid = collectives.template Value<R::Reduction::Min>(valid);
                 else if (!valid)
                 {
                     // Unchecked production execution cannot return a local

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Cauchy/Core/NumericalReductions.hpp"
+
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
@@ -11,12 +13,10 @@ namespace DNDS::Cauchy::NonlinearDetail
     /// Finalize an observed rank-local metric. CUDA and CPU prepare identical
     /// raw quantities; only this controller boundary performs MPI and the
     /// Euler momentum/energy normalization. The input ends with total volume.
-    inline std::vector<real> FinalizeMeanStateScales(std::vector<real> sum, index components, index flowFirst, MPI_Comm comm)
+    inline std::vector<real> NormalizeMeanStateScales(std::vector<real> sum, index components, index flowFirst)
     {
         DNDS_check_throw_info(index(sum.size()) == components + 1 && flowFirst >= 0 && flowFirst + 5 <= components,
                               "invalid mean-state component metric shape");
-        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-            MPI::ContiguousView<real>{sum.data(), sum.size()}, comm);
         DNDS_check_throw_info(std::isfinite(sum[components]) && sum[components] > 0, "invalid mean-state metric volume");
         for (index j = 0; j < components; ++j)
             sum[j] /= sum[components] + verySmallReal;
@@ -38,6 +38,11 @@ namespace DNDS::Cauchy::NonlinearDetail
         return sum;
     }
 
+    inline std::vector<real> FinalizeMeanStateScales(std::vector<real> sum, index components, index flowFirst, MPI_Comm comm)
+    {
+        NumericalReductions(comm).Reduce<Runtime::Reduction::Sum>(SpanView<real>{sum.data(), index(sum.size())});
+        return NormalizeMeanStateScales(std::move(sum), components, flowFirst);
+    }
     /// Freeze Euler's mean-state GMRES component metric before the linear
     /// solve. The preparation is collective; it reads only owned physical
     /// means and never changes halos or the equation. It is independent of

@@ -7,14 +7,13 @@ namespace DNDS::Cauchy
 {
     /** @brief Rank-local AmgX adapter for the coupled assembled operator.
      * @details One device, no communicator and no distributed AmgX machinery.
-     * The initial compatible path requires one rank, a primary native int32
-     * pattern and compact row-major cell blocks with separate diagonal.
-     * Native DNDS allocations are borrowed directly by the public upload;
-     * provider-internal copies remain owned by AmgX. Explicit native storage
+     * Requires a primary int32 pattern and compact row-major blocks with a
+     * separate diagonal. For a partition with ghosts, upload uses the owned
+     * principal CSR and its geometric weights. Its slot map is reused to
+     * gather device blocks on matrix refresh. The distributed operator keeps
+     * its original ghost columns. Single-rank native storage
      * instead attaches one allocation shared by native diagonal/off-diagonal
-     * aliases, retaining its owner and checking versions across provider calls. Incompatible layouts or
-     * off-rank principal extraction fail explicitly. No DNDS packing, sorting,
-     * transposition or index conversion is hidden in this adapter.
+     * aliases, retaining its owner and checking versions across provider calls.
      * The aggregation graph uses one immutable area/distance strength per
      * off-diagonal block. Its pattern and strengths are attached together.
      * Pattern preparation is once per solver; values update when the frozen

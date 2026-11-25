@@ -105,6 +105,7 @@ namespace DNDS::Cauchy
                                   (!useInitial || unlimited.CoupledField().Owned().Layout().Kind() == R::RowLayoutKind::Table),
                               "CUDA modal PP requires combined AoS fields");
         data.pending = true;
+        data.device->producer = stream;
         auto &scratch = *data.device;
         R::SubmitArrays(engine, stream, [pin, useInitial](R::ExecutionContext context, auto mean, auto initial, auto coefficients, auto beta, auto degree, auto status, auto count, auto minimum)
                         {

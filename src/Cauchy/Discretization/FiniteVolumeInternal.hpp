@@ -71,6 +71,7 @@ namespace DNDS::Cauchy
         ssp<Geom::UnstructuredMesh> mesh;
         DomainSettings settings;
         std::shared_ptr<Runtime::CommunicationWorker> communicationWorker;
+        std::shared_ptr<Runtime::TransferProvider> haloProvider;
         EquationSystem equation;
         BoundaryPointOperator boundaryPoint;
         RigidMotion motion;
@@ -78,6 +79,7 @@ namespace DNDS::Cauchy
         FiniteVolumeDetail::FluxKernelPolicy fluxPolicy;
         BoundarySystem boundary;
         CFV::FiniteVolumePlan metrics;
+        NumericalReductions reductions{metrics.Communication()};
         /// Present only for the variational family. Constant/P0 and explicit
         /// physical-gradient P1 own no Taylor basis, VR matrices or modal plan.
         std::optional<CFV::VariationalReconstructionPlan> reconstruction;
@@ -173,6 +175,7 @@ namespace DNDS::Cauchy
         Runtime::TransferOptions HaloTransferOptions(const char *channel) const
         {
             Runtime::TransferOptions options;
+            options.provider = haloProvider;
             options.communicationWorker = communicationWorker;
             options.channel = channel;
             DNDS_check_throw_info(settings.execution.transferPreflight == "collective" || settings.execution.transferPreflight == "abortOnFailure", "invalid Cauchy transfer preflight policy");
@@ -265,5 +268,6 @@ namespace DNDS::Cauchy
         void Apply(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                    const EquationDofs &input, const EquationDofs &unlimited, EquationDofs &flux, bool refresh);
         std::pair<index, real> LocalStatistics() const;
+        std::pair<index, real> GlobalStatistics() const;
     };
 }

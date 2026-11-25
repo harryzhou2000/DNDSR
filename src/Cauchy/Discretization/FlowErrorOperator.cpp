@@ -21,6 +21,7 @@ namespace DNDS::Cauchy
         R::Array<real> points;
 #ifdef DNDS_USE_CUDA
         R::Array<CUDA::FlowErrorReduction> partial, result;
+        std::array<std::shared_ptr<const R::GlobalReductionBinding>, 3> sums;
         R::Array<unsigned int> completed;
 #endif
         Data(FiniteVolume spatial, R::ExecutionContext where) : plan(std::move(spatial)), context(where)
@@ -80,6 +81,12 @@ namespace DNDS::Cauchy
             points.SetName("flowError/quadraturePoints", DNDS_ALLOCATION_SITE());
             partial.SetName("flowError/partials", DNDS_ALLOCATION_SITE());
             result.SetName("flowError/result", DNDS_ALLOCATION_SITE());
+            using Summary = CUDA::FlowErrorReduction;
+            const auto &collectives = plan.Reductions();
+            static_assert(sizeof(FlowState) == 5 * sizeof(real));
+            sums[0] = collectives.BindInPlace<real>(result.Storage(), offsetof(Summary, errors), 10, R::Reduction::Sum);
+            sums[1] = collectives.BindInPlace<real>(result.Storage(), offsetof(Summary, errors) + 2 * sizeof(FlowState), 5, R::Reduction::Max);
+            sums[2] = collectives.BindInPlace<real>(result.Storage(), offsetof(Summary, volume), 1, R::Reduction::Sum);
             completed.SetName("flowError/completedBlocks", DNDS_ALLOCATION_SITE());
 #else
             DNDS_check_throw_info(false, "CUDA flow error is not compiled");
@@ -134,6 +141,8 @@ namespace DNDS::Cauchy
             }, R::ReadAs<R::TableRows>(state.CoupledField().Owned()), R::ReadAs<R::FixedRows<1>>(retained->offsets),
                 R::ReadAs<R::FixedRows<4>>(retained->points), R::WriteAs<R::FixedRows<1>>(retained->partial),
                 R::WriteAs<R::FixedRows<1>>(retained->result), R::WriteAs<R::FixedRows<1>>(retained->completed));
+            for (const auto &reduction : retained->sums)
+                reduction->Submit(engine, stream);
             engine.Synchronize();
             const auto host = retained->result.To(R::Device::Host(), stream.Context());
             const auto read = host.Read();
@@ -144,13 +153,14 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(false, "CUDA flow error is not compiled");
 #endif
         } });
-        const auto comm = retained->plan.Metrics().Communicator();
-        volume = MPI::AllreduceValue<MPI::Reduction::Sum>(volume, comm);
-        for (int norm = 0; norm < 3; ++norm)
-            if (norm == 2)
-                MPI::AllreduceInPlace<MPI::Reduction::Max>(errors[norm], comm);
-            else
-                MPI::AllreduceInPlace<MPI::Reduction::Sum>(errors[norm], comm);
+        if (stream.Context().device == R::Device::Host())
+        {
+            const auto &collectives = retained->plan.Reductions();
+            volume = collectives.Value<R::Reduction::Sum>(volume);
+            collectives.Reduce<R::Reduction::Sum>(SpanView<real>{errors[0].data(), 5});
+            collectives.Reduce<R::Reduction::Sum>(SpanView<real>{errors[1].data(), 5});
+            collectives.Reduce<R::Reduction::Max>(SpanView<real>{errors[2].data(), 5});
+        }
         for (int j = 0; j < 5; ++j)
         {
             errors[0][j] /= volume;

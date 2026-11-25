@@ -61,20 +61,24 @@ namespace DNDS::Cauchy
         Runtime::ExecutionContext context;
         CFV::FiniteVolumePlan geometry;
         AdmissibilityPolicy policy;
+        NumericalReductions reductions;
+        bool globalAlpha;
+        std::shared_ptr<NonlinearNormSum> pressureSlot;
+        std::shared_ptr<const Runtime::GlobalReductionBinding> limitedSum, alphaMin;
         MeanStateCheck meanCheck;
         index flowFirst = 0, ransFirst = -1, speciesFirst = -1, independent = 0;
 #ifdef DNDS_USE_CUDA
         Runtime::Array<CUDA::NonlinearSummary> partial, summary;
         std::shared_ptr<Runtime::Array<CUDA::NonlinearSummary>> stagedSummary;
 #endif
-        Data(CFV::FiniteVolumePlan, AdmissibilityPolicy, Runtime::ExecutionContext);
+        Data(CFV::FiniteVolumePlan, AdmissibilityPolicy, Runtime::ExecutionContext, std::optional<NumericalReductions>, bool);
         void Check(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;
         void CheckPair(const EquationDofs &, const EquationDofs &) const;
         void CheckScalar(const Runtime::Array<real> &) const;
         template <class Host, class Device>
         std::function<NonlinearOperatorDetail::Result()> SubmitReduction(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream,
                                                                          index components, NonlinearOperatorDetail::Inputs inputs, NonlinearOperatorDetail::Outputs outputs,
-                                                                         Host host, Device device, std::shared_ptr<NonlinearNormSum> global = {}, OptionalRef<IterationChecks> checks = {}, IterationPhase phase = IterationPhase::Defect)
+                                                                         Host host, Device device, std::shared_ptr<NonlinearNormSum> global = {}, OptionalRef<IterationChecks> checks = {}, IterationPhase phase = IterationPhase::Defect, bool reduceAlpha = false)
         {
             namespace R = Runtime;
             using namespace NonlinearOperatorDetail;
@@ -105,10 +109,15 @@ namespace DNDS::Cauchy
                         return std::move(*retained);
                     };
                 }
-                return [retained, done = stream.Record()]
+                return [retained, reductions = reduceAlpha && globalAlpha ? std::optional<NumericalReductions>(reductions) : std::nullopt, done = stream.Record()]
                 {
                     done.WaitHost();
                     RequireNumericalSuccess(retained->status, "nonlinear operator");
+                    if (reductions)
+                    {
+                        retained->alpha.limited = reductions->Value<R::Reduction::Sum>(retained->alpha.limited);
+                        retained->alpha.minimum = reductions->Value<R::Reduction::Min>(retained->alpha.minimum);
+                    }
                     return std::move(*retained);
                 };
             }
@@ -153,6 +162,11 @@ namespace DNDS::Cauchy
             }
             R::SubmitArrayBatch(engine, stream, [device](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
                                 { device(where, input, output, scratch, value); }, std::move(inputs), std::move(outputs), std::make_tuple(R::WriteAs<R::FixedRows<1>>(partial), R::WriteAs<R::FixedRows<1>>(summary)));
+            if (reduceAlpha && limitedSum)
+            {
+                limitedSum->Submit(engine, stream);
+                alphaMin->Submit(engine, stream);
+            }
             auto destination = stagedSummary->Storage();
             R::CopyAsync(engine, stream, summary.Storage(), destination);
             return [staging = stagedSummary, components, done = stream.Record()]

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/Core/NumericalReductions.hpp"
 #include "Cauchy/Discretization/FiniteVolumeViews.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
@@ -718,6 +719,7 @@ namespace DNDS::Cauchy
         Runtime::Device Device() const { return Metrics().Device(); }
         bool SharesPlan(const FiniteVolume &other) const { return _data && _data == other._data; }
         const CFV::FiniteVolumePlan &Metrics() const;
+        const NumericalReductions &Reductions() const;
         /// Bind through the metric space with this domain's explicit MPI
         /// launch policy. Setup remains collective in either policy.
         Runtime::TransferBinding BindHalo(CFV::FVField &field) const;

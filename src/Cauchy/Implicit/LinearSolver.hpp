@@ -1,10 +1,13 @@
 #pragma once
 
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "Cauchy/Core/NumericalReductions.hpp"
 #include "DNDS/Core/OptionalRef.hpp"
 #include "Solver/FieldGMRES.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
+
+
 
 namespace DNDS::Cauchy
 {
@@ -73,6 +76,7 @@ namespace DNDS::Cauchy
         /// same operator schedule. Streams are weak handles; their context must
         /// outlive Solve. No solver-specific worker pool is created when bound.
         std::optional<Streams> streams;
+        std::optional<NumericalReductions> reductions;
     };
     /// Domain-local shared CPU/CUDA linear orchestration. Owns reusable native vectors and
     /// persistent bindings; numerical matrices and kernels remain independent.

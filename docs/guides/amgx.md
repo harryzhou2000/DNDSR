@@ -1,12 +1,9 @@
 # Single-device AmgX dependency
 
-The current direct adapter uses one rank and one device, with the native
-int32 pattern and row-major compact blocks supplied directly to AmgX. The
-longer-term rank-local preconditioner vision requires native principal-matrix
-partitions; it does not authorize hidden off-rank filtering or repacking.
-There is no delegated multi-rank provider communication. This document records
-the build recipe; an enabled dependency is not evidence of a completed solver
-adapter or numerical validation.
+The flow linear solver uses one single-device AmgX hierarchy per rank. Cauchy
+performs the distributed residual evaluation and halo exchange between local
+corrections. The projected reconstruction AMG provider has its own single-rank
+restriction.
 
 The canonical `cfd_externals` package now builds the modified AmgX fork, pinned
 by `dependency_versions.json` (native storage, diagnostics and geometric aggregation API version 1).
@@ -68,20 +65,15 @@ order. Although public upload supports `COL_MAJOR` for some other algorithms,
 the selected `BLOCK_JACOBI` hierarchy explicitly requires `ROW_MAJOR`; this
 adapter rejects another format before entering the provider. The public provider upload performs its own internal copies.
 
-The Cauchy adapter currently supports **one rank** with a primary native int32
-linear pattern, native row-major full compact AoS diagonal/off-diagonal arrays and compact AoS
-vectors. Cauchy constructs its primary blocks in row-major order when AmgX is selected,
-using `ROW_MAJOR` with the existing separate diagonal. The same native blocks
-are interpreted by DNDS matrix actions/inversion; no second format is kept. It performs
-no DNDS packing, transposition, sorting, off-rank filtering, padding removal or
-int64-to-int32 conversion. Incompatible representation fails explicitly before
-provider execution. Select `implicit.linear.matrixStorage.indices="auto"` (the
-default, choosing native int32 for AmgX), or `"int32"`. Diagonal and off-diagonal
-matrix layouts must be `"aos"`; the inverse matrix layout is independent. Future
-multi-rank support requires a genuinely native principal-matrix partition, not
-a hidden copied/filtered matrix. Numeric block views currently retain their
-separate int64 block-row offsets; those are distinct from the primary provider
-int32 CSR and are not converted or uploaded.
+Use `implicit.linear.matrixStorage.amgxStorage="upload"` for distributed flow
+solves. On partitions with ghosts, setup builds a principal CSR from owned
+columns and selects the corresponding geometric weights. On each matrix
+refresh a device gather copies the selected off-diagonal blocks into a
+compact upload buffer. The full separate diagonal is borrowed directly.
+Each rank applies AmgX to its owned vector, while Cauchy uses the original
+distributed matrix for the next residual. The shared `native` storage mode
+requires one rank. Select index precision `auto` or `int32` and compact
+row-major AoS matrix blocks for both modes.
 
 `UpdateValuesBorrowed` takes FP64 device values and optional separate diagonal;
 `ApplyBorrowed` takes device residual/correction views. Both wrappers check

@@ -16,6 +16,7 @@ namespace DNDS::Cauchy
     struct StateDiagnostics::Data
     {
         CFV::FiniteVolumePlan metrics;
+        NumericalReductions reductions{metrics.Communication()};
         EquationSystem equation;
         R::ExecutionContext context;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
@@ -23,6 +24,7 @@ namespace DNDS::Cauchy
         R::Array<CUDA::StateDiagnosticSummary> partial, result;
         R::Array<unsigned int> completed;
         std::optional<R::Array<real>> boundsPartial, boundsResult;
+        std::shared_ptr<const R::GlobalReductionBinding> boundsMaximum;
 #endif
         Data(CFV::FiniteVolumePlan geometry, EquationSystem physics, R::ExecutionContext where,
              std::optional<Physics::Chemistry::ChemicalWorkerPool> pool)
@@ -45,9 +47,27 @@ namespace DNDS::Cauchy
         }
     };
     StateDiagnostics::StateDiagnostics(CFV::FiniteVolumePlan geometry, EquationSystem equation, R::ExecutionContext context,
-                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
-        : _data(std::make_shared<Data>(std::move(geometry), std::move(equation), context, std::move(workers))) {}
+                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, std::optional<NumericalReductions> reductions)
+        : _data(std::make_shared<Data>(std::move(geometry), std::move(equation), context, std::move(workers)))
+    {
+        if (reductions) _data->reductions = *reductions;
+    }
 
+    void StateDiagnostics::PrepareBounds() const
+    {
+#ifdef DNDS_USE_CUDA
+        if (_data->context.device == R::Device::Host()) return;
+        const index width = 2 * index(_data->equation.Schema().LogicalComponents().size());
+            if (!_data->boundsPartial)
+            {
+                _data->boundsPartial.emplace(R::RowLayout::Dense(CUDA::StateDiagnosticScratchRows(_data->metrics.NumCell()), width), _data->context.device);
+                _data->boundsResult.emplace(R::RowLayout::Dense(1, width), _data->context.device);
+                _data->boundsMaximum = _data->reductions.Bind(*_data->boundsResult, *_data->boundsResult, R::Reduction::Max);
+                _data->boundsPartial->SetName("diagnostics/stateBoundsPartials", DNDS_ALLOCATION_SITE());
+                _data->boundsResult->SetName("diagnostics/stateBoundsResult", DNDS_ALLOCATION_SITE());
+            }
+#endif
+    }
     std::vector<real> StateDiagnostics::MeasureBounds(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                       const EquationDofs &mean) const
     {
@@ -78,15 +98,10 @@ namespace DNDS::Cauchy
         else
         {
             mean.CoupledField();
-            if (!retained->boundsPartial)
-            {
-                retained->boundsPartial.emplace(R::RowLayout::Dense(CUDA::StateDiagnosticScratchRows(mean.Space().OwnedRows()), width), context.device);
-                retained->boundsResult.emplace(R::RowLayout::Dense(1, width), context.device);
-                retained->boundsPartial->SetName("diagnostics/stateBoundsPartials", DNDS_ALLOCATION_SITE());
-                retained->boundsResult->SetName("diagnostics/stateBoundsResult", DNDS_ALLOCATION_SITE());
-            }
+            PrepareBounds();
             R::SubmitArrayBatch(engine, stream, [retained, means](auto launch, auto input, auto, auto partial, auto result, auto completed)
                                 { CUDA::MeasureStateBounds(launch, Table(input[means.firstSlot]), partial, result, completed); }, std::move(inputs), Outputs{}, std::make_tuple(R::WriteAs<R::TableRows>(*retained->boundsPartial), R::WriteAs<R::TableRows>(*retained->boundsResult), R::WriteAs<R::FixedRows<1>>(retained->completed)));
+            retained->boundsMaximum->Submit(engine, stream);
             stream.Record().WaitHost();
             const auto host = retained->boundsResult->To(R::Device::Host(), context);
             const auto read = host.Read();
@@ -94,8 +109,8 @@ namespace DNDS::Cauchy
                 bounds[j] = read.View()(0, j);
         }
 #endif
-        MPI::AllreduceInPlace<MPI::Reduction::Max>(
-            MPI::ContiguousView<real>{bounds.data(), bounds.size()}, retained->metrics.Communicator());
+        if (context.device == R::Device::Host())
+            retained->reductions.Reduce<Runtime::Reduction::Max>(SpanView<real>{bounds.data(), index(bounds.size())});
         for (index j = 0; j < width; j += 2)
             bounds[j] = -bounds[j];
         return bounds;

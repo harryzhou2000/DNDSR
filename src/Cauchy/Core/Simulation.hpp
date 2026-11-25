@@ -23,6 +23,7 @@ namespace DNDS::Cauchy
     {
         SimulationConfig _config;
         DomainPlacement _placement;
+        NumericalReductions _controlReductions{_placement.Control()};
         std::vector<std::unique_ptr<Domain>> _domains;
         std::vector<DomainSetupTimings> _setupTimings;
         std::unique_ptr<InterfaceCoupling> _interfaces;

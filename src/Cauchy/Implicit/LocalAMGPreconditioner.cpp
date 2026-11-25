@@ -1,6 +1,9 @@
 #include "Cauchy/Implicit/LocalAMGPreconditioner.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Algebra/AmgXDiagnostics.hpp"
+#ifdef DNDS_USE_CUDA
+#    include "Cauchy/Implicit/CUDA/AMGGeometry.hpp"
+#endif
 #include "nlohmann/json.hpp"
 #include <chrono>
 #include <cstdlib>
@@ -31,6 +34,8 @@ namespace DNDS::Cauchy
         std::shared_ptr<const Algebra::DofSpace::Partition> partition;
         std::shared_ptr<Algebra::AmgXPreconditioner> provider;
         R::ArrayStorage::Shared diagonalIdentity, offDiagonalIdentity;
+        std::optional<R::Array<int>> ownedSlots;
+        std::optional<R::Array<real>> ownedBlocks;
         index components = 0;
         uint64_t diagonalEpoch = 0, offDiagonalEpoch = 0;
         bool current = false;
@@ -50,8 +55,8 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(problem.Device().space == R::MemorySpace::CUDA && problem.HasAssembledOffDiagonal() &&
                                   problem.DiagonalMode() == DiagonalStorage::Block && problem.RowMajorBlocks() && problem.OffDiagonal().RowMajorBlocks() && problem.Components() >= 4 && problem.Components() <= 7,
                               "local AmgX requires native row-major assembled CUDA full 4/5/6/7 blocks");
-        DNDS_check_throw_info(!problem.Space().Distributed() || MPIInfo(problem.Space().Communicator()).size == 1,
-                              "copy-free local AmgX currently requires one rank; native principal-matrix partitions are future work");
+        DNDS_check_throw_info(!problem.HasNativeAMGXValues() || !problem.Space().Distributed() || MPIInfo(problem.Space().Communicator()).size == 1,
+                              "multi-rank local AmgX requires upload storage");
         const index rows = index(problem.Space().OwnedRows()), n = problem.Components();
         DNDS_check_throw_info(rows <= INT_MAX / n, "AmgX vector extent exceeds int32");
         const auto &pattern = problem.HostPattern();
@@ -71,8 +76,50 @@ namespace DNDS::Cauchy
         settings.geometricAggregation = true;
         settings.measureFirstCorrection = data.diagnostics;
         data.provider = std::make_shared<Algebra::AmgXPreconditioner>(problem.Device(), settings);
-        data.provider->SetPattern(pattern.Offsets32(), pattern.Columns32(), int(n), true);
-        data.provider->SetGeometricWeights(weights);
+#ifdef DNDS_USE_CUDA
+        if (problem.Space().GhostRows())
+        {
+            const R::ExecutionContext context{problem.Device(), nullptr};
+            const auto off = pattern.Offsets32().Read(), col = pattern.Columns32().Read();
+            const auto offsets = off.View(), columns = col.View();
+            R::Array<int> localOffsets(R::RowLayout::Dense(rows + 1, 1));
+            std::vector<int> selected;
+            {
+                auto out = localOffsets.Write();
+                out.View()(0, 0) = 0;
+                for (index row = 0; row < rows; ++row)
+                {
+                    for (int slot = offsets(row, 0); slot < offsets(row + 1, 0); ++slot)
+                        if (columns(slot, 0) < rows)
+                            selected.push_back(slot);
+                    out.View()(row + 1, 0) = int(selected.size());
+                }
+            }
+            const auto layout = R::RowLayout::Dense(index(selected.size()), 1);
+            R::Array<int> localColumns(layout), hostSlots(layout);
+            {
+                auto cols = localColumns.Write(), slots = hostSlots.Write();
+                for (index i = 0; i < index(selected.size()); ++i)
+                {
+                    slots.View()(i, 0) = selected[i];
+                    cols.View()(i, 0) = columns(selected[i], 0);
+                }
+            }
+            data.ownedSlots = hostSlots.To(problem.Device(), context);
+            data.ownedBlocks.emplace(R::RowLayout::Dense(index(selected.size()), n * n), problem.Device());
+            data.ownedBlocks->SetName("Cauchy/linear/amgx/localBlocks", DNDS_ALLOCATION_SITE());
+            data.ownedSlots->SetName("Cauchy/linear/amgx/localSlots", DNDS_ALLOCATION_SITE());
+            R::Array<real> localWeights(layout, problem.Device());
+            CUDA::GatherAMGSlots(context, *data.ownedSlots, weights, localWeights);
+            data.provider->SetPattern(localOffsets, localColumns, int(n), true);
+            data.provider->SetGeometricWeights(localWeights);
+        }
+        else
+#endif
+        {
+            data.provider->SetPattern(pattern.Offsets32(), pattern.Columns32(), int(n), true);
+            data.provider->SetGeometricWeights(weights);
+        }
         data.Report("provider_created", 0, uint64_t(rows + problem.OffDiagonal().Values().RowCount()) * n * n * sizeof(real));
     }
     void LocalAMGPreconditioner::Update(R::EagerEngine &engine, const R::ExecutionStream &stream, const LinearProblemContext &problem)
@@ -92,7 +139,11 @@ namespace DNDS::Cauchy
         // before its device-wide join; this provider has no stream API.
         engine.Synchronize();
         const auto diagonal = problem.Diagonal().Read(stream.Context());
-        const auto blocks = problem.OffDiagonal().Values().Read(stream.Context());
+#ifdef DNDS_USE_CUDA
+        if (data.ownedSlots)
+            CUDA::GatherAMGSlots(stream.Context(), *data.ownedSlots, problem.OffDiagonal().Values(), *data.ownedBlocks);
+#endif
+        const auto blocks = (data.ownedBlocks ? *data.ownedBlocks : problem.OffDiagonal().Values()).Read(stream.Context());
         if (problem.HasNativeAMGXValues())
             data.provider->AttachValues(stream.Context(), problem.NativeAMGXValues());
         else

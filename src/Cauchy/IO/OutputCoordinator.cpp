@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -71,6 +72,8 @@ namespace DNDS::Cauchy
         const SimulationConfig &config;
         MPIInfo mpi;
         real started;
+        const std::chrono::steady_clock::time_point progressStart = std::chrono::steady_clock::now();
+        const real progressOffset = MPI_Wtime() - started;
         std::optional<real> stepStarted;
         real stepWallSeconds = 0;
         const OutputSettings &output;
@@ -305,7 +308,7 @@ namespace DNDS::Cauchy
                   {
                       domain.SetProgressObserver(
                           [this, iDomain](const NonlinearProgress &entry)
-                          { progress[size_t(iDomain)]->CaptureIteration(entry, MPI_Wtime() - started); },
+                          { progress[size_t(iDomain)]->CaptureIteration(entry, progressOffset + std::chrono::duration<real>(std::chrono::steady_clock::now() - progressStart).count()); },
                           output.historyStateBounds ? output.implicit.historyInterval : 0,
                           output.implicit.consoleInterval > 0);
                       domain.SetQuiescentObserver(

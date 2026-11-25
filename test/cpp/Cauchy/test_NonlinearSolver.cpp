@@ -45,7 +45,7 @@ TEST_CASE("The nonlinear norm submits its domain sum while the worker producer i
     R::EagerEngine engine(1);
     auto compute = engine.CreateCPUStream(), communication = engine.CreateCPUStream();
     auto context = R::CommunicationContext::Duplicate(mpi.comm, false);
-    C::NonlinearNormSum norm(1, context, communication, {}, R::Device::Host());
+    C::NonlinearNormSum norm(1, C::NumericalReductions(context), mpi.size, compute, communication);
     std::promise<void> release;
     auto gate = release.get_future().share();
     std::atomic<bool> timedOut{false};

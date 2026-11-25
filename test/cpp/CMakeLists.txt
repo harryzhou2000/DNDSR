@@ -543,6 +543,18 @@ if(DNDS_USE_CUDA)
     target_link_libraries(cauchy_benchmark_fv_jacobi_cuda PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
     dnds_add_unit_test(cauchy_linear_solver_cuda "Cauchy/test_LinearSolverCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_linear_solver_cuda)
+    if(DNDS_USE_NCCL)
+        dnds_register_test(dnds_test_cauchy_linear_solver_cuda dnds_cauchy_reduction_backends_np2
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+                ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+                $<TARGET_FILE:dnds_test_cauchy_linear_solver_cuda> "--test-case=Numerical reductions on two GPUs*" ${MPIEXEC_POSTFLAGS})
+    endif()
+    if(DNDS_USE_AMGX)
+        dnds_register_test(dnds_test_cauchy_linear_solver_cuda dnds_cauchy_amgx_local_upload_np2
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+                ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+                $<TARGET_FILE:dnds_test_cauchy_linear_solver_cuda> "--test-case=Rank-local AmgX upload*" ${MPIEXEC_POSTFLAGS})
+    endif()
     dnds_add_unit_test(cauchy_time_fas_cuda "Cauchy/test_TimeFASCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_time_fas_cuda)
     dnds_register_test(dnds_test_cauchy_multidomain dnds_cauchy_acm_interface_cuda

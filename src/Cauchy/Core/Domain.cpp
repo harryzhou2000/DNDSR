@@ -85,7 +85,7 @@ namespace DNDS::Cauchy
         {
             auto &engine = _execution.Engine();
             const auto &lane = _execution.ComputeStream();
-            const NonlinearOperators operators(_problem.finiteVolume.Metrics(), *_problem.admissibility, lane.Context());
+            const NonlinearOperators operators(_problem.finiteVolume.Metrics(), *_problem.admissibility, lane.Context(), _problem.finiteVolume.Reductions());
             const auto requested = settings.equation.acmPressureMean;
             _state.pressureGauge = std::make_shared<real>(requested ? *requested : operators.PressureMean(engine, lane, _state.accepted));
             if (requested)
@@ -104,14 +104,13 @@ namespace DNDS::Cauchy
         {
             DNDS_assert(_problem.admissibility);
             int valid = 0;
-            const MPIInfo mpi(Communicator());
-            MPI::LocalStage(mpi, [&]
+            _problem.finiteVolume.Reductions().LocalStage([&]
                             {
                 if (!_execution.meanCheck)
                     _execution.meanCheck.emplace(_problem.finiteVolume.Metrics().Space(), *_problem.admissibility,
                                                  _execution.ComputeStream().Context());
                 valid = bool(_execution.meanCheck->Evaluate(_execution.Engine(), _execution.ComputeStream(), state)); });
-            return MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);
+            return _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(valid);
         }
         catch (...)
         {
@@ -135,7 +134,7 @@ namespace DNDS::Cauchy
             AuxiliaryRequest request;
             request.meanThermodynamics = request.cellSpectralSum = true;
             std::optional<AuxiliaryValues> prepared;
-            MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
+            _problem.finiteVolume.Reductions().LocalStage([&]
                             { prepared.emplace(_problem.finiteVolume.BuildAuxiliaryValues(request)); });
             std::vector<R::TransferBinding> halos;
             for (index iField = 0; iField < _state.accepted.PhysicalFieldNumber(); ++iField)
@@ -170,7 +169,7 @@ namespace DNDS::Cauchy
             preparation.Finish(*_execution.timeAuxiliary);
         }
         real local = 0;
-        MPI::LocalStage(MPIInfo(Communicator()), [&]
+        _problem.finiteVolume.Reductions().LocalStage([&]
                         {
             _problem.finiteVolume.ValidateAuxValues(_state.accepted, *_execution.timeAuxiliary, _state.time);
             DNDS_check_throw_info(_execution.timeAuxiliary->cellSpectralSum, "CFL selection requires cell spectral sums");
@@ -178,24 +177,24 @@ namespace DNDS::Cauchy
                 _execution.timeStages.emplace(_problem.finiteVolume.Metrics(), _execution.ComputeStream().Context());
             local = _execution.timeStages->MinimumStableStep(_execution.Engine(), _execution.ComputeStream(),
                 _execution.timeAuxiliary->cellSpectralSum->Owned(), cfl); });
-        return MPI::AllreduceValue<MPI::Reduction::Min>(local, Communicator());
+        return _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(local);
     }
     void Domain::BeginTrial(real dt)
     {
         _state.trialReady = false;
         int valid = std::isfinite(dt) && dt > 0 && (_steady || (std::isfinite(_state.time + dt) && _state.time + dt > _state.time));
-        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _problem.finiteVolume.Metrics().Communicator());
+        valid = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(valid);
         DNDS_check_throw_info(valid, "invalid Cauchy physical timestep");
         real min = dt, max = dt;
-        min = MPI::AllreduceValue<MPI::Reduction::Min>(min, _problem.finiteVolume.Metrics().Communicator());
-        max = MPI::AllreduceValue<MPI::Reduction::Max>(max, _problem.finiteVolume.Metrics().Communicator());
+        min = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(min);
+        max = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Max>(max);
         DNDS_check_throw_info(min == max, "Cauchy timestep differs between domain ranks");
         DNDS_check_throw_info(Admissible(_state.accepted), "accepted Cauchy mean is inadmissible");
         // Owned read scopes may coexist with a retained accepted-state reader.
         // Drain earlier engine work, then queue both copies on the same lane.
         // Trial initialization is an explicit publication boundary before the
         // method may take immediate reconstruction/history reservations.
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
+        _problem.finiteVolume.Reductions().LocalStage([&]
                         {
             _execution.Synchronize();
             EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.accepted);
@@ -213,7 +212,7 @@ namespace DNDS::Cauchy
         if (_sourceStrang)
         {
             ChemicalHalfStep(_state.accepted, _state.trial, .5 * dt);
-            MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
+            _problem.finiteVolume.Reductions().LocalStage([&]
                             { EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.initial, _state.trial);
                               _execution.Synchronize(); });
             // Euler's physical split does not reuse multistep transport
@@ -224,7 +223,7 @@ namespace DNDS::Cauchy
     }
     void Domain::ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt)
     {
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
+        _problem.finiteVolume.Reductions().LocalStage([&]
                         {
             _execution.Synchronize();
             const auto &workers = _execution.ChemicalWorkers();
@@ -238,7 +237,7 @@ namespace DNDS::Cauchy
         // The transport method has finished using its initial state. Reuse
         // that allocation as a distinct source output, then copy into trial.
         ChemicalHalfStep(_state.trial, _state.initial, .5 * _state.trialDt);
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
+        _problem.finiteVolume.Reductions().LocalStage([&]
                         { EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.initial);
                           _execution.Synchronize(); });
         DNDS_check_throw_info(Admissible(_state.trial), "chemical source candidate is inadmissible; accepted state unchanged");
@@ -280,7 +279,7 @@ namespace DNDS::Cauchy
         if (_state.internalResume)
         {
             int valid = _steady || dt == _state.trialDt;
-            valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, Communicator());
+            valid = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(valid);
             DNDS_check_throw_info(valid && _state.timeStepper,
                                   "exact internal resume requires its stored physical dt");
             _state.coordinatedStage = _state.timeStepper->ActiveGroup().stage;
@@ -523,7 +522,7 @@ namespace DNDS::Cauchy
     }
     void Domain::CommitStep()
     {
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
+        _problem.finiteVolume.Reductions().LocalStage([&]
                         { DNDS_check_throw_info(_state.trialReady && (!_state.timeStepper || _state.timeStepper->HasPendingTrial()), "no prepared Cauchy candidate"); });
         auto epoch = _state.trialEpoch;
         ++epoch.acceptedStep;
@@ -567,11 +566,9 @@ namespace DNDS::Cauchy
         std::optional<EquationDofs::WriteScope> destination;
         std::optional<EquationDofs::ReadScope> source;
         _execution.Synchronize();
-        const auto comm = _problem.finiteVolume.Metrics().Communicator();
-        MPIInfo mpi(comm);
         try
         {
-            MPI::LocalStage(mpi, [&]
+            _problem.finiteVolume.Reductions().LocalStage([&]
                             { destination.emplace(_state.accepted.WriteOwned(_execution.ComputeStream().Context()));
                               source.emplace(_state.trial.ReadOwned(_execution.ComputeStream().Context())); });
         }
@@ -596,7 +593,7 @@ namespace DNDS::Cauchy
     {
         _state.trialReady = false;
         DNDS_check_throw_info(Admissible(_state.accepted), "accepted Cauchy mean is inadmissible");
-        MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
+        _problem.finiteVolume.Reductions().LocalStage([&]
                         {
             _execution.Synchronize();
             EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.accepted);
@@ -607,11 +604,16 @@ namespace DNDS::Cauchy
         _lastCharacteristicFallbacks = _problem.finiteVolume.LastCharacteristicFallbacks(*_execution.workspace);
         return _state.residual;
     }
-    std::vector<real> Domain::MeasureStateBounds(bool trial)
+    void Domain::PrepareStateBounds()
     {
         if (!_execution.stateDiagnostics)
             _execution.stateDiagnostics.emplace(_problem.finiteVolume.Metrics(), _problem.equation,
-                                                _execution.ComputeStream().Context(), _execution.ChemicalWorkers());
+                                                _execution.ComputeStream().Context(), _execution.ChemicalWorkers(), _problem.finiteVolume.Reductions());
+        _execution.stateDiagnostics->PrepareBounds();
+    }
+    std::vector<real> Domain::MeasureStateBounds(bool trial)
+    {
+        PrepareStateBounds();
         return _execution.stateDiagnostics->MeasureBounds(_execution.Engine(), _execution.ComputeStream(), trial ? _state.trial : _state.accepted);
     }
 
@@ -620,31 +622,29 @@ namespace DNDS::Cauchy
         _execution.Synchronize();
         const auto rhs = _problem.finiteVolume.LastSpatialResidual(*_execution.workspace);
         std::array<real, 14> result{};
-        const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
-        MPI::LocalStage(mpi, [&]
+        _problem.finiteVolume.Reductions().LocalStage([&]
                         {
             if (!_execution.stateDiagnostics)
                 _execution.stateDiagnostics.emplace(_problem.finiteVolume.Metrics(), _problem.equation,
-                    _execution.ComputeStream().Context(), _execution.ChemicalWorkers());
+                    _execution.ComputeStream().Context(), _execution.ChemicalWorkers(), _problem.finiteVolume.Reductions());
             result = _execution.stateDiagnostics->Evaluate(_execution.Engine(), _execution.ComputeStream(),
                 _state.accepted, rhs ? *rhs : _state.accepted); });
-        const auto comm = _problem.finiteVolume.Metrics().Communicator();
-        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-            MPI::ContiguousView<real>{result.data(), 2}, comm);
-        MPI::AllreduceInPlace<MPI::Reduction::Min>(
-            MPI::ContiguousView<real>{result.data() + 2, 2}, comm);
-        result[4] = MPI::AllreduceValue<MPI::Reduction::Sum>(result[4], comm);
+        _problem.finiteVolume.Reductions().Reduce<Runtime::Reduction::Sum>(
+            SpanView<real>{result.data(), 2});
+        _problem.finiteVolume.Reductions().Reduce<Runtime::Reduction::Min>(
+            SpanView<real>{result.data() + 2, 2});
+        result[4] = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Sum>(result[4]);
         if (_problem.equation.IsACM())
         {
-            MPI::AllreduceInPlace<MPI::Reduction::Sum>(MPI::ContiguousView<real>{result.data() + 10, 2}, comm);
+            _problem.finiteVolume.Reductions().Reduce<Runtime::Reduction::Sum>(SpanView<real>{result.data() + 10, 2});
             result[10] = std::sqrt(result[10] / result[0]);
             result[11] /= result[0];
         }
         else
-            result[13] = MPI::AllreduceValue<MPI::Reduction::Min>(result[13], comm);
+            result[13] = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(result[13]);
         // Report the volume-integrated L2 defect, matching Euler's res0
         // convention rather than a volume-averaged residual.
-        const bool available = MPI::AllreduceValue<MPI::Reduction::Min>(int(bool(rhs)), comm) != 0;
+        const bool available = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(int(bool(rhs))) != 0;
         result[4] = available ? std::sqrt(result[4]) : std::numeric_limits<real>::quiet_NaN();
         const auto force = available ? _problem.finiteVolume.LastBoundaryForce(*_execution.workspace, forceZones, _execution.ComputeStream()) : Vector3{};
         for (int d = 0; d < 3; ++d)
@@ -653,7 +653,7 @@ namespace DNDS::Cauchy
         result[9] = _problem.finiteVolume.LastReconstructionUpdate(*_execution.workspace);
         if (!_problem.equation.IsACM() && !_problem.equation.HasMixture() && !_problem.equation.HasRANS() && settings.initialProfile.kind == "isentropicVortex")
         {
-            MPI::LocalStage(mpi, [&]
+            _problem.finiteVolume.Reductions().LocalStage([&]
                             {
                 if (!_execution.flowError)
                     _execution.flowError.emplace(_problem.finiteVolume, _execution.ComputeStream().Context()); });
@@ -686,8 +686,7 @@ namespace DNDS::Cauchy
     }
     PreparedVisualization Domain::CaptureInternalVisualization(int hdfDeflateLevel, OutputStaging &staging)
     {
-        const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
-        MPI::LocalStage(mpi, [&]
+        _problem.finiteVolume.Reductions().LocalStage([&]
                         { DNDS_check_throw_info(_state.timeStepper && _state.trialEpoch.trial &&
                                                     (!_problem.finiteVolume.PolynomialReconstruction() || _state.restoreReconstruction) &&
                                                     std::isfinite(_state.progressTime),

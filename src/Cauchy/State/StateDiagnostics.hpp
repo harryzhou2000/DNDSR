@@ -1,4 +1,6 @@
 #pragma once
+
+#include "Cauchy/Core/NumericalReductions.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
@@ -18,7 +20,7 @@ namespace DNDS::Cauchy
 
     public:
         StateDiagnostics(CFV::FiniteVolumePlan, EquationSystem, Runtime::ExecutionContext,
-                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = {});
+                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = {}, std::optional<NumericalReductions> reductions = {});
         /// Slots match the Cauchy progress contract: 0 mass, 1 total energy,
         /// 2 min rho, 3 min p, 4 sum_j R_j^2/volume, 13 min T; other slots zero.
         /// For mechanical flow, mass equals volume, energy is kinetic, and slots
@@ -28,6 +30,7 @@ namespace DNDS::Cauchy
                                       const EquationDofs &mean, const EquationDofs &residual) const;
         /// Observe owned cell means in logical component order as interleaved
         /// (minimum, maximum) pairs over the domain communicator.
+        void PrepareBounds() const;
         std::vector<real> MeasureBounds(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                         const EquationDofs &mean) const;
     };

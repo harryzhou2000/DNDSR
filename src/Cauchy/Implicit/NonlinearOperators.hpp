@@ -50,7 +50,8 @@ namespace DNDS::Cauchy
         std::shared_ptr<Data> _data;
 
     public:
-        NonlinearOperators(CFV::FiniteVolumePlan, AdmissibilityPolicy, Runtime::ExecutionContext);
+        NonlinearOperators(CFV::FiniteVolumePlan, AdmissibilityPolicy, Runtime::ExecutionContext,
+                           std::optional<NumericalReductions> reductions = {}, bool globalAlpha = false);
         void ValidateMeans(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;
         void SubmitMeanCheck(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, IterationChecks &) const;
 
@@ -78,7 +79,7 @@ namespace DNDS::Cauchy
                                                         int normOrder, bool measureNorm, std::shared_ptr<NonlinearNormSum> global = {}, OptionalRef<IterationChecks> checks = {}) const;
         /// Raw sums of volume*abs(U_j), then volume. Component normalization
         /// and global agreement are deliberately separate from this operator.
-        std::vector<real> MeasureMeanState(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &) const;
+        std::vector<real> MeasureMeanState(Runtime::EagerEngine &, const Runtime::ExecutionStream &, const EquationDofs &, std::shared_ptr<NonlinearNormSum> global = {}) const;
         /// Local volume-weighted norm of a rate (or rate-reference). This is
         /// the DITR stopping residual / finest FAS norm, not a new iteration
         /// loop. Return raw L1 or L2-squared integrals and final volume; the

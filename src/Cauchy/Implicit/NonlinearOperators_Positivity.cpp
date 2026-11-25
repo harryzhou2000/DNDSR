@@ -76,7 +76,7 @@ namespace DNDS::Cauchy
 #else
         const Unavailable device;
 #endif
-        return _data->SubmitReduction(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device, {}, checks, IterationPhase::PseudoTime)().alpha;
+        return _data->SubmitReduction(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device, {}, checks, IterationPhase::PseudoTime, controls.positivity)().alpha;
     }
     void NonlinearOperators::SubmitAgreedRHSAlpha(R::EagerEngine &engine, const R::ExecutionStream &stream,
                                                   const R::Array<real> &alpha, R::Array<real> &inverse, EquationDofs &defect, real minimum, AlphaReduction reduction, bool compressRHS) const
@@ -162,7 +162,7 @@ namespace DNDS::Cauchy
 #else
         const Unavailable device;
 #endif
-        const auto result = _data->SubmitReduction(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device, {}, checks, IterationPhase::Correction)();
+        const auto result = _data->SubmitReduction(engine, stream, mean.ComponentNumber(), std::move(inputs), std::move(outputs), host, device, {}, checks, IterationPhase::Correction, controls.positivity)();
         return {result.alpha, result.frozen};
     }
 }

@@ -139,8 +139,8 @@ namespace DNDS::Cauchy
             DNDS_FIELD(deviceOrdinal, "CUDA device ordinal for this process; explicit rank/device mapping, ignored on CPU");
             DNDS_FIELD(layout, "Physical flow table: aos, soa, aosoa32");
             DNDS_FIELD(fieldGrouping, "equationBlocks: separate flow/RANS/species fields; coupled: one physical table with the same logical blocks");
-            DNDS_FIELD(communication, "Payload transport");
-            DNDS_FIELD(nonlinearReduction, "Nonlinear norm transport: mpi (controller-progressed) or nccl (CUDA)");
+            DNDS_FIELD(communication, "Domain field halo transport: mpi-direct or nccl (device-packed CUDA halos)");
+            DNDS_FIELD(nonlinearReduction, "Domain numerical reduction backend: mpi or nccl (device-resident CUDA collectives)");
             DNDS_FIELD(transferPreflight, "MPI launch validation: collective (default) or abortOnFailure (local checks, fatal MPI abort, no per-launch global agreement); setup remains collective");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(communicationExecution, "MPI payload execution: caller (default) or worker (CPU Direct/HostPacked, requires MPI_THREAD_MULTIPLE)");

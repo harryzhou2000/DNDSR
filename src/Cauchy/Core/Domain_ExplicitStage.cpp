@@ -44,9 +44,9 @@ namespace DNDS::Cauchy
             limited = result.limited;
             safe[0] = result.safe[0];
             safe[1] = result.safe[1];
-            alpha = MPI::AllreduceValue<MPI::Reduction::Min>(alpha, _problem.finiteVolume.Metrics().Communicator());
-            MPI::AllreduceInPlace<MPI::Reduction::Min>(
-                MPI::ContiguousView<int>{safe, 2}, _problem.finiteVolume.Metrics().Communicator());
+            alpha = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Min>(alpha);
+            _problem.finiteVolume.Reductions().Reduce<Runtime::Reduction::Min>(
+                SpanView<int>{safe, 2});
             if (safe[0])
             {
                 alpha = 1;
@@ -60,7 +60,7 @@ namespace DNDS::Cauchy
                 if (!safe[1])
                     return StepResult::Rejected("global conservative PP blend requires admissible low-order stage; reduce dt");
             }
-            limited = MPI::AllreduceValue<MPI::Reduction::Sum>(limited, _problem.finiteVolume.Metrics().Communicator());
+            limited = _problem.finiteVolume.Reductions().Value<Runtime::Reduction::Sum>(limited);
             _lastAlpha = std::min(_lastAlpha, alpha);
             _lastAlphaCells += limited;
         }

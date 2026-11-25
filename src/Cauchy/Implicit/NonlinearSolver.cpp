@@ -139,7 +139,7 @@ namespace DNDS::Cauchy
               defect(EquationDofOperations::NewVector(state)), candidate(EquationDofOperations::NewVector(state)),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1), state.Device()), sourceDerivative(fv.BuildSourceDerivative(state)), workers(std::move(pool)),
               admissibility(fv.PrepareAdmissibility(workers)),
-              operators(fv.Metrics(), admissibility, stream.Context()),
+              operators(fv.Metrics(), admissibility, stream.Context(), fv.Reductions(), controls.numerics.positivity && state.Schema().AccumulationKind() == PhysicalAccumulationKind::Identity),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
                                             (settings.jacobianAction == "directEvaluated" || settings.jacobianAction == "semiMatrixFree") ? OffDiagonalStorage::DirectEvaluated : OffDiagonalStorage::Assembled,
                                             NonlinearDetail::ResolveMatrixStorage(settings.linear))),
@@ -187,37 +187,19 @@ namespace DNDS::Cauchy
             RunLocalStage(mpi, settings.collectiveChecks,
                           std::forward<F>(run), "equation nonlinear local phase failed");
         }
-        std::shared_ptr<R::CommunicationContext> normContext;
-        std::shared_ptr<R::NCCLTransferProvider> normProvider;
-        R::ExecutionStream normLane;
         std::map<std::pair<int, index>, std::shared_ptr<NonlinearNormSum>> normSlots;
         std::shared_ptr<NonlinearNormSum> NormSlot(int slot, index count)
         {
-            if (!normContext)
-            {
-                const auto parent = discrete.Metrics().Communication();
-                if (executionOwner)
-                {
-                    normContext = executionOwner->ReductionContext(parent);
-                    normLane = executionOwner->ReductionStream();
-                    normProvider = executionOwner->ReductionProvider();
-                }
-                else
-                {
-                    normContext = R::CommunicationContext::Duplicate(parent->Communicator(), parent->ChecksCollectivePreflight());
-                    auto engine = stream.LockEngine();
-                    normLane = engine.CreateCPUStream();
-                }
-            }
             auto &record = normSlots[{slot, count}];
             if (!record)
-                record = std::make_shared<NonlinearNormSum>(count, normContext, normLane, normProvider, stream.Context().device);
+                record = std::make_shared<NonlinearNormSum>(count, discrete.Reductions(), mpi.size, stream, executionOwner ? executionOwner->CommunicationStream() : stream);
             DNDS_check_throw_info(record.unique(), "previous nonlinear norm observation still owns this slot");
             return record;
         }
         void PrepareLinear(EquationDofs &state, bool overlap)
         {
             LinearExecution execution{overlap, settings.collectiveChecks};
+            execution.reductions = discrete.Reductions();
             execution.streams = LinearExecution::Streams{stream, executionOwner ? executionOwner->CommunicationStream() : stream};
             linear = std::make_unique<DofLinearSolver>(problem, state, [&](auto &field)
                                                        { return discrete.BindHalo(field); }, NonlinearDetail::ResolveLinear(settings, discrete.Metrics().Dimension(), discrete.Equation().IsACM()), execution);
@@ -291,7 +273,10 @@ namespace DNDS::Cauchy
                                                              positivity ? OptionalRef<IterationChecks>{} : QueuedChecks()); });
             if (positivity && settings.positivity.rhsFPPMode != "none")
             {
-                statistics = AgreeAlphaStatistics(statistics.limited, statistics.minimum, rhsFPPReduction, mpi.comm);
+                DNDS_check_throw_info(statistics.limited >= 0 && std::isfinite(statistics.minimum) &&
+                                      statistics.minimum >= 0 && statistics.minimum <= 1 &&
+                                      (statistics.limited ? statistics.minimum < 1 : statistics.minimum == 1),
+                                      "invalid global RHS positivity statistics");
                 if (cellRHSAlpha && statistics.minimum < 1)
                     Stage([&]
                           {
@@ -311,8 +296,8 @@ namespace DNDS::Cauchy
             if (settings.linear.method != "gmres" || settings.linear.componentScaling == "none")
                 return {};
             auto engine = stream.LockEngine();
-            return NonlinearDetail::FinalizeMeanStateScales(operators.MeasureMeanState(engine, stream, state),
-                                                            state.ComponentNumber(), flowFirst, mpi.comm);
+            return NonlinearDetail::NormalizeMeanStateScales(operators.MeasureMeanState(engine, stream, state, NormSlot(5, state.ComponentNumber() + 1)),
+                                                         state.ComponentNumber(), flowFirst);
         }
     };
 
@@ -390,6 +375,8 @@ namespace DNDS::Cauchy
             settings.implicit.linear.stopping == "fixedCount" && !settings.implicit.multigrid.levels && !_data->positivity)
             _data->checks = context.NonlinearChecks();
         _data->executionOwner.emplace(std::move(context));
+        if (settings.execution.nonlinearReduction == "nccl")
+            _data->NormSlot(0, state.ComponentNumber() + 1 + discrete.Equation().IsACM());
         _data->PrepareLinear(state, settings.execution.overlap);
     }
 
@@ -934,40 +921,11 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(frozen, "equation scalar repair would change a frozen component");
             data.ValidateMeans(data.candidate);
         };
-        if (data.positivity)
-        {
-            // Carry acceptance with the already-required minimum-alpha
-            // reduction. Every rank still validates before any state writer;
-            // preserve the originating exception and reject on all peers.
-            std::exception_ptr failure;
-            real agreement[2]{1, minimum};
-            try
-            {
-                validateCandidate();
-            }
-            catch (...)
-            {
-                MPI::AbortIfSolverFailure("Cauchy nonlinear candidate validation failed");
-                failure = std::current_exception();
-                agreement[0] = 0;
-            }
-            MPI::AllreduceInPlace<MPI::Reduction::Min>(
-                MPI::ContiguousView<real>{agreement, 2}, data.mpi.comm);
-            if (failure)
-                std::rethrow_exception(failure);
-            DNDS_check_throw_info(agreement[0] == 1, "equation correction candidate rejected on another rank");
-            minimum = agreement[1];
-        }
-        else
-            MPI::LocalStage(data.mpi, validateCandidate);
+        data.discrete.Reductions().LocalStage(validateCandidate, "equation correction candidate rejected on another rank");
         data.Stage([&]
                    {
             EquationDofOperations::Copy(engine, data.stream, state, data.candidate);
             if (!queuedPublication) engine.Synchronize(); });
-        if (data.positivity)
-        {
-            limited = MPI::AllreduceValue<MPI::Reduction::Sum>(limited, data.mpi.comm);
-        }
         return {limited, minimum};
     }
     void NonlinearSolver::EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time,

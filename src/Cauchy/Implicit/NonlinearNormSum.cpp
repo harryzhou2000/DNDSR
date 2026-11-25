@@ -4,17 +4,12 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
-    NonlinearNormSum::NonlinearNormSum(index count, const std::shared_ptr<R::CommunicationContext> &comm,
-                                       const R::ExecutionStream &lane, const std::shared_ptr<R::NCCLTransferProvider> &nccl,
-                                       R::Device computeDevice) : _lane(lane)
+    NonlinearNormSum::NonlinearNormSum(index count, const NumericalReductions &reductions, int ranks, const R::ExecutionStream &compute, const R::ExecutionStream &communication)
+        : _lane(communication)
     {
-        int ranks = 0;
-        MPI_Comm_size(comm->Communicator(), &ranks);
+        const auto computeDevice = compute.Context().device;
         const auto layout = R::RowLayout::Dense(1, count);
-        _ordinaryMPI = ranks > 1 && !nccl;
-        const bool stage = _ordinaryMPI && computeDevice != R::Device::Host();
-        _local = stage ? R::Array<real>::FromStorage(layout, R::Buffer::AllocatePinnedHost(size_t(count) * sizeof(real)))
-                       : R::Array<real>(layout, computeDevice);
+        _local = R::Array<real>(layout, computeDevice);
         _local.SetName("nonlinear/norm/local", DNDS_ALLOCATION_SITE());
 #ifdef DNDS_USE_CUDA
         if (computeDevice.space == R::MemorySpace::CUDA)
@@ -28,8 +23,7 @@ namespace DNDS::Cauchy
         {
             _sum = R::Array<real>(layout, _local.GetDevice());
             _sum.SetName("nonlinear/norm/global", DNDS_ALLOCATION_SITE());
-            _binding = nccl ? nccl->BindAllreduce(_local, _sum, R::Reduction::Sum)
-                            : R::BindMPIAllreduce(comm, _local, _sum, R::Reduction::Sum);
+            _binding = reductions.Bind(_local, _sum, R::Reduction::Sum);
         }
     }
     void NonlinearNormSum::Submit(R::EagerEngine &engine, const R::ExecutionStream &producer)
@@ -38,27 +32,15 @@ namespace DNDS::Cauchy
         _completion = producer.Record();
         if (_binding)
         {
-            if (!_lane.SameLane(producer))
-                _lane.WaitFor(_completion);
+            if (!_lane.SameLane(producer)) _lane.WaitFor(_completion);
             _completion = _binding->Submit(engine, _lane);
         }
     }
     const R::Array<real> &NonlinearNormSum::Consume(R::EagerEngine &engine, const R::ExecutionStream &consumer)
     {
-        if (_ordinaryMPI)
-            _completion.WaitHost();
-        else if (!consumer.SameLane(_resultLane))
+        if (!consumer.SameLane(_resultLane))
             consumer.WaitFor(_completion);
-        if (consumer.Context().device == _sum.GetDevice())
-            return _sum;
-        if (!_resident)
-        {
-            _resident.emplace(_sum.Layout(), consumer.Context().device);
-            _resident->SetName("nonlinear/reduction/residentResult", DNDS_ALLOCATION_SITE());
-        }
-        auto destination = _resident->Storage();
-        R::CopyAsync(engine, consumer, _sum.Storage(), destination);
-        return *_resident;
+        return _sum;
     }
     std::vector<real> NonlinearNormSum::Observe() const
     {

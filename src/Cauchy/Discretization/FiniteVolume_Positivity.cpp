@@ -29,6 +29,27 @@ namespace DNDS::Cauchy
         return {data.limited, data.minimum};
     }
 
+    std::pair<index, real> FiniteVolume::PositivityWorkspace::GlobalStatistics() const
+    {
+        auto &data = *state;
+        if (data.device && data.device->producer)
+        {
+            if (data.pending)
+                (void)LocalStatistics();
+            const auto &storage = *data.device;
+            const auto &lane = *storage.producer;
+            auto engine = lane.LockEngine();
+            storage.countSum->Submit(engine, lane);
+            storage.minimumValue->Submit(engine, lane).WaitHost();
+            const auto count = storage.total.To(R::Device::Host());
+            const auto minimum = storage.lowest.To(R::Device::Host());
+            return {count.Read().View()(0, 0), minimum.Read().View()(0, 0)};
+        }
+        const auto local = LocalStatistics();
+        return {data.owner->reductions.Value<R::Reduction::Sum>(local.first),
+                data.owner->reductions.Value<R::Reduction::Min>(local.second)};
+    }
+
     void FiniteVolume::PositivityWorkspace::Apply(const EquationDofs &input, const EquationDofs &unlimited,
                                                   EquationDofs &flux, bool refresh)
     {

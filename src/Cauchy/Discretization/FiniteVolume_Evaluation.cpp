@@ -319,7 +319,6 @@ namespace DNDS::Cauchy
         work.faceFallbacks = {};
         work.diagnostics.Reset();
         work.characteristicFallbacks = 0;
-        const MPIInfo mpi(Metrics().Communicator());
         // Repeated entry/CPU-join agreement follows the same checked/eager
         // policy as later local kernels. Unchecked execution still validates
         // locally and propagates failures to the fail-fast frontend. Payload
@@ -644,15 +643,12 @@ namespace DNDS::Cauchy
                     ((iteration + 1) % numerics.reconstructionResidualCheckInterval == 0 ||
                      iteration + 1 == numerics.reconstructionIterations))
                 {
-                    std::array<real, 2> localNorms{};
+                    std::array<real, 2> norms{};
                     local([&]
                           {
                         work.SubmitReconstructionNorm(engine, stream, reconstruction.WarmValues());
                         schedule.Join();
-                        localNorms = work.ReadReconstructionNorm(); });
-                    real norms[2]{localNorms[0], localNorms[1]};
-                    MPI::AllreduceInPlace<MPI::Reduction::Sum>(
-                        MPI::ContiguousView<real>{norms, 2}, mpi.comm);
+                        norms = work.ReadReconstructionNorm(); });
                     work.relativeUpdate = std::sqrt(norms[0] / std::max(norms[1], real(1e-300)));
                     converged = work.relativeUpdate <= numerics.reconstructionTolerance;
                 }

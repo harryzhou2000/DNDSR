@@ -2,6 +2,7 @@
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Discretization/PerfectGasKernelPoint.hpp"
 #include "Cauchy/Config/CUDAKernelDefaults.hpp"
+#include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -31,6 +32,10 @@ namespace DNDS::Cauchy
         auto placed = std::make_shared<Data>(*_data);
         ResolveAutomaticCUDAKernels(placed->settings, GetCUDAKernelDeviceProfile(device), !_data->equation.HasRANS());
         placed->metrics = _data->metrics.Placed(device, context);
+        if (placed->settings.execution.nonlinearReduction == "nccl")
+            placed->reductions = NumericalReductions(placed->metrics.Communication(), device);
+        if (placed->settings.execution.communication == "nccl")
+            placed->haloProvider = R::NCCLTransferProvider::Create(placed->metrics.Communication(), device);
         placed->gradient = _data->gradient.Placed(placed->metrics, context);
         CFV::SamplingPlacementMemo samplingPlacement(device, context);
         if (_data->reconstruction)

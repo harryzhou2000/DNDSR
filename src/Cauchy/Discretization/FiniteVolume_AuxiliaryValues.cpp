@@ -252,7 +252,7 @@ namespace DNDS::Cauchy
             const auto geometry = Metrics().AcquireRead(); const auto metric = geometry.HostView();
             const auto read = values.cellSpectralSum->Owned().Read(); const auto sums = read.View<R::UniformTableRows>();
             dt = RequireNumericalSuccess(CPU::MinimumStableStep(sums, metric, cfl), "MinimumStableStep"); });
-        dt = MPI::AllreduceValue<MPI::Reduction::Min>(dt, Metrics().Communicator());
+        dt = Reductions().Value<Runtime::Reduction::Min>(dt);
         return dt;
     }
     FiniteVolume::AuxiliaryPreparation FiniteVolume::BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
