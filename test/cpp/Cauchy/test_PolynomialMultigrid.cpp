@@ -184,6 +184,9 @@ TEST_CASE("Each coarse smoother inherits defaults and resolves independent parti
     settings.implicit.multigrid.coarseGradientBarth = false;
     settings.implicit.multigrid.coarseGradientPositivity = false;
     CHECK(C::PolynomialMultigrid::CoarseSettings(settings, 0).numerics.limiter == "none");
+    settings.implicit.multigrid.coarseGradientLimiter = "WBAP_Barth";
+    CHECK(C::PolynomialMultigrid::CoarseSettings(settings, 0).numerics.P1Limiter() == "WBAP_Barth");
+    CHECK(C::PolynomialMultigrid::CoarseSettings(settings, 1).numerics.P1Limiter() == "WBAP_Barth");
     CHECK_FALSE(C::PolynomialMultigrid::CoarseSettings(settings, 1).GradientPositivity());
     CHECK(bottom.implicit.positivity.incrementRelax == settings.implicit.positivity.incrementRelax);
     settings.implicit.multigrid.coarseRHSFPP = true;

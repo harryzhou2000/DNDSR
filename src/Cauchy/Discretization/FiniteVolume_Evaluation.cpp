@@ -572,9 +572,10 @@ namespace DNDS::Cauchy
         if (work.prepareP1)
         {
             const auto &limiter = numerics.P1Limiter();
-            if (!gradientAuxiliary && (limiter == "WBAP" || refreshWeak))
+            const bool wbap = numerics.P1UsesWBAP();
+            if (!gradientAuxiliary && (wbap || refreshWeak))
                 rawGradientOperations = schedule.BeginAfterCompute(work.directGradientInputHalo);
-            if (limiter == "WBAP")
+            if (wbap)
             {
                 if (work.gradientFlowCharacteristic)
                     characteristicSubmission = work.SubmitCharacteristics(engine, stream, state, OptionalRef<const AuxiliaryValues>(auxiliary));
@@ -593,6 +594,8 @@ namespace DNDS::Cauchy
                     limit(CFV::ReconstructionRegion::Core);
                 schedule.Await(rawGradientOperations);
                 limit(rest);
+                if (limiter == "WBAP_Barth")
+                    work.SubmitGradientLimiter(engine, stream, state, true, true);
             }
             else if (limiter == "Barth" || _data->settings.PreparedP1Positivity())
                 work.SubmitGradientLimiter(engine, stream, state, limiter == "Barth");

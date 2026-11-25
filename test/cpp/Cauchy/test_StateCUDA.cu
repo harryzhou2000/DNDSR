@@ -908,6 +908,81 @@ TEST_CASE("CUDA analytic error uses the CPU oracle quadrature and fixed-tree ran
     }
 }
 
+TEST_CASE("P1 WBAP_Barth limits the WBAP result before gradient PP on CPU and CUDA")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 6);
+    C::DomainSettings settings;
+    settings.boundaries["7"].kind = "extrapolate";
+    settings.numerics.cfv.maxOrder = 1;
+    settings.numerics.p1Limiter = "WBAP";
+    settings.numerics.positivity = false;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    const C::FiniteVolume wbap(mesh, settings, equation);
+    auto mean = C::EquationDofs::Coupled(equation.Schema(), wbap.Metrics().BuildField(5));
+    {
+        auto write = mean.CoupledField().Owned().Write();
+        for (I cell = 0; cell < write.View().RowCount(); ++cell)
+        {
+            const auto x = wbap.Metrics().GetCellCent(cell);
+            const real peak = x[0] > .3 && x[0] < .5 ? 1. : 0.;
+            const auto u = equation.Gas().Conservative({1 + peak + .1 * x[1], .4 - .3 * peak, .1 * x[2], .02, 1 + .7 * peak});
+            for (int j = 0; j < 5; ++j)
+                write.View()(cell, j) = u[j];
+        }
+    }
+    auto wbapRec = wbap.BuildReconstructionState(mean);
+    auto wbapWork = wbap.BuildWorkspace(mean);
+    auto residual = C::EquationDofOperations::NewVector(mean);
+    R::EagerEngine hostEngine;
+    const auto host = hostEngine.CreateCPUStream();
+    wbap.Evaluate(mean, residual, *wbapRec, *wbapWork, hostEngine, host);
+    hostEngine.Synchronize();
+    const auto &wbapSlopes = wbapWork->directGradients.front().Owned();
+
+    settings.numerics.positivity = true;
+    settings.numerics.p1Limiter = "Barth";
+    const C::FiniteVolume barth(mesh, settings, equation);
+    auto referenceState = C::EquationDofs::Coupled(equation.Schema(), barth.Metrics().BuildField(5));
+    referenceState.CoupledField().Owned().CopyFrom(mean.CoupledField().Owned()).Wait();
+    barth.BindHalo(referenceState.CoupledField()).Begin().Wait();
+    auto referenceWork = barth.BuildWorkspace(referenceState);
+    referenceWork->fields.front().gradient->Owned().CopyFrom(wbapSlopes).Wait();
+    referenceWork->PrepareDirectGradientLimiter(referenceState, true);
+    referenceWork->ApplyDirectGradientPositivity(referenceState);
+    const auto reference = referenceWork->directGradients.front().Owned().Read();
+    const auto original = wbapSlopes.Read();
+    int changed = 0;
+    for (I cell = 0; cell < reference.View().RowCount(); ++cell)
+        for (I j = 0; j < reference.View().Width(); ++j)
+            changed += std::abs(reference.View()(cell, j) - original.View()(cell, j)) > 1e-10;
+    MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_SUM, mpi.comm);
+    CHECK(changed > 0);
+
+    settings.numerics.p1Limiter = "WBAP_Barth";
+    settings.execution.overlap = true;
+    const C::FiniteVolume cpu(mesh, settings, equation);
+    for (const bool cuda : {false, true})
+    {
+        const auto device = cuda ? R::Device::CUDA(0) : R::Device::Host();
+        const R::ExecutionContext context{device, nullptr};
+        auto plan = cuda ? cpu.Placed(device, context) : cpu;
+        auto state = C::EquationDofs::Coupled(equation.Schema(), plan.Metrics().BuildField(5));
+        state.CoupledField().Owned().CopyFrom(mean.CoupledField().Owned(), context).Wait();
+        auto rec = plan.BuildReconstructionState(state);
+        auto work = plan.BuildWorkspace(state);
+        auto output = C::EquationDofOperations::NewVector(state);
+        R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = cuda ? engine.CreateStream(std::make_shared<R::CUDALauncher>(0)) : engine.CreateCPUStream();
+        plan.Evaluate(state, output, *rec, *work, engine, stream);
+        engine.Synchronize();
+        const auto result = work->directGradients.front().Owned().To(R::Device::Host());
+        const auto actual = result.Read();
+        for (I cell = 0; cell < reference.View().RowCount(); ++cell)
+            for (I j = 0; j < reference.View().Width(); ++j)
+                CHECK(actual.View()(cell, j) == doctest::Approx(reference.View()(cell, j)).epsilon(2e-10).scale(1));
+    }
+}
+
 TEST_CASE("Managed characteristics feed WBAP without a host observation between operators")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);

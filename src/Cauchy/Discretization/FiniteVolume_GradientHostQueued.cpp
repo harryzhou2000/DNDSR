@@ -55,7 +55,7 @@ namespace DNDS::Cauchy
     }
 
     void FiniteVolume::Workspace::SubmitGradientLimiter(
-        R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state, bool barth)
+        R::EagerEngine &engine, const R::ExecutionStream &stream, const EquationDofs &state, bool barth, bool inPlace)
     {
         FiniteVolume(owner).ValidateWorkspace(state, *this);
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == owner->metrics.Device() &&
@@ -63,7 +63,7 @@ namespace DNDS::Cauchy
                               "gradient limiter stream, placement or workspace differs");
         if (owner->metrics.Device() != R::Device::Host())
         {
-            SubmitDeviceGradientLimiter(engine, stream, state, barth, CFV::ReconstructionRegion::All);
+            SubmitDeviceGradientLimiter(engine, stream, state, barth, inPlace, CFV::ReconstructionRegion::All);
             return;
         }
         struct Inputs
@@ -101,21 +101,28 @@ namespace DNDS::Cauchy
             pin->means.push_back({addRead(state.PhysicalField(iField).Owned()), addRead(state.PhysicalField(iField).Ghost())});
         for (index iField = 0; iField < index(fields.size()); ++iField)
         {
-            DNDS_check_throw_info(fields[iField].gradient, "direct limiter has no unlimited gradients");
-            pin->gradients.push_back(addRead(fields[iField].gradient->Owned()));
+            if (!inPlace)
+            {
+                DNDS_check_throw_info(fields[iField].gradient, "direct limiter has no unlimited gradients");
+                pin->gradients.push_back(addRead(fields[iField].gradient->Owned()));
+            }
             outputArrays.push_back(directGradients[iField].Owned());
-            writes.push_back(R::WriteAs<R::UniformTableRows>(directGradients[iField].Owned()));
+            writes.push_back(inPlace ? R::ReadWriteAs<R::UniformTableRows>(directGradients[iField].Owned())
+                                     : R::WriteAs<R::UniformTableRows>(directGradients[iField].Owned()));
         }
         outputArrays.push_back(directLimiterScratch);
         writes.push_back(R::WriteAs<R::UniformTableRows>(directLimiterScratch));
         CheckDisjoint(inputArrays, outputArrays);
-        R::SubmitArrayBatch(engine, stream, [pin, barth, count = cpuGradientWorkers](R::ExecutionContext, auto reads, auto writes)
+        R::SubmitArrayBatch(engine, stream, [pin, barth, inPlace, count = cpuGradientWorkers](R::ExecutionContext, auto reads, auto writes)
                             {
             const auto columns = MeanColumns(reads, pin->means, pin->logicalField.HostView(), pin->logicalComponent.HostView());
             std::vector<ReadRows> source;
             std::vector<WriteRows> destination;
-            for (const index slot : pin->gradients) source.push_back(reads[slot]);
-            for (index iField = 0; iField < index(pin->gradients.size()); ++iField) destination.push_back(writes[iField]);
+            for (index iField = 0; iField < index(pin->means.size()); ++iField)
+            {
+                destination.push_back(writes[iField]);
+                source.push_back(inPlace ? destination.back().ConstView() : reads[pin->gradients[iField]]);
+            }
             CPU::GradientLimiterRequest request;
             request.stencil = pin->stencil.View();
             request.metric = request.stencil.metric;

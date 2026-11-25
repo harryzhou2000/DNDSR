@@ -440,11 +440,11 @@ namespace DNDS::Cauchy
         void PrepareReconstructionNorm();
         void SubmitReconstructionNorm(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &current);
         std::array<real, 2> ReadReconstructionNorm() const;
-        void SubmitDeviceGradientLimiter(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, bool barth, CFV::ReconstructionRegion);
+        void SubmitDeviceGradientLimiter(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, bool barth, bool inPlace, CFV::ReconstructionRegion);
         void SubmitDeviceGradientPositivity(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &);
         /// Unsplit common direct-gradient limiter. Input/output and scratch
         /// accesses are reserved at submission; equation dispatch stays local.
-        void SubmitGradientLimiter(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, bool barth);
+        void SubmitGradientLimiter(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, bool barth, bool inPlace = false);
         struct GradientPositivitySubmission
         {
             index limited = 0;

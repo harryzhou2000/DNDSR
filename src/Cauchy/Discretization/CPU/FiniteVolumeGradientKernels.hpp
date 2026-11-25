@@ -26,7 +26,8 @@ namespace DNDS::Cauchy::CPU
         bool barth = false;
     };
     /// Componentwise Barth limiting of physical gradients, with periodic vector
-    /// and spatial-frame transforms. Read inputs and write outputs are distinct.
+    /// and spatial-frame transforms. A gradient input and its matching output
+    /// may be the same field. Each cell reads only its own gradients.
     void LimitPhysicalGradients(const GradientLimiterRequest &request);
     /// Each slot supplies six component-wide scratch rows. The operator owns
     /// and leases these disjoint arrays before submitting the kernel.

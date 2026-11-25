@@ -49,7 +49,7 @@ namespace DNDS::Cauchy
     }
 
     void FiniteVolume::Workspace::SubmitDeviceGradientLimiter(R::EagerEngine &engine, const R::ExecutionStream &stream,
-                                                              const EquationDofs &state, bool barth, CFV::ReconstructionRegion region)
+                                                              const EquationDofs &state, bool barth, bool inPlace, CFV::ReconstructionRegion region)
     {
 #ifdef DNDS_USE_CUDA
         state.RequireSchema(owner->equation.Schema());
@@ -72,10 +72,19 @@ namespace DNDS::Cauchy
         };
         const auto pin = std::make_shared<Inputs>(owner);
         const bool ghosts = region != CFV::ReconstructionRegion::Core;
-        R::SubmitArrays(engine, stream, [pin, barth, ghosts, selection = pin->stencil.View().RHSRows(region, false, owner->metrics.NumCell())](R::ExecutionContext context, auto mean, auto remote, auto input, auto output)
-                        {
-                CUDA::GradientLimiterGeometry geometry{pin->stencil.KernelDescriptor(), pin->owner->metrics.NumCell(), pin->owner->metrics.NumCellProc()};
-                CUDA::LimitPhysicalGradients(context, geometry, {mean, remote}, input, output, selection, pin->owner->metrics.Dimension(), pin->owner->equation.IsACM() ? 0 : 1, barth, ghosts); }, R::ReadAs<R::TableRows>(means.Owned()), R::ReadAs<R::TableRows>(ghosts ? means.Ghost() : owner->deviceEmpty), R::ReadAs<R::TableRows>(source), R::WriteAs<R::TableRows>(target));
+        const auto limit = [pin, barth, ghosts, selection = pin->stencil.View().RHSRows(region, false, owner->metrics.NumCell())](R::ExecutionContext context, auto mean, auto remote, auto input, auto output)
+        {
+            CUDA::GradientLimiterGeometry geometry{pin->stencil.KernelDescriptor(), pin->owner->metrics.NumCell(), pin->owner->metrics.NumCellProc()};
+            CUDA::LimitPhysicalGradients(context, geometry, {mean, remote}, input, output, selection, pin->owner->metrics.Dimension(), pin->owner->equation.IsACM() ? 0 : 1, barth, ghosts);
+        };
+        const auto owned = R::ReadAs<R::TableRows>(means.Owned());
+        const auto remote = R::ReadAs<R::TableRows>(ghosts ? means.Ghost() : owner->deviceEmpty);
+        if (inPlace)
+            R::SubmitArrays(engine, stream, [limit](R::ExecutionContext context, auto mean, auto ghost, auto gradient)
+                            { limit(context, mean, ghost, gradient.ConstView(), gradient); },
+                            owned, remote, R::ReadWriteAs<R::TableRows>(target));
+        else
+            R::SubmitArrays(engine, stream, limit, owned, remote, R::ReadAs<R::TableRows>(source), R::WriteAs<R::TableRows>(target));
 #else
         DNDS_check_throw_info(false, "CUDA gradient limiting is not built");
 #endif

@@ -89,6 +89,12 @@ TEST_CASE("LVR variants expand defaults per input layer with explicit overrides 
     CHECK_THROWS_AS(C::SimulationConfig::Resolve(input, mpi.size), std::exception);
     overrides["p1Limiter"] = "WBAP";
     CHECK(C::SimulationConfig::Resolve(input, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "WBAP");
+    overrides["p1Limiter"] = "WBAP_Barth";
+    CHECK(C::SimulationConfig::Resolve(input, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "WBAP_Barth");
+    input["defaults"]["numerics"].erase("p1Limiter");
+    overrides.erase("p1Limiter");
+    overrides["limitedVR"]["o2ReferenceLimiter"] = "WBAP_Barth";
+    CHECK(C::SimulationConfig::Resolve(input, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "WBAP_Barth");
     input["domains"][0]["overrides"]["numerics"]["limitedVR"]["variant"] = "v4";
     CHECK_THROWS_AS(C::SimulationConfig::Resolve(input, mpi.size), std::exception);
     input["domains"][0]["overrides"]["numerics"]["limitedVR"] = {{"pressureJump", {.1, .1}}};
@@ -98,6 +104,10 @@ TEST_CASE("LVR variants expand defaults per input layer with explicit overrides 
     CHECK(C::SimulationConfig::Resolve(direct, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "none");
     direct["defaults"]["numerics"]["p1Limiter"] = "WBAP";
     CHECK(C::SimulationConfig::Resolve(direct, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "WBAP");
+    direct["defaults"]["numerics"]["limiter"] = "WBAP_Barth";
+    CHECK_THROWS_AS(C::SimulationConfig::Resolve(direct, mpi.size), std::exception);
+    direct["defaults"]["numerics"].erase("p1Limiter");
+    CHECK(C::SimulationConfig::Resolve(direct, mpi.size).Domains()[0].settings.numerics.P1Limiter() == "WBAP_Barth");
 }
 TEST_CASE("Native Cauchy LVR prepares active v2/v3 targets identically across layouts and CPU schedules")
 {
@@ -111,6 +121,8 @@ TEST_CASE("Native Cauchy LVR prepares active v2/v3 targets identically across la
                     for (int workers : {0, 2})
                     {
                         auto settings = Settings(variant, layout);
+                        if (variant == "v3")
+                            settings.numerics.p1Limiter = "WBAP_Barth";
                         settings.execution.overlap = overlap;
                         settings.numerics.cfv.SORInstead = sor;
                         const auto equation = C::EquationSystem::Resolve(settings.equation);

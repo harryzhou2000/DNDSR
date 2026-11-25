@@ -593,8 +593,10 @@ namespace DNDS::Cauchy
         lower.numerics.reconstructionSolver = ReconstructionSolverSettings{};
         lower.numerics.firstOrderConvection = level > 0;
         lower.numerics.cfv.maxOrder = 1;
-        lower.numerics.limiter = fine.implicit.multigrid.coarseGradientBarth ? "Barth" : "none";
-        lower.numerics.p1Limiter = lower.numerics.limiter;
+        const auto &coarse = fine.implicit.multigrid;
+        lower.numerics.p1Limiter = coarse.coarseGradientLimiter.empty() ? (coarse.coarseGradientBarth ? "Barth" : "none")
+                                                                       : coarse.coarseGradientLimiter;
+        lower.numerics.limiter = lower.numerics.p1Limiter;
         lower.coarseGradientPositivity = fine.equation.system == "compressible" &&
                                          fine.implicit.multigrid.coarseGradientPositivity;
         return lower;

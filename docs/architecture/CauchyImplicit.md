@@ -729,9 +729,11 @@ Shape/binding checks remain outside cell loops.
 
 The P1 and P0 coarse operators apply componentwise Barth limiting to their
 physical gradients by default. They also apply gradient positivity limiting
-for compressible equations. Use `implicit.multigrid.coarseGradientBarth`
-and `implicit.multigrid.coarseGradientPositivity` to disable the respective
-stages on both coarse levels. The P0 convection flux still uses cell means.
+for compressible equations. Set `implicit.multigrid.coarseGradientLimiter`
+to `"none"`, `"Barth"`, `"WBAP"`, or `"WBAP_Barth"` to choose the slope
+limiter for both levels. Its empty default uses the legacy
+`coarseGradientBarth` switch. `coarseGradientPositivity` independently controls
+gradient positivity. The P0 convection flux still uses cell means.
 These controls do not change the fine operator or the coarse increment and
 RHS/dTau positivity controls.
 

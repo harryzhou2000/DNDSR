@@ -95,7 +95,7 @@ namespace DNDS::CFV
             DNDS_FIELD(contactUseCellMeanJump, "Use adjacent mean densities for the base contact gate");
             DNDS_FIELD(contactUseExtremumCorrection, "Add supported cell-mean density extrema to the contact gate");
             DNDS_FIELD(contactExtremumUseCellMeanSupport, "Use adjacent mean densities to support the contact correction");
-            DNDS_FIELD(o2ReferenceLimiter, "Compatibility spelling for the shared Cauchy P1 limiter; empty uses the shared setting");
+            DNDS_FIELD(o2ReferenceLimiter, "Compatibility spelling for the shared Cauchy P1 limiter: Barth, WBAP or WBAP_Barth; empty uses numerics.p1Limiter");
             DNDS_FIELD(o2ReferenceUsePP, "Apply shared direct P1 positivity limiting before LVR target and face-sensor assembly");
             DNDS_FIELD(neighborLayers, "Extra synchronous face-neighbor shock maximum rounds after extremum correction,0..4");
             DNDS_FIELD(saturatedOnly, "Extra rounds propagate saturated shock cells only, retaining local unsaturated responses");

@@ -67,9 +67,10 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(std::isfinite(settings.numerics.wallDistanceFloor) && settings.numerics.wallDistanceFloor >= 0 && mesh->HasNodeWallDist(),
                                       "RANS FV requires a published nodal wall field and a finite nonnegative wallDistanceFloor");
             settings.numerics.limitedVR.Validate();
-            DNDS_check_throw_info(settings.numerics.limiter != "Barth" ||
-                                      settings.numerics.reconstruction == "gradient" || (equation.HasRANS() && settings.numerics.UsesRANSGradientBarth()),
-                                  "Barth requires direct gradient reconstruction or a variational RANS P1 overlay");
+            DNDS_check_throw_info(!NumericsSettings::IsP1OnlyLimiter(settings.numerics.limiter) ||
+                                      settings.numerics.reconstruction == "gradient" ||
+                                      (equation.HasRANS() && settings.numerics.UsesRANSGradientLimiterAlias()),
+                                  "Barth and WBAP_Barth require direct gradient reconstruction or a variational RANS P1 overlay");
             DNDS_check_throw_info(settings.numerics.limiter != "WBAP" ||
                                       settings.numerics.reconstruction != "constant",
                                   "WBAP needs gradient or variational reconstruction");

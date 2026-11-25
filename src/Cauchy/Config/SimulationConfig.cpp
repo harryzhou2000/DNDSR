@@ -207,7 +207,8 @@ namespace DNDS::Cauchy
             if (numerics["reconstruction"] == "gradient" && data->provenance.at(limiterPath) != "schema default" &&
                 (numerics["limiter"] != "none" || data->provenance.at(p1Path) == "schema default"))
                 inheritP1(numerics["limiter"]);
-            if (numerics["limiter"] == "Barth" && numerics["reconstruction"] == "variational" && numerics["ransP1Overlay"] == true)
+            if (NumericsSettings::IsP1OnlyLimiter(numerics["limiter"].get<std::string>()) &&
+                numerics["reconstruction"] == "variational" && numerics["ransP1Overlay"] == true)
                 inheritP1(numerics["limiter"]);
             const auto &referenceLimiter = numerics["limitedVR"]["o2ReferenceLimiter"];
             if (numerics["limiter"] == "LVR" && referenceLimiter != "")

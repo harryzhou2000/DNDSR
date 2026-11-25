@@ -119,7 +119,7 @@ namespace DNDS::Cauchy
                                   "AMG reconstruction requires an explicit CUDA placement and available single-device provider");
             DNDS_check_throw_info(!_data->equation.HasMixture() || _data->fluxPolicy.rusanov,
                 "extended EOS or stencil flux needs an explicit preparation provider");
-            DNDS_check_throw_info(n.limiter == "none" || n.limiter == "Barth" || n.limiter == "LVR" || n.limiter == "WBAP",
+            DNDS_check_throw_info(NumericsSettings::IsP1Limiter(n.limiter) || n.limiter == "LVR",
                 "requested extended FV flux/PP/limiter profile is not connected yet");
             DNDS_check_throw_info(!n.positivity || n.positivityReconstruction != "Segment" || flow5Profile,
                                   "Segment reconstruction PP is available only for one perfect-gas flow5 field");

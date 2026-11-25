@@ -71,12 +71,14 @@ that section to its explicit preset before applying overrides from that layer.
 Later configuration layers may override those values. Typed C++ callers can use
 `LimitedVRSettings::ForVariant` to construct the same preset.
 
-`numerics.p1Limiter` selects `Barth` (default) or `WBAP` for the shared P1
-gradient. `none` is available to the direct-P1 RHS and RANS P1 overlay. LVR
+`numerics.p1Limiter` selects `Barth` (default), `WBAP`, or `WBAP_Barth` for
+the shared P1 gradient. `WBAP_Barth` applies componentwise Barth in place to
+the WBAP result before gradient positivity limiting and halo publication.
+`none` is available to the direct-P1 RHS and RANS P1 overlay. LVR
 requires a slope limiter. Its `o2ReferenceUsePP` field controls positivity of
 the shared P1 target. The legacy `o2ReferenceLimiter` maps to `p1Limiter`.
 
-With `p1Limiter="WBAP"`, the gradient plan applies WBAP to physical slopes
+With `p1Limiter="WBAP"` or `"WBAP_Barth"`, the gradient plan applies WBAP to physical slopes
 and uses the flow block's face transforms when characteristic limiting is enabled.
 Only `numerics.limiter="WBAP"` requests the modal secondary matrices, one
 square block per owned cell–face incidence. LVR sweeps use the prepared P1 target.

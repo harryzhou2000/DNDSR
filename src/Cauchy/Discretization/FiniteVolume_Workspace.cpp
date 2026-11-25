@@ -69,7 +69,7 @@ namespace DNDS::Cauchy
             }
             if (field.gradient)
                 field.gradientExecution.emplace(data.gradient.BuildWorkspace(index(physical.Width()), vectors,
-                                                                             !meanOnly && numerics.P1Limiter() == "WBAP" &&
+                                                                             !meanOnly && numerics.P1UsesWBAP() &&
                                                                                  (numerics.reconstruction == "gradient" || numerics.ransP1Overlay || data.limitedVRGeometry)));
             result.push_back(std::move(field));
         }
@@ -182,12 +182,12 @@ namespace DNDS::Cauchy
             }
         }
         const bool modalWBAP = numerics.reconstruction == "variational" && numerics.limiter == "WBAP";
-        if (!meanOnly && (modalWBAP || (prepareP1 && p1Limiter == "WBAP")) && numerics.characteristicLimiter)
+        const bool gradientWBAP = prepareP1 && numerics.P1UsesWBAP();
+        if (!meanOnly && (modalWBAP || gradientWBAP) && numerics.characteristicLimiter)
         {
             const auto flow = state.LocateBlock("flow");
             DNDS_check_throw_info(flow.componentNumber == 5, "characteristic limiter requires one five-component flow block");
             flowCharacteristicField = flow.physicalField;
-            const bool gradientWBAP = prepareP1 && p1Limiter == "WBAP";
             if (modalWBAP && gradientWBAP)
                 std::tie(flowCharacteristic, gradientFlowCharacteristic) =
                     owner->gradient.BuildSharedQueuedFaceTransforms(*owner->reconstruction, flow.firstComponent, 5);
@@ -218,7 +218,7 @@ namespace DNDS::Cauchy
                                                             state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
                             owner->metrics.Device()));
                         FiniteVolumeDetail::NameField(directGradients.back(), "Cauchy/gradient/limited/" + state.Fields().Name(iField), DNDS_ALLOCATION_SITE());
-                        if (p1Limiter == "WBAP" || (iField == lvrFlowField && numerics.limitedVR.weakAlphaMax > 0))
+                        if (gradientWBAP || (iField == lvrFlowField && numerics.limitedVR.weakAlphaMax > 0))
                             directGradientInputHalo.push_back(owner->BindHalo(
                                 *fields[iField].gradient, "cauchy-direct-gradient-input"));
                     }

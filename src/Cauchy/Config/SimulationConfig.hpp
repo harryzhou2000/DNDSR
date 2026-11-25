@@ -281,12 +281,15 @@ namespace DNDS::Cauchy
         /// Direct linear/constant FV uses center-point flux/source evaluation.
         /// cfv.intOrder still controls geometric measures and VR setup.
         int RHSIntegrationOrder() const { return reconstruction == "variational" ? cfv.intOrder : 1; }
-        /// Barth bounds only the linear RANS coefficients embedded in the flow VR polynomial.
-        bool UsesRANSGradientBarth() const { return ransP1Overlay && reconstruction == "variational" && limiter == "Barth"; }
+        static bool IsP1OnlyLimiter(const std::string &name) { return name == "Barth" || name == "WBAP_Barth"; }
+        static bool IsP1Limiter(const std::string &name) { return name == "none" || name == "WBAP" || IsP1OnlyLimiter(name); }
+        /// The legacy selector in VR limits only the shared P1 gradients used for RANS.
+        bool UsesRANSGradientLimiterAlias() const { return ransP1Overlay && reconstruction == "variational" && IsP1OnlyLimiter(limiter); }
         const std::string &P1Limiter() const
         {
-            return reconstruction == "gradient" && limiter != "none" ? limiter : p1Limiter;
+            return (reconstruction == "gradient" && limiter != "none") || UsesRANSGradientLimiterAlias() ? limiter : p1Limiter;
         }
+        bool P1UsesWBAP() const { return P1Limiter() == "WBAP" || P1Limiter() == "WBAP_Barth"; }
         real EffectiveWallDistanceFloor() const
         {
             return wallDistanceFloor == 0 ? wallDistanceSafetyFloor : wallDistanceFloor;
@@ -296,15 +299,15 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(reconstruction, "constant, gradient, or variational reconstruction");
             DNDS_FIELD(gradient, "leastSquares, greenGauss, or ggmp");
-            DNDS_FIELD(p1Limiter, "Shared physical P1 slope limiter for direct reconstruction, the RANS overlay and LVR: Barth, WBAP or none; LVR requires a limiter");
+            DNDS_FIELD(p1Limiter, "Shared physical P1 slope limiter for direct reconstruction, the RANS overlay and LVR: Barth, WBAP, WBAP_Barth (WBAP then Barth), or none; LVR requires a limiter");
             config.field_section(&T::leastSquares, "leastSquares", "Weights for the P1 weighted least-squares objective");
             DNDS_FIELD(flux, "Numerical inviscid flux family");
-            DNDS_FIELD(limiter, "none, Barth for direct gradients or the RANS P1 overlay, WBAP, or native LVR; positivity is checked separately");
+            DNDS_FIELD(limiter, "VR limiter: none, modal WBAP, or LVR. Legacy P1 selector: Barth or WBAP_Barth for direct gradients or the RANS P1 overlay, and WBAP for direct gradients");
             config.field_section(&T::reconstructionSolver, "reconstructionSolver", "Relaxation or explicit single-device AMG reconstruction solve");
             DNDS_FIELD(reconstructionIterations, "Maximum local VR relaxation sweeps or AMG defect corrections per residual");
             DNDS_FIELD(reconstructionResidualCheckInterval, "Observe the VR update norm every N sweeps and at the final sweep when reconstructionTolerance is positive; each observation is an explicit host stopping boundary");
             DNDS_FIELD(reconstructionTolerance, "Relative reconstruction update tolerance for relaxation or AMG; zero uses the fixed correction count");
-            DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
+            DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for modal and physical-gradient WBAP");
             DNDS_FIELD(characteristicDiagnostics, "Opt-in finite/inverse-matrix diagnostics after characteristic production; not an execution-order check");
             DNDS_FIELD(faceFallback, "Fall back to the cell mean at inadmissible face values; disable for non-PP accuracy studies");
             DNDS_FIELD(reconstructionBoundaryFromPolynomial, "Project current face polynomial through BC each VR sweep; false uses mean-based boundary values");
@@ -516,6 +519,7 @@ namespace DNDS::Cauchy
         /// Reconstruction/increment PP remain independently active.
         bool coarseRHSFPP = false;
         bool coarseGradientBarth = true, coarseGradientPositivity = true;
+        std::string coarseGradientLimiter;
         std::vector<index> updateComponents;
         std::map<std::string, MultigridLevelSettings> coarseLevelSettings;
         DNDS_DECLARE_CONFIG(PolynomialMultigridSettings)
@@ -527,7 +531,8 @@ namespace DNDS::Cauchy
             DNDS_FIELD(coarseSmooth, "Bounded nonlinear corrections at the coarsest level");
             DNDS_FIELD(scratchPool, "Reserve four ghost-capable DoF scratch slots for synchronous pMG values/residuals/corrections; keep parent sources/references and solver/reconstruction workspaces independent");
             DNDS_FIELD(reuseCoarseRate, "Reuse a version-validated direct-gradient coarse tau rate for its first correction; independent of finest measured-rate reuse");
-            DNDS_FIELD(coarseGradientBarth, "Apply componentwise Barth limiting to the P1 and P0 physical gradients");
+            DNDS_FIELD(coarseGradientBarth, "Apply componentwise Barth limiting to coarse physical gradients when coarseGradientLimiter is empty");
+            DNDS_FIELD(coarseGradientLimiter, "Coarse physical slope limiter: none, Barth, WBAP, WBAP_Barth, or empty to use coarseGradientBarth");
             DNDS_FIELD(coarseGradientPositivity, "Apply positivity limiting to the P1 and P0 physical gradients for compressible flow");
             DNDS_FIELD(coarseRHSFPP, "Opt in to RHS/dTau positivity limiting on coarse levels; default false forces coarse rhsFPPMode=none after level overrides, matching Euler. Reconstruction and increment PP remain unchanged");
             config.field_map_of<MultigridLevelSettings>(&T::coarseLevelSettings, "coarseLevelSettings", "Independent coarse-level controls keyed by 1 or 2; finest uses domain implicit and the common pre/post counts");

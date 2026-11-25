@@ -17,8 +17,8 @@ namespace DNDS::Cauchy::CUDA
         Runtime::ArrayView<const FiniteVolumeStencilView, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> stencil;
         index ownedCells = 0, allCells = 0;
     };
-    /// Independent Barth limiting of physical gradients. Writes a disjoint
-    /// output field. The three velocity or momentum components starting at
+    /// Independent Barth limiting of physical gradients. The output field may
+    /// be the input field. The three velocity or momentum components starting at
     /// vectorStart are rotated on periodic neighbor reads.
     /// Core selections need no ghost view. Boundary values do not enter the
     /// Barth extrema, matching the current generic CPU operator.
