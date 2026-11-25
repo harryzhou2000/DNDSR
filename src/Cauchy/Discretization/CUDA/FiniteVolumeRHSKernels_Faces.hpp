@@ -205,6 +205,7 @@ namespace DNDS::Cauchy::CUDA::Detail
         }
         const auto grid = controls.frame.GridVelocity(sample.ownPoint);
         auto settings = controls.fluxPolicy.settings;
+        settings.dissipationScale = controls.fluxPolicy.DissipationAtFace(fields.centerViscosity, sample.cell, sample.other);
         if (controls.useStencil && controls.fluxPolicy.transverseSignal)
         {
             real jump = fields.waveJump(sample.cell, 0);
@@ -214,7 +215,7 @@ namespace DNDS::Cauchy::CUDA::Detail
         }
         const real llfWeight = controls.fluxPolicy.NeedsPressureBounds(controls.useStencil)
                                    ? FiniteVolumeDetail::ApplyFacePressureStencil(controls.fluxPolicy, controls.useStencil,
-                                                                                   fields.pressureMinimum, sample.cell, sample.other, settings)
+                                                                                  fields.pressureMinimum, sample.cell, sample.other, settings)
                                    : 0;
         Riemann::FluxResult convection;
         const auto faceNormal = settings.rotation.Enabled() ? geometry.stencil.FluxFaceNormal(sample.face, sample.side) : sample.normal;
@@ -255,7 +256,7 @@ namespace DNDS::Cauchy::CUDA::Detail
             const auto leftScalar = mirrorIsothermal ? right.values[j] : left.values[j];
             flux[j] = wallFluxState ? face.values[j] * speedLeft
                                     : FiniteVolumeDetail::BlendAdvectedScalarToLLF(
-                                          AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, alpha),
+                                          AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, settings.dissipationScale * alpha),
                                           llfWeight, leftScalar, right.values[j], speedLeft, speedRight, scalarLLFSpeed);
         }
         // Cauchy omits the former isotropic 2*rho*k/3 momentum flux and energy work.

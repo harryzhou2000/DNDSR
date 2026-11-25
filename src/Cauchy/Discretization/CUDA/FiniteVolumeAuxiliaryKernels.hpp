@@ -24,6 +24,7 @@ namespace DNDS::Cauchy::CUDA
         int components = 5, dimension = 3;
         bool hasGradient = false, hasWall = false;
         Runtime::ArrayView<const ACM::SpatialParameters, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> acm;
+        AuxiliaryInput cellLength;
         void Validate(Runtime::Device device) const;
     };
 

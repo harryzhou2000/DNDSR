@@ -18,19 +18,23 @@ namespace DNDS::Cauchy::CUDA
         }
         template <int Components, bool Mechanical = false>
         __device__ NumericalResult<std::array<real, 4>> Properties(const AuxiliaryStateInput &input,
-                                                                   const std::conditional_t<Mechanical, ACM::KernelPoint<Components>, PerfectGasKernelPoint<Components>> &point, index iCell)
+                                                                   const std::conditional_t<Mechanical, ACM::KernelPoint<Components>, PerfectGasKernelPoint<Components>> &point, index iCell,
+                                                                   real *shield = nullptr)
         {
             if constexpr (Mechanical)
                 return point.Auxiliary(input.acm(0, 0), input.hasWall ? input.wallMean(iCell, 0) : 1);
             else
-                return point.Auxiliary(input.parameters(0, 0), input.hasWall ? input.wallMean(iCell, 0) : 1);
+                return point.Auxiliary(input.parameters(0, 0), input.hasWall ? input.wallMean(iCell, 0) : 1,
+                                       shield ? input.cellLength(iCell, 0) : 0, shield);
         }
         template <int Components, bool Mechanical = false>
         __global__ void Means(AuxiliaryStateInput input, AuxiliaryOutput output, AuxiliaryOutput viscosity, AuxiliaryStatus status, index first, index end)
         {
             for (index iCell = first + index(blockIdx.x) * blockDim.x + threadIdx.x; iCell < end; iCell += index(gridDim.x) * blockDim.x)
             {
-                const auto result = Properties<Components, Mechanical>(input, Load<Components, Mechanical>(input, iCell), iCell);
+                const bool des = viscosity.RowCount() && viscosity.Width() == 2;
+                real shield = 1;
+                const auto result = Properties<Components, Mechanical>(input, Load<Components, Mechanical>(input, iCell), iCell, des ? &shield : nullptr);
                 status(iCell, 0) = result.status.At(iCell);
                 if (result)
                 {
@@ -39,6 +43,8 @@ namespace DNDS::Cauchy::CUDA
                             output(iCell, j) = result.value[j];
                     if (viscosity.RowCount())
                         viscosity(iCell, 0) = result.value[3];
+                    if (des)
+                        viscosity(iCell, 1) = shield;
                 }
             }
         }
@@ -233,12 +239,14 @@ namespace DNDS::Cauchy::CUDA
                                AuxiliaryOutput output, AuxiliaryOutput viscosity, AuxiliaryStatus status, index first, index end)
     {
         state.Validate(context.device);
-        R::ValidateViewDevices(context.device, output, viscosity, status);
+        R::ValidateViewDevices(context.device, output, viscosity, status, state.cellLength);
         R::CheckKernelArgumentBudget<AuxiliaryStateInput, AuxiliaryOutput, AuxiliaryOutput, AuxiliaryStatus, index, index>();
         DNDS_check_throw_info(first >= 0 && first <= end && end <= state.mean.RowCount() && status.RowCount() >= end &&
                                   (!end || output.RowCount() || viscosity.RowCount()) &&
                                   (!output.RowCount() || (output.RowCount() >= end && output.Width() == 3)) &&
-                                  (!viscosity.RowCount() || (viscosity.RowCount() >= end && viscosity.Width() == 1)),
+                                  (!viscosity.RowCount() || (viscosity.RowCount() >= end && (viscosity.Width() == 1 ||
+                                                                                             (viscosity.Width() == 2 && !state.acm.RowCount() && state.components > 5 &&
+                                                                                              state.hasWall && state.hasGradient && state.cellLength.RowCount() >= end && state.cellLength.Width() == 1)))),
                               "CUDA auxiliary mean range/shape mismatch");
         if (first == end)
             return;

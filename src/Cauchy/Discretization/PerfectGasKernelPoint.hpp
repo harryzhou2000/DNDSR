@@ -100,7 +100,8 @@ namespace DNDS::Cauchy
         /// [pressure, sound speed, diffusion bound, eddy viscosity], matching the generic CPU
         /// auxiliary producer. RANS diffusion uses the same mean/gradient and
         /// wall-distance convention; it does not add an implicit state repair.
-        DNDS_DEVICE_CALLABLE NumericalResult<std::array<real, 4>> Auxiliary(const PerfectGasSpatialParameters &parameters, real wallDistance) const noexcept
+        DNDS_DEVICE_CALLABLE NumericalResult<std::array<real, 4>> Auxiliary(const PerfectGasSpatialParameters &parameters, real wallDistance,
+                                                                            real cellLength = 0, real *shield = nullptr) const noexcept
         {
             const auto properties = TryPerfectGasPoint(parameters.gas, Flow(), parameters.viscous);
             if (!properties)
@@ -108,9 +109,17 @@ namespace DNDS::Cauchy
             real bound = properties.value.diffusionBound, eddy = 0;
             if constexpr (Components > 5)
             {
-                const auto transport = Physics::RANS::TryTransport(parameters.rans, RANSPoint(properties.value, wallDistance));
+                const auto ransPoint = RANSPoint(properties.value, wallDistance, cellLength);
+                const auto transport = Physics::RANS::TryTransport(parameters.rans, ransPoint);
                 if (!transport)
                     return transport.status;
+                if (shield)
+                {
+                    const auto value = Physics::RANS::TryDESShield(parameters.rans, ransPoint);
+                    if (!value)
+                        return value.status;
+                    *shield = value.value;
+                }
                 eddy = transport.value.viscosity;
                 const auto &p = properties.value;
                 bound = std::max(bound, std::max(real(4. / 3.) * (p.transport.viscosity + transport.value.viscosity) / values[0],

@@ -47,6 +47,13 @@ namespace DNDS::Cauchy
         R::CommunicationDetail::LocalStage(mesh->getMPI().comm, settings.implicit.collectiveChecks, [&]
                                            {
             RequireBuiltEquation(equation.IsACM(), mesh->getDim());
+            settings.numerics.riemann.ValidateDissipation(!equation.IsACM(),
+                equation.HasRANS() ? std::string_view(equation.RANS().Settings().model) : "none",
+                equation.HasRANS() ? equation.RANS().Settings().desScale : veryLargeReal);
+            if (settings.numerics.riemann.dissipationMode == "DES")
+                for (const auto &[zone, condition] : settings.boundaries)
+                    DNDS_check_throw_info(condition.kind != "interface",
+                        "DES dissipation requires the remote cell shield across a coupled-domain interface");
             settings.numerics.ValidatePositivity();
             DNDS_check_throw_info(!settings.numerics.resolvedCellOmega ||
                                       (equation.IsACM() && equation.HasRANS() && equation.RANS().Kind() == Physics::RANS::ModelKind::KOmegaSST &&

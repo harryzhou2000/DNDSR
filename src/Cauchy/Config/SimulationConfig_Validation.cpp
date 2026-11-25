@@ -86,6 +86,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(std::isfinite(riemann.pressureLLFBlendStart) && riemann.pressureLLFBlendStart >= 1 &&
                                   std::isfinite(riemann.pressureLLFBlendFull) && riemann.pressureLLFBlendFull > riemann.pressureLLFBlendStart,
                               "LLF pressure blend requires finite ratios with 1 <= start < full");
+        riemann.ValidateDissipation(equation.system == "compressible", equation.rans.model, equation.rans.desScale);
         DNDS_check_throw_info(!riemann.pressureLLFBlend || equation.system == "compressible",
                               "LLF pressure blending requires compressible flow");
         PrimitiveValid(settings.initialPrimitive);
@@ -133,6 +134,18 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(condition.kind == "noSlipWall" || (condition.thermal == "adiabatic" && (condition.kind == "slipWall" || condition.velocity == std::array<real, 3>{0, 0, 0})),
                                   "wall thermal/velocity parameters supplied to a non-wall condition");
         }
+    }
+    void RiemannSettings::ValidateDissipation(bool compressible, std::string_view ransModel, real desScale) const
+    {
+        DNDS_check_throw_info(dissipationMode == "fullUpwind" || dissipationMode == "constant" || dissipationMode == "DES",
+                              "riemann.dissipationMode must be fullUpwind, constant, or DES");
+        DNDS_check_throw_info(std::isfinite(dissipationCoefficient) && dissipationCoefficient >= 0 && dissipationCoefficient <= 1,
+                              "riemann.dissipationCoefficient must lie in [0,1]");
+        DNDS_check_throw_info(dissipationMode == "fullUpwind" || compressible,
+                              "Riemann dissipation control requires a compressible equation");
+        DNDS_check_throw_info(dissipationMode != "DES" ||
+                                  ((ransModel == "SA" || ransModel == "KOmegaSST") && desScale > 0 && desScale <= 100),
+                              "DES dissipation requires active SA or SST hybrid RANS (0 < desScale <= 100)");
     }
     void NumericsSettings::ValidatePositivity() const
     {
@@ -438,7 +451,8 @@ namespace DNDS::Cauchy
         require(s.execution.nonlinearReduction == "mpi" || (cuda && s.execution.nonlinearReduction == "nccl"), "nonlinear reduction " + s.execution.nonlinearReduction);
         require(s.execution.communication == "mpi-direct" || (cuda && s.execution.communication == "nccl"), "transport " + s.execution.communication);
         require((s.execution.communication != "nccl" && s.execution.nonlinearReduction != "nccl") ||
-                    Runtime::NCCLTransferProvider::Available(), "NCCL communication requires an NCCL-enabled build");
+                    Runtime::NCCLTransferProvider::Available(),
+                "NCCL communication requires an NCCL-enabled build");
         require(s.execution.communicationExecution == "caller" || s.execution.communicationExecution == "worker", "communication execution " + s.execution.communicationExecution);
         if (s.execution.communicationExecution == "worker")
         {

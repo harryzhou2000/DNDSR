@@ -96,13 +96,13 @@ namespace DNDS::Cauchy
         /// evaluated from the fresh means and (for two-equation RANS) gradient
         /// halos; this rank-local cache has no independent transfer plan.
         std::optional<Runtime::Array<real>> meanThermodynamics;
-        /// One dynamic eddy viscosity per owned and ghost cell, evaluated from
-        /// the mean-state closure (unit density gives kinematic viscosity in ACM).
+        /// Mean-state eddy viscosity for owned and ghost cells. DES dissipation
+        /// adds the RANS shielding fraction in column 1 of the same table.
         std::optional<Runtime::Array<real>> cellTurbulentViscosity;
         std::optional<Runtime::Array<real>> faceSpectralRadius; // convection, diffusion (speed)
         std::optional<Runtime::Array<real>> faceWaveJump;
         std::optional<Runtime::Array<real>> facePressureMinimum; ///< [min,max], with minimum in the original column.
-        std::optional<CFV::FVField> cellSpectralSum; // sum A*(lambda_c+lambda_v)
+        std::optional<CFV::FVField> cellSpectralSum;             // sum A*(lambda_c+lambda_v)
         std::optional<CFV::FVField> cellWaveJump;
         std::optional<CFV::FVField> cellPressureMinimum; ///< [min,max]; one halo binding for both.
         std::optional<DerivedFields> derivedOwned, derivedGhost;

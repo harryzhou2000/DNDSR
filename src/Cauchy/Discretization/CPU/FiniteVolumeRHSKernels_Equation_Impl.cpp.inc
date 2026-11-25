@@ -47,7 +47,9 @@ namespace DNDS::Cauchy::CPU
         const bool usePressureBounds = fluxPolicy.NeedsPressureBounds(request.useStencil);
         const bool preparedWaveJump = request.preparedWaveJump;
         const bool preparedPressureMinimum = request.preparedPressureMinimum;
-        if ((useWaveJump && !preparedWaveJump) || (usePressureBounds && !preparedPressureMinimum))
+        if ((useWaveJump && !preparedWaveJump) || (usePressureBounds && !preparedPressureMinimum) ||
+            (fluxPolicy.desDissipation && (request.centerViscosity.values.Width() != 2 ||
+                                           request.centerViscosity.values.RowCount() != request.metric.cells.RowCount())))
             return NumericalStatus{NumericalError::InvalidInput};
         const int species = request.species;
         const int independent = std::max(0, species - 1);
@@ -435,6 +437,7 @@ namespace DNDS::Cauchy::CPU
                                         : equation.PrepareFluxState(meanRight);
                 }
                 auto fluxSettings = baseFluxSettings;
+                fluxSettings.dissipationScale = fluxPolicy.DissipationAtFace(request.centerViscosity, sample.cell, sample.other);
                 if (useWaveJump)
                 {
                     real jump = request.waveJump(iCell, 0);
@@ -477,7 +480,7 @@ namespace DNDS::Cauchy::CPU
                         const auto leftScalar = mirrorIsothermal ? right.values[j] : left.values[j];
                         flux[j] = wallFluxState ? face.values[j] * speedLeft
                                                 : FiniteVolumeDetail::BlendAdvectedScalarToLLF(
-                                                      AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, alpha),
+                                                      AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, fluxSettings.dissipationScale * alpha),
                                                       llfWeight, leftScalar, right.values[j], speedLeft, speedRight, scalarLLFSpeed);
                     }
                 for (int j = 0; j < 5; ++j)

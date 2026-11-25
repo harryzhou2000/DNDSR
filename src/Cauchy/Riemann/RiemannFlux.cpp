@@ -64,7 +64,8 @@ namespace DNDS::Cauchy::Riemann
                               "low-dissipation Roe flux requires a positive fixScale divisor");
         DNDS_check_throw_info(std::isfinite(settings.fixScale) && settings.fixScale >= 0 && std::isfinite(settings.incrementScale) && settings.incrementScale >= 0 &&
                                   std::isfinite(settings.dLambda) && settings.dLambda >= 0 && std::isfinite(settings.referenceMach) && settings.referenceMach > 0 &&
-                                  std::isfinite(settings.pressureStencilMin) && settings.pressureStencilMin > 0,
+                                  std::isfinite(settings.pressureStencilMin) && settings.pressureStencilMin > 0 &&
+                                  std::isfinite(settings.dissipationScale) && settings.dissipationScale >= 0 && settings.dissipationScale <= 1,
                               "invalid Riemann numerical controls");
         for (const auto *state : {&input.left, &input.right, input.leftMean, input.rightMean})
             if (state)

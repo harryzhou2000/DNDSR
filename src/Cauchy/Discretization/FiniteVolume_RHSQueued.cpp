@@ -83,6 +83,7 @@ namespace DNDS::Cauchy
                 !controls.positivity && !controls.faceFallback && !controls.fluxPolicy.settings.rotation.Enabled() &&
                 (!controls.useStencil || !controls.fluxPolicy.transverseSignal) &&
                 !controls.fluxPolicy.NeedsPressureBounds(controls.useStencil) &&
+                controls.fluxPolicy.dissipationCoefficient == 1 && !controls.fluxPolicy.desDissipation &&
                 controls.solver == Riemann::Solver::Roe_M1 && !owner->hasInterfaces && !owner->hasRotatedFrames &&
                 !owner->motion.At(0).moving && !owner->settings.execution.overlap &&
                 !owner->equation.HasMixture() && owner->mesh->getMPI().size == 1 && owner->rhsUniformFacePoints > 0 &&
@@ -322,7 +323,7 @@ namespace DNDS::Cauchy
         controls.time = time;
         controls.frame = owner->motion.At(time).KernelParameters();
         controls.captureBoundaryFlux = captureBoundaryFlux;
-        const auto &viscosity = n.ransCellCenterViscosity && auxiliary && auxiliary->cellTurbulentViscosity ? *auxiliary->cellTurbulentViscosity : empty;
+        const auto &viscosity = (n.ransCellCenterViscosity || controls.fluxPolicy.desDissipation) && auxiliary && auxiliary->cellTurbulentViscosity ? *auxiliary->cellTurbulentViscosity : empty;
         if (!controls.firstOrder && (!controls.direct || controls.linear))
         {
             if (controls.direct)
@@ -385,14 +386,14 @@ namespace DNDS::Cauchy
         const auto &visGhostInput = pin->Input(5, visGhost, engine, stream);
         // Inactive low-order outputs alias their primary arrays deliberately;
         // the leaf never accesses them. Tracking merges their access footprints.
-        R::SubmitArrays(engine, stream, [pin, faceShape, controls, ghosts, hasMean, hasIncoming, hasWave, hasPressure, packageSlot = region == CFV::ReconstructionRegion::All ? 0 : region == CFV::ReconstructionRegion::Core ? 1
-                                                                                                                                                                                                                              : 2](R::ExecutionContext context, auto u, auto ug, auto rec, auto recg, auto vis, auto visg, auto prepared, auto packet, auto wave, auto waveg, auto pressure, auto pressureg, auto viscosity, auto high, auto low, auto force, auto status, auto counts, auto selected)
+        R::SubmitArrays(engine, stream, [pin, faceShape, controls, ghosts, hasMean, hasIncoming, hasWave, hasPressure, useCenterViscosity = n.ransCellCenterViscosity, packageSlot = region == CFV::ReconstructionRegion::All ? 0 : region == CFV::ReconstructionRegion::Core ? 1
+                                                                                                                                                                                                                                                                              : 2](R::ExecutionContext context, auto u, auto ug, auto rec, auto recg, auto vis, auto visg, auto prepared, auto packet, auto wave, auto waveg, auto pressure, auto pressureg, auto viscosity, auto high, auto low, auto force, auto status, auto counts, auto selected)
                         {
                 CUDA::RHSFields fields;
                 fields.mean = {u, ug}; fields.reconstruction = {rec, recg}; fields.viscousData = {vis, visg};
                 fields.preparedMean = prepared; fields.incoming = packet;
                 fields.waveJump = {wave, waveg}; fields.pressureMinimum = {pressure, pressureg};
-                fields.centerViscosity = CellCenterViscosityView::From(viscosity);
+                fields.centerViscosity = CellCenterViscosityView::From(viscosity, useCenterViscosity);
                 fields.hasPreparedMean = hasMean; fields.hasIncoming = hasIncoming; fields.hasWave = hasWave; fields.hasPressure = hasPressure;
                 CUDA::EvaluateFluxFaces(context, *pin->geometry, pin->Parameters(), controls, fields, {high, low, force, status, counts}, {faceShape, selected}, ghosts,
                     pin->packages[packageSlot] ? pin->packages[packageSlot]->View() : CUDA::RHSFacePackageView{}); },

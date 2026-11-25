@@ -1,6 +1,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeAuxiliaryKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Physics/Incompressible/RANSPoint.hpp"
+#include "Physics/RANS/PointKernels.hpp"
 #include "Cauchy/Boundary/ACMBoundary.hpp"
 #include "DNDS/Core/OMP.hpp"
 #include <limits>
@@ -19,7 +20,8 @@ namespace DNDS::Cauchy::CPU
                     point.gradient(first, d) = request.gradients[location.physicalField](iCell, (location.firstComponent + j) * dim + d);
     }
     NumericalResult<std::array<real, 6>> Properties(const AuxiliaryKernelRequest &request, const EquationSystem &equation, EquationFVDetail::PointScratch &point, PointEvaluator &evaluator,
-                                                    real wallDistance = 1, bool turbulent = true) noexcept
+                                                    real wallDistance = 1, bool turbulent = true, real cellLength = 0,
+                                                    real *shield = nullptr) noexcept
     {
         if (equation.IsACM())
         {
@@ -45,9 +47,17 @@ namespace DNDS::Cauchy::CPU
         if (request.ransFirst >= 0 && turbulent)
         {
             const auto &model = equation.RANS();
-            const auto transport = model.TryTransport(EquationFVDetail::RANSPoint(point, request.flowFirst, request.ransFirst, model, result, wallDistance, 0));
+            const auto ransPoint = EquationFVDetail::RANSPoint(point, request.flowFirst, request.ransFirst, model, result, wallDistance, cellLength);
+            const auto transport = model.TryTransport(ransPoint);
             if (!transport)
                 return transport.status;
+            if (shield)
+            {
+                const auto value = Physics::RANS::TryDESShield(model.KernelParameters(), ransPoint);
+                if (!value)
+                    return value.status;
+                *shield = value.value;
+            }
             eddy = transport.value.viscosity;
             diffusion = std::max({diffusion, real(4. / 3.) * (result.transport.viscosity + eddy) / flow[0],
                                   (result.transport.conductivity + transport.value.conductivity) / (flow[0] * result.thermo.cv)});
@@ -63,8 +73,10 @@ namespace DNDS::Cauchy::CPU
         if (!request.enabled[0] && !request.enabled[7])
             return {};
         const index baseWidth = equation.HasMixture() ? 5 : 3;
+        const bool des = request.enabled[7] && request.values[7].Width() == 2;
         if (workers.empty() || (request.enabled[0] && request.values[0].Width() != baseWidth) ||
-            (request.enabled[7] && request.values[7].Width() != 1))
+            (request.enabled[7] && request.values[7].Width() != 1 && !des) ||
+            (des && (request.wall.cellMean.RowCount() < last || request.gradients.empty() || request.cellLength.RowCount() < last)))
             return NumericalStatus{NumericalError::InvalidInput};
         OMP::ForRows(0, workers.size(), [&](index iWorker)
                      {
@@ -78,7 +90,9 @@ namespace DNDS::Cauchy::CPU
           {
             EquationFVDetail::Gather(request.blocks, iCell, point);
             LoadGradients(request, iCell, point);
-            const auto result = Properties(request, equation, point, worker.evaluator, request.hasWall ? request.wall.cellMean(iCell, 0) : 1);
+            real shield = 1;
+            const auto result = Properties(request, equation, point, worker.evaluator, (request.hasWall || des) ? request.wall.cellMean(iCell, 0) : 1,
+                                            true, des ? request.cellLength(iCell, 0) : 0, des ? &shield : nullptr);
             if (!result)
             {
                 worker.status = result.status.At(iCell);
@@ -89,6 +103,8 @@ namespace DNDS::Cauchy::CPU
                     request.values[0](iCell, j) = result.value[j];
             if (request.enabled[7])
                 request.values[7](iCell, 0) = result.value.back();
+            if (des)
+                request.values[7](iCell, 1) = shield;
           } });
         for (const auto &worker : workers)
             if (!worker.status)

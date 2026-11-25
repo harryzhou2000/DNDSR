@@ -73,6 +73,19 @@ TEST_CASE("Every Cauchy Riemann selection matches legacy perfect gas facial and 
             CHECK(result.acousticMinus == doctest::Approx(minus).epsilon(1e-13));
             CHECK(result.contact == doctest::Approx(contact).epsilon(1e-13));
             CHECK(result.acousticPlus == doctest::Approx(plus).epsilon(1e-13));
+            const auto physicalLeft = F::PhysicalFlux(input.left.flow, normal, grid);
+            const auto physicalRight = F::PhysicalFlux(input.right.flow, normal, grid);
+            for (double alpha : {0., .37})
+            {
+                controls.dissipationScale = alpha;
+                const auto scaled = flux.Evaluate(input, controls);
+                for (int j = 0; j < 5; ++j)
+                {
+                    const double central = .5 * (physicalLeft[j] + physicalRight[j]);
+                    CHECK(scaled.flux[j] == doctest::Approx(central + alpha * (result.flux[j] - central)).epsilon(1e-12).scale(1));
+                }
+                CHECK(scaled.contact == result.contact);
+            }
         }
 }
 TEST_CASE("Every selected flux exposes explicit common-input requirements and missing data errors")

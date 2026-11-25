@@ -39,7 +39,9 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
                 flux.UsesPressureStencil() || (kernel.rotation.Enabled() && secondary.UsesPressureStencil()),
                 settings.numerics.noRsOnWall, settings.numerics.noGRPOnWall, settings.numerics.isothermalWallInviscidMirror,
                 settings.numerics.riemann.pressureLLFBlend, settings.numerics.riemann.pressureLLFBlendStart,
-                settings.numerics.riemann.pressureLLFBlendFull};
+                settings.numerics.riemann.pressureLLFBlendFull,
+                settings.numerics.riemann.dissipationMode == "fullUpwind" ? 1 : settings.numerics.riemann.dissipationCoefficient,
+                settings.numerics.riemann.dissipationMode == "DES"};
     }
     inline Runtime::RowLayout FieldLayout(const Runtime::RowLayout &prototype, index rows, index width)
     {

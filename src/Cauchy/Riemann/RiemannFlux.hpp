@@ -132,6 +132,7 @@ namespace DNDS::Cauchy::Riemann
         Scalar dLambda = 0, fixScale = 1, incrementScale = 1;
         Scalar referenceMach = Scalar(.1), pressureStencilMin = DNDS::Math::ScalarMaxFinite<Scalar>();
         Rotation rotation{};
+        Scalar dissipationScale = 1;
     };
     using FluxSettings = FluxSettingsT<real>;
 

@@ -221,7 +221,7 @@ namespace DNDS::Cauchy
             pin->primitive = addField(*primitiveGradient);
         if (auxiliary)
         {
-            if (n.ransCellCenterViscosity && auxiliary->cellTurbulentViscosity)
+            if ((n.ransCellCenterViscosity || pin->owner->fluxPolicy.desDissipation) && auxiliary->cellTurbulentViscosity)
                 pin->viscosity = addRead(*auxiliary->cellTurbulentViscosity);
             if (auxiliary->meanThermodynamics)
                 pin->meanThermodynamics = addRead(*auxiliary->meanThermodynamics);
@@ -372,7 +372,7 @@ namespace DNDS::Cauchy
                 request.waveJump = pin->waveJump.View(inputs);
                 request.pressureMinimum = pin->pressureMinimum.View(inputs);
                 request.primitiveGradientValues = pin->primitive.View(inputs);
-                if (pin->viscosity >= 0) request.centerViscosity = CellCenterViscosityView::From(inputs[pin->viscosity]);
+                if (pin->viscosity >= 0) request.centerViscosity = CellCenterViscosityView::From(inputs[pin->viscosity], pin->owner->settings.numerics.ransCellCenterViscosity);
                 if (pin->incoming >= 0) request.incoming = inputs[pin->incoming];
                 request.faceValues = outputs[pin->faces];
                 if (pin->lowFaces >= 0) request.lowFaceValues = outputs[pin->lowFaces];

@@ -83,9 +83,10 @@ namespace DNDS::Cauchy
             }
             if (input.boundary)
                 boundary = *input.boundary;
-            if (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2)
+            if ((data->fluxPolicy.desDissipation && buffers.cellTurbulentViscosity) ||
+                (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2))
             {
-                DNDS_check_throw_info(gradients && data->wallDistance, "two-equation auxiliary preparation requires current gradients and wall distance");
+                DNDS_check_throw_info(gradients && data->wallDistance, "RANS auxiliary transport or DES shielding requires current gradients and wall distance");
                 hasWall = true;
             }
             needFaces = bool(buffers.faceSpectralRadius || buffers.faceWaveJump || buffers.facePressureMinimum ||
@@ -135,7 +136,8 @@ namespace DNDS::Cauchy
             return scratch->empty;
         }
         auto StateInput(CUDA::AuxiliaryInput owned, CUDA::AuxiliaryInput ghost,
-                        CUDA::AuxiliaryInput gradOwned, CUDA::AuxiliaryInput gradGhost, CUDA::AuxiliaryInput wall) const
+                        CUDA::AuxiliaryInput gradOwned, CUDA::AuxiliaryInput gradGhost, CUDA::AuxiliaryInput wall,
+                        CUDA::AuxiliaryInput cellLength = {}) const
         {
             CUDA::AuxiliaryStateInput result;
             if (data->equation.IsACM())
@@ -147,8 +149,9 @@ namespace DNDS::Cauchy
             result.components = int(source.ComponentNumber());
             result.dimension = data->metrics.Dimension();
             result.hasGradient = bool(gradients);
-            result.hasWall = hasWall;
-            if (hasWall)
+            result.hasWall = hasWall && (cellLength.RowCount() || (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2));
+            result.cellLength = cellLength;
+            if (result.hasWall)
                 result.wallMean = {wall.data, wall.offsets, wall.rows, wall.width, wall.stride, wall.sizes, wall.kind, wall.device};
             return result;
         }
@@ -172,8 +175,8 @@ namespace DNDS::Cauchy
             const index first = ghost ? data->metrics.NumCell() : 0;
             const index end = ghost ? data->metrics.NumCellProc() : data->metrics.NumCell();
             if (means && (buffers.meanThermodynamics || buffers.cellTurbulentViscosity))
-                R::SubmitArrays(engine, stream, [pin, first, end](R::ExecutionContext context, auto u, auto ug, auto g, auto gg, auto out, auto viscosity, auto status, auto wall)
-                                { CUDA::PrepareAuxiliaryMeans(context, pin->StateInput(u, ug, g, gg, wall), out, viscosity, status, first, end); }, R::ReadAs<R::TableRows>(field.Owned()), R::ReadAs<R::TableRows>(uGhost), R::ReadAs<R::TableRows>(gOwned), R::ReadAs<R::TableRows>(gGhost), R::WriteAs<R::TableRows>(Output(0)), R::WriteAs<R::TableRows>(Output(7)), R::WriteAs<R::FixedRows<1>>(scratch->meanStatus), R::ReadAs<R::TableRows>(hasWall ? data->wallDistance->CellMeans() : scratch->empty));
+                R::SubmitArrays(engine, stream, [pin, first, end](R::ExecutionContext context, auto u, auto ug, auto g, auto gg, auto out, auto viscosity, auto status, auto wall, auto length)
+                                { CUDA::PrepareAuxiliaryMeans(context, pin->StateInput(u, ug, g, gg, wall, length), out, viscosity, status, first, end); }, R::ReadAs<R::TableRows>(field.Owned()), R::ReadAs<R::TableRows>(uGhost), R::ReadAs<R::TableRows>(gOwned), R::ReadAs<R::TableRows>(gGhost), R::WriteAs<R::TableRows>(Output(0)), R::WriteAs<R::TableRows>(Output(7)), R::WriteAs<R::FixedRows<1>>(scratch->meanStatus), R::ReadAs<R::TableRows>(hasWall ? data->wallDistance->CellMeans() : scratch->empty), R::ReadAs<R::TableRows>(data->fluxPolicy.desDissipation ? data->ransCellLength : scratch->empty));
             if (!needFaces)
                 return;
             const auto &incoming = boundary ? FiniteVolumeDetail::BoundaryFluxInput(data->stencil, *boundary)
@@ -188,7 +191,7 @@ namespace DNDS::Cauchy
                     request.faceNumber = pin->data->stencil.stencilFaces.RowCount();
                     request.allCells = pin->data->metrics.NumCellProc();
                     request.conditions = R::MetadataArrayView(pin->data->deviceBoundaryKinds, context.device);
-                    if (pin->hasWall) request.wallFaces = {wallFaces.data, wallFaces.offsets, wallFaces.rows, wallFaces.width, wallFaces.stride, wallFaces.sizes, wallFaces.kind, wallFaces.device};
+                    if (request.state.hasWall) request.wallFaces = {wallFaces.data, wallFaces.offsets, wallFaces.rows, wallFaces.width, wallFaces.stride, wallFaces.sizes, wallFaces.kind, wallFaces.device};
                     request.preparedMeans = prepared;
                     request.incoming = incoming;
                     request.spectral = spectral; request.wave = wave; request.pressure = pressure; request.scratch = scratchValues;

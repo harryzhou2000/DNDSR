@@ -43,6 +43,7 @@ namespace DNDS::Cauchy
         R::MetadataBuffer<RHSFieldView> gradientViews;
         R::MetadataBuffer<EquationBlockLocation> locations;
         std::optional<WallDistanceRead> walls;
+        std::optional<R::Array<real>::ReadLease> cellLength;
         WallDistanceView wallValues;
         std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
         std::array<std::optional<R::Array<real>::WriteLease>, 8> writes;
@@ -91,12 +92,15 @@ namespace DNDS::Cauchy
             {
                 boundary = *inputs.boundary;
             }
-            if (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2)
+            const bool des = data->fluxPolicy.desDissipation && bool(buffers.cellTurbulentViscosity);
+            if (des || (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2))
             {
-                DNDS_check_throw_info(gradients, "two-equation auxiliary transport requires explicit mean gradients");
+                DNDS_check_throw_info(gradients && data->wallDistance, "RANS auxiliary transport or DES shielding requires mean gradients and wall distance");
                 walls.emplace(data->wallDistance->AcquireRead());
                 wallValues = walls->HostView();
             }
+            if (des)
+                cellLength.emplace(data->ransCellLength.Read());
             index first = 0;
             locations = R::MetadataBuffer<EquationBlockLocation>::Generate(source.BlockNumber(),
                                                                            [&](index iBlock)
@@ -232,7 +236,9 @@ namespace DNDS::Cauchy
             request.vectorStarts = vectorStarts.HostView();
             request.conditions = {data->boundaryConditions.data(), index(data->boundaryConditions.size())};
             request.wall = wallValues;
-            request.hasWall = bool(walls);
+            if (cellLength)
+                request.cellLength = cellLength->View<R::FixedRows<1>>();
+            request.hasWall = data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2;
             request.derived = derived;
             const auto arrays = EquationAuxiliaryArrays(buffers);
             for (int k = 0; k < 8; ++k)

@@ -359,11 +359,22 @@ namespace DNDS::Cauchy::Riemann::Math
         const auto &meanL = Mean(input, true), &meanR = Mean(input, false);
         const Scalar uL = NormalSpeed(meanL, input), uR = NormalSpeed(meanR, input);
         FluxResultT<Scalar> result{};
+        const Scalar alpha = settings.dissipationScale;
+        const auto blendWithCentral = [&]()
+        {
+            if (alpha != Scalar(1))
+                for (int j = 0; j < 5; ++j)
+                {
+                    const Scalar central = Scalar(.5) * (fluxLeft[j] + fluxRight[j]);
+                    result.flux[j] = alpha == Scalar(0) ? central : central + alpha * (result.flux[j] - central);
+                }
+            return result;
+        };
         if (solver == Solver::Rusanov || solver == Solver::Roe_M2)
         {
             const auto dissipation = RusanovDissipation(input, result);
             for (int j = 0; j < 5; ++j)
-                result.flux[j] = Scalar(.5) * (fluxLeft[j] + fluxRight[j] - dissipation[j]);
+                result.flux[j] = Scalar(.5) * (fluxLeft[j] + fluxRight[j] - alpha * dissipation[j]);
             return result;
         }
         if (AUSM(solver))
@@ -373,7 +384,7 @@ namespace DNDS::Cauchy::Riemann::Math
             result.acousticMinus = DNDS::Math::ScalarAbs(u - a);
             result.contact = DNDS::Math::ScalarAbs(u);
             result.acousticPlus = DNDS::Math::ScalarAbs(u + a);
-            return result;
+            return blendWithCentral();
         }
         if (solver == Solver::HLLC)
         {
@@ -388,12 +399,12 @@ namespace DNDS::Cauchy::Riemann::Math
             if (sl >= 0)
             {
                 result.flux = fluxLeft;
-                return result;
+                return blendWithCentral();
             }
             if (sr <= 0)
             {
                 result.flux = fluxRight;
-                return result;
+                return blendWithCentral();
             }
             const Scalar denominator = left[0] * (sl - uL) - right[0] * (sr - uR);
             const Scalar faceL = NormalSpeed(input.left, input), faceR = NormalSpeed(input.right, input);
@@ -405,7 +416,7 @@ namespace DNDS::Cauchy::Riemann::Math
             if (DNDS::Math::ScalarAbs(div) < DenominatorGuard<Scalar>())
             {
                 result.flux = physical;
-                return result;
+                return blendWithCentral();
             }
             const Scalar starPressure = pressure + state[0] * (wave - velocity) * (contact - velocity);
             for (int j = 0; j < 5; ++j)
@@ -414,13 +425,13 @@ namespace DNDS::Cauchy::Riemann::Math
                                                              : input.normal[j - 1];
                 result.flux[j] = ((state[j] * wave - physical[j]) * contact + direction * starPressure * wave) / div;
             }
-            return result;
+            return blendWithCentral();
         }
         if (Roe(solver))
         {
             const auto dissipation = RoeDissipation(solver, input, settings, result);
             for (int j = 0; j < 5; ++j)
-                result.flux[j] = Scalar(.5) * (fluxLeft[j] + fluxRight[j] - dissipation[j]);
+                result.flux[j] = Scalar(.5) * (fluxLeft[j] + fluxRight[j] - alpha * dissipation[j]);
             return result;
         }
         const auto &roe = *input.roe;
@@ -440,6 +451,7 @@ namespace DNDS::Cauchy::Riemann::Math
                                                                : roe.velocity[j - 1];
                 result.flux[j] = (sp * fluxLeft[j] - sm * fluxRight[j]) / div + (sp * sm / div) * (right[j] - left[j] - dfix * contactMode * waves.contact);
             }
+            return blendWithCentral();
         }
         else
         {
@@ -448,7 +460,7 @@ namespace DNDS::Cauchy::Riemann::Math
             result.acousticPlus = DNDS::Math::ScalarAbs(((sp + sm) * (u + a) - 2 * sp * sm) / (sp - sm));
             const auto dissipation = Dissipation(input, waves, result);
             for (int j = 0; j < 5; ++j)
-                result.flux[j] = Scalar(.5) * (fluxLeft[j] + fluxRight[j] - dissipation[j]);
+                result.flux[j] = Scalar(.5) * (fluxLeft[j] + fluxRight[j] - alpha * dissipation[j]);
         }
         return result;
     }

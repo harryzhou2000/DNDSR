@@ -22,6 +22,7 @@ namespace DNDS::Cauchy::CPU
         SpanView<const index> vectorStarts;
         SpanView<const BoundaryCondition> conditions;
         WallDistanceView wall;
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> cellLength;
         bool hasWall = false;
         std::optional<MeanThermodynamicView> derived;
         std::array<bool, 8> enabled{};

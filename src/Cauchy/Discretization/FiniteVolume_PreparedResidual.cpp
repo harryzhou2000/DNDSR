@@ -53,9 +53,9 @@ namespace DNDS::Cauchy
         work->CheckPreparedResidual(state, *reconstruction, finalized, time);
         if (!auxiliary && work->rhsAuxiliary)
             auxiliary.Emplace(*work->rhsAuxiliary);
-        DNDS_check_throw_info(work->meanOnly || !_data->settings.numerics.ransCellCenterViscosity ||
+        DNDS_check_throw_info((!_data->fluxPolicy.desDissipation && (work->meanOnly || !_data->settings.numerics.ransCellCenterViscosity)) ||
                                   (auxiliary && auxiliary->cellTurbulentViscosity),
-                              "prepared residual is missing the cell turbulent viscosity");
+                              "prepared residual is missing cell turbulence for RANS viscosity or DES dissipation");
         if (auxiliary)
         {
             ValidateAuxValues(state, *auxiliary, time);

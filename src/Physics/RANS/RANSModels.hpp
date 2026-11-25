@@ -66,6 +66,22 @@ namespace DNDS::Physics::RANS
         }
     };
 
+    DNDS_DEVICE_CALLABLE inline real SADESDenominator(real d, real gradUNorm)
+    {
+        return sqr(0.41 * d) * std::max(smallReal, gradUNorm);
+    }
+
+    DNDS_DEVICE_CALLABLE inline real SAIDDESShield(real alpha, real rdt, int mode)
+    {
+        const real fB = std::min(2 * std::exp(-9 * sqr(alpha)), 1.0);
+        return mode == 2 ? fB : std::max(fB, std::tanh(cube(8 * rdt)));
+    }
+
+    DNDS_DEVICE_CALLABLE inline real SADDESShield(real rd)
+    {
+        return std::tanh(cube(8 * rd));
+    }
+
     /**
      * @brief SA hybrid length with C_DES applied after constructing the grid scale.
      *
@@ -88,12 +104,11 @@ namespace DNDS::Physics::RANS
         if (DESMode == 3)
             return std::min(d, cDES * hMax);
 
-        const real kappa = 0.41;
-        const real denominator = sqr(kappa * d) * std::max(smallReal, gradUNorm);
+        const real denominator = SADESDenominator(d, gradUNorm);
         if (DESMode == 0)
         {
             const real rd = (nuTur + nuLam) / denominator;
-            const real shield = std::tanh(cube(8 * rd));
+            const real shield = SADDESShield(rd);
             // Equivalent to d-fd*max(0,d-lLES), without cancellation when
             // fd=1 and a wall-free cell has d much larger than its LES scale.
             return shield * d + (1 - shield) * std::min(d, cDES * hMax * psi);
@@ -102,14 +117,13 @@ namespace DNDS::Physics::RANS
         const real delta = std::min(std::max(std::max(0.15 * d, 0.15 * hMax), hWallNormal), hMax);
         const real lLES = cDES * delta * psi;
         const real alpha = 0.25 - d / hMax;
-        const real fB = std::min(2 * std::exp(-9 * sqr(alpha)), 1.0);
         const real rdt = nuTur / denominator;
         const real rdl = nuLam / denominator;
         const real ft = std::tanh(cube(sqr(1.63) * rdt));
         const real fl = std::tanh(std::pow(sqr(3.55) * rdl, 10));
         const real fe1 = 2 * std::exp(-(alpha >= 0 ? 11.09 : 9.0) * sqr(alpha));
         const real fe = std::max(fe1 - 1, 0.0) * psi * (1 - std::max(ft, fl));
-        const real fdTilde = DESMode == 2 ? fB : std::max(fB, std::tanh(cube(8 * rdt)));
+        const real fdTilde = SAIDDESShield(alpha, rdt, DESMode);
         return std::max(fdTilde * (1 + fe) * d + (1 - fdTilde) * lLES, lLES * smallReal);
     }
 
@@ -175,6 +189,16 @@ namespace DNDS::Physics::RANS
         static constexpr real cnu1 = 7.1;        ///< SA model constant c_{v1} controlling the viscous damping function f_{v1}.
         static constexpr real cn1 = 16.0;        ///< SA model constant c_{n1} for the negative-nuTilde extension function f_n.
         static constexpr real sigma = 2.0 / 3.0; ///< SA model diffusion coefficient sigma.
+    }
+
+    DNDS_DEVICE_CALLABLE inline real SADESPsi(real chi, real fnu1, real fnu2, real ft2)
+    {
+        if (chi <= 0)
+            return 10;
+        const real cb1 = .1355, cb2 = .622, kappa = .41, fwStar = .424;
+        const real cw1 = cb1 / sqr(kappa) + (1 + cb2) / SA::sigma;
+        return std::sqrt(std::max(1.0, std::min(100.0, (1 - cb1 / (cw1 * sqr(kappa) * fwStar) * (ft2 + (1 - ft2) * fnu2)) /
+                                                           (fnu1 * std::max(smallReal, 1 - ft2)))));
     }
 
     /// Euler SA eddy viscosity, including its established smooth nonnegative
@@ -1179,16 +1203,9 @@ namespace DNDS::Physics::RANS
         // Preserve the disabled-DES RANS path without evaluating hybrid functions.
         if (cDES <= 100)
         {
-            const real fwStar = .424;
             const real nuTur = mufPhy / UMeanXy(0) * std::max((Chi * fnu1), 0.0);
             const real nufPhy = mufPhy / UMeanXy(0);
-            real psiSqr = 0.0;
-            if (Chi <= 0)
-                psiSqr = 100.0;
-            else
-                psiSqr = std::min(100.0, (1 - cb1 / (cw1 * sqr(kappa) * fwStar) * (ft2 + (1 - ft2) * fnu2)) /
-                                             (fnu1 * std::max(smallReal, 1 - ft2)));
-            real psi = std::sqrt(std::max(psiSqr, 1.0));
+            const real psi = SADESPsi(Chi, fnu1, fnu2, ft2);
             lDES = GetLength_SA_DES(d, hMax, cDES, DESMode, nuTur, nufPhy, diffUNorm, psi);
         }
         d = lDES; //! super subs

@@ -79,7 +79,8 @@ namespace DNDS::Cauchy::Riemann
             // infinity merely by converting the canonical default.
             const real maximum = DNDS::Math::ScalarCast<real>(DNDS::Math::ScalarMaxFinite<Scalar>());
             return {Scalar(settings.dLambda), Scalar(settings.fixScale), Scalar(settings.incrementScale),
-                    Scalar(settings.referenceMach), Scalar(DNDS::Math::ScalarMin(settings.pressureStencilMin, maximum)), settings.rotation};
+                    Scalar(settings.referenceMach), Scalar(DNDS::Math::ScalarMin(settings.pressureStencilMin, maximum)), settings.rotation,
+                    Scalar(settings.dissipationScale)};
         }
         template <class Scalar>
         DNDS_DEVICE_CALLABLE inline FluxResult Convert(const FluxResultT<Scalar> &input) noexcept
@@ -140,7 +141,7 @@ namespace DNDS::Cauchy::Riemann
             const auto left = PhysicalFlux(input.left.flow, input.normal, input.gridVelocity);
             const auto right = PhysicalFlux(input.right.flow, input.normal, input.gridVelocity);
             for (int j = 0; j < 5; ++j)
-                result.flux[j] = .5 * (left[j] + right[j] - DNDS::Math::ScalarCast<real>(dissipation[j]));
+                result.flux[j] = .5 * (left[j] + right[j] - settings.dissipationScale * DNDS::Math::ScalarCast<real>(dissipation[j]));
             return result;
         }
     }

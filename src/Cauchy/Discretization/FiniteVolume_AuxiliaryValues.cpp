@@ -77,7 +77,7 @@ namespace DNDS::Cauchy
         {
             if (!workspace)
                 result._data->meanHalo.push_back(BindHalo(state.PhysicalField(iField)));
-            if (!workspace || (_data->equation.HasRANS() && _data->equation.RANS().ComponentNumber() == 2))
+            if (!workspace || _data->fluxPolicy.desDissipation || (_data->equation.HasRANS() && _data->equation.RANS().ComponentNumber() == 2))
                 result._data->gradientHalo.push_back(BindHalo(result.fields[iField]));
         }
         return result;
@@ -286,10 +286,10 @@ namespace DNDS::Cauchy
         const auto arrays = EquationAuxiliaryArrays(output);
         const index faces = _data->stencil.stencilFaces.RowCount();
         const index rows[10]{Metrics().NumCellProc(), faces, faces, faces, Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCellProc(), Metrics().NumCell(), Metrics().NumCellProc() - Metrics().NumCell()};
-        const index widths[8]{_data->equation.HasMixture() ? 5 : 3, 2, 1, 2, 1, 1, 2, 1};
+        const index widths[8]{_data->equation.HasMixture() ? 5 : 3, 2, 1, 2, 1, 1, 2, _data->fluxPolicy.desDissipation ? 2 : 1};
         if (output.cellTurbulentViscosity)
             DNDS_check_throw_info(_data->equation.HasRANS() && output.cellTurbulentViscosity->Layout().Kind() == R::RowLayoutKind::Table,
-                                  "cell turbulent viscosity requires RANS and a scalar table");
+                                  "cell turbulent viscosity requires RANS and a dense table");
         for (int k = 0; k < int(arrays.size()); ++k)
             if (arrays[k])
             {

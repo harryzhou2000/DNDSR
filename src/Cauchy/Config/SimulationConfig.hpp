@@ -186,6 +186,8 @@ namespace DNDS::Cauchy
         bool useStencil = true;
         bool pressureLLFBlend = false;
         real pressureLLFBlendStart = 1.05, pressureLLFBlendFull = 2;
+        std::string dissipationMode = "fullUpwind";
+        real dissipationCoefficient = 1;
         std::string rotation = "none", secondaryFlux;
         DNDS_DECLARE_CONFIG(RiemannSettings)
         {
@@ -195,12 +197,15 @@ namespace DNDS::Cauchy
             DNDS_FIELD(referenceMach, "Positive AUSM+-up reference Mach cutoff");
             DNDS_FIELD(pressureStencilMin, "AUSMPW+ stencil pressure upper bound; exact scalar input when useStencil is false");
             DNDS_FIELD(useStencil, "Supply cell-face-cell wave/pressure stencils to fluxes that use them; false keeps the explicit scalar inputs");
+            DNDS_FIELD(dissipationMode, "Convective dissipation before pressure LLF blending: fullUpwind, constant, or DES");
+            DNDS_FIELD(dissipationCoefficient, "Dissipation multiplier for constant mode or the unshielded DES region; 0 is central, 1 is full upwind", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(pressureLLFBlend, "Blend the final compressible convective flux toward face-normal LLF using the pressure stencil ratio, independently of useStencil");
             DNDS_FIELD(pressureLLFBlendStart, "Pressure stencil max/min ratio at the start of LLF blending");
             DNDS_FIELD(pressureLLFBlendFull, "Pressure stencil max/min ratio at full LLF blending");
             DNDS_FIELD(rotation, "Rotated flux axis: none, velocityJump (cell mean velocities), or faceNormal (face-center normal)");
             DNDS_FIELD(secondaryFlux, "Riemann solver along the rotation axis; empty uses the primary numerics.flux solver");
         }
+        void ValidateDissipation(bool compressible, std::string_view ransModel, real desScale) const;
         Riemann::FluxSettings KernelSettings(Riemann::Solver primary) const
         {
             const auto mode = rotation == "none"           ? Riemann::RotationMode::None

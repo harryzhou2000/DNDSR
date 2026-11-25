@@ -39,6 +39,51 @@ namespace DNDS::Physics::RANS
         return {};
     }
 
+    /// RANS fraction used by the active hybrid source, sampled at the cell
+    /// mean. DDES and SST keep full shielding when the DES length does not
+    /// activate. SST's existing hybrid source uses F2, independently of the
+    /// SA-only desMode selector.
+    DNDS_DEVICE_CALLABLE inline NumericalResult<real> TryDESShield(const PointParameters &parameters, const Point &point) noexcept
+    {
+        const auto status = CheckPoint(parameters, point);
+        if (!status)
+            return status;
+        if (!(parameters.desScale > 0 && parameters.desScale <= 100 &&
+              std::isfinite(point.cellLength) && point.cellLength > 0))
+            return NumericalStatus{NumericalError::InvalidInput};
+        const real d = std::min(point.wallDistance, std::pow(veryLargeReal, 1. / 6.));
+        const real rho = point.state[0], nu = point.molecularViscosity / rho;
+        const real lesLength = parameters.desScale * point.cellLength;
+        if (parameters.kind == ModelKind::KOmegaSST)
+        {
+            const real floor = std::pow(verySmallReal, 1. / 4.);
+            const real k = std::max(point.state[5] / rho, floor);
+            const real omega = std::max(point.state[6] / rho, floor);
+            const real f2 = SSTF2(k, omega, nu, point.wallDistance);
+            return std::sqrt(k) / (.09 * omega) * (1 - f2) > lesLength ? f2 : 1.0;
+        }
+        if (parameters.kind != ModelKind::SA)
+            return NumericalStatus{NumericalError::UnsupportedRequest};
+        if (parameters.desMode == 3)
+            return d <= lesLength ? 1.0 : 0.0;
+
+        const real chi = point.state[5] * parameters.viscosityReference / point.molecularViscosity;
+        const real chi3 = cube(chi);
+        const real fnu1 = chi3 / (chi3 + cube(SA::cnu1));
+        const real nuTur = nu * std::max(chi * fnu1, 0.0);
+        const Eigen::Vector3d velocity = point.state.template segment<3>(1) / rho;
+        const Eigen::Matrix3d velocityGradient =
+            (point.gradient.template block<3, 3>(0, 1) - point.gradient.col(0) * velocity.transpose()) / rho;
+        const real denominator = SADESDenominator(d, velocityGradient.norm());
+        if (parameters.desMode == 0)
+        {
+            const real ft2 = parameters.sa.useFt2 ? 1.2 * std::exp(-.5 * sqr(chi)) : 0.0;
+            const real psi = SADESPsi(chi, fnu1, 1 - chi / (1 + chi * fnu1), ft2);
+            return d <= lesLength * psi ? 1.0 : SADDESShield((nuTur + nu) / denominator);
+        }
+        return SAIDDESShield(.25 - d / point.cellLength, nuTur / denominator, parameters.desMode);
+    }
+
     /// Euler turbulent transport formulas. The false diagnostic template
     /// arguments suppress legacy fatal printing; outputs are checked here and
     /// failures returned explicitly. No clipping or alternate closure is added.

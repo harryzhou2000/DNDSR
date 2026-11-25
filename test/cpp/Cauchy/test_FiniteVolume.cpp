@@ -2635,7 +2635,7 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
         {
             CAPTURE(generic);
             CAPTURE(ratio);
-            const auto evaluate = [&](bool blend, bool llf)
+            const auto evaluate = [&](bool blend, bool llf, double coefficient = 1)
             {
                 C::DomainSettings settings;
                 settings.boundaries["7"].kind = "extrapolate";
@@ -2650,6 +2650,11 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
                     riemann.secondaryFlux = "Roe_M9";
                 }
                 riemann.pressureLLFBlend = blend;
+                if (coefficient != 1)
+                {
+                    riemann.dissipationMode = "constant";
+                    riemann.dissipationCoefficient = coefficient;
+                }
                 const auto equation = C::EquationSystem::Resolve(settings.equation);
                 C::FiniteVolume fv(mesh, settings, equation);
                 CHECK(fv.CompleteRHSAuxiliaryRequest().cellPressureMinimum == blend);
@@ -2667,8 +2672,7 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
                 }
                 auto logical = Bind(fv, state), output = Bind(fv, residual);
                 auto reconstruction = fv.BuildReconstructionState(logical);
-                auto work = fv.BuildWorkspace(logical, {}, C::FiniteVolume::WorkspaceOptions(
-                                                            generic ? C::FiniteVolume::RHSKernelPolicy::Generic : C::FiniteVolume::RHSKernelPolicy::Auto));
+                auto work = fv.BuildWorkspace(logical, {}, C::FiniteVolume::WorkspaceOptions(generic ? C::FiniteVolume::RHSKernelPolicy::Generic : C::FiniteVolume::RHSKernelPolicy::Auto));
                 R::EagerEngine engine;
                 const auto stream = engine.CreateCPUStream();
                 fv.Evaluate(logical, output, *reconstruction, *work, engine, stream);
@@ -2677,7 +2681,8 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
             };
             const auto base = evaluate(false, false), llf = evaluate(false, true), blend = evaluate(true, false);
             const auto a = base.Read(), b = llf.Read(), c = blend.Read();
-            const double weight = ratio < 1.05 ? 0. : ratio > 2 ? 1. : .5;
+            const double weight = ratio < 1.05 ? 0. : ratio > 2 ? 1.
+                                                                : .5;
             double difference = 0;
             for (DNDS::index cell = 0; cell < a.View().RowCount(); ++cell)
                 for (int j = 0; j < 5; ++j)
@@ -2688,6 +2693,18 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
                 }
             MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
             CHECK(difference > 1e-5);
+            if (ratio == 1.525)
+            {
+                const auto central = evaluate(false, false, 0), combined = evaluate(true, false, .25);
+                const auto d = central.Read(), e = combined.Read();
+                for (DNDS::index cell = 0; cell < a.View().RowCount(); ++cell)
+                    for (int j = 0; j < 5; ++j)
+                    {
+                        const double scaled = .75 * d.View()(cell, j) + .25 * a.View()(cell, j);
+                        const double expected = .5 * scaled + .5 * b.View()(cell, j);
+                        CHECK(e.View()(cell, j) == doctest::Approx(expected).epsilon(1e-11).scale(1));
+                    }
+            }
         }
 }
 

@@ -277,6 +277,7 @@ namespace DNDS::Cauchy::CPU
                                                                : equation.PrepareFluxState(leftMean);
                     const auto rightMeanData = !internal || !hasThermo ? equation.PrepareFluxState(rightMean) : Riemann::AcousticState{{rightMean, thermo(sample.other, 0)}, thermo(sample.other, 1)};
                     auto fluxSettings = baseFluxSettings;
+                    fluxSettings.dissipationScale = fluxPolicy.dissipationCoefficient;
                     if (useWave)
                     {
                         real jump = waveInput(iCell, 0);

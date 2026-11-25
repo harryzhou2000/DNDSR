@@ -246,6 +246,9 @@ namespace DNDS::Cauchy::CheckpointMetadata
                         (*riemann)["rotation"] = "none";
                     if (!riemann->contains("secondaryFlux"))
                         (*riemann)["secondaryFlux"] = "";
+                    if (riemann->value("dissipationMode", std::string("fullUpwind")) == "fullUpwind")
+                        for (const auto *name : {"dissipationMode", "dissipationCoefficient"})
+                            riemann->erase(name);
                     if (!riemann->value("pressureLLFBlend", false))
                         for (const auto *name : {"pressureLLFBlend", "pressureLLFBlendStart", "pressureLLFBlendFull"})
                             riemann->erase(name);

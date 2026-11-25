@@ -3,6 +3,8 @@
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
+#include "Cauchy/Discretization/FiniteVolumeKernelPolicy.hpp"
+#include "Physics/RANS/PointKernels.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Physics/PhysicsResources.hpp"
@@ -77,6 +79,65 @@ namespace
         }
         return {fv.Equation().Schema(), std::move(fields), std::move(bindings)};
     }
+}
+
+TEST_CASE("Hybrid RANS dissipation prepares the cell shield and averages it symmetrically")
+{
+    namespace RANS = DNDS::Physics::RANS;
+    auto mesh = CFVTest::CartesianHexes(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    for (const auto *model : {"SA", "KOmegaSST"})
+    {
+        CAPTURE(model);
+        auto settings = Settings();
+        settings.equation.rans.model = model;
+        settings.equation.rans.desScale = .65;
+        settings.numerics.riemann.dissipationMode = "DES";
+        settings.numerics.riemann.dissipationCoefficient = .2;
+        CHECK_THROWS(settings.numerics.riemann.ValidateDissipation(true, model, DNDS::veryLargeReal));
+        CHECK_THROWS(settings.numerics.riemann.ValidateDissipation(false, model, .65));
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = State(fv, true);
+        Fill(state, fv, true);
+        auto output = C::EquationDofOperations::NewVector(state);
+        auto rec = fv.BuildReconstructionState(state);
+        auto work = fv.BuildWorkspace(state);
+        auto auxiliary = fv.BuildAuxiliaryValues(fv.CompleteRHSAuxiliaryRequest());
+        R::EagerEngine engine;
+        fv.Evaluate(state, output, *rec, *work, auxiliary, engine, engine.CreateCPUStream());
+        engine.Synchronize();
+        REQUIRE(auxiliary.cellTurbulentViscosity);
+        const auto prepared = auxiliary.cellTurbulentViscosity->Read();
+        REQUIRE(prepared.View().Width() == 2);
+        for (I i = 0; i < prepared.View().RowCount(); ++i)
+            CHECK(prepared.View()(i, 1) < 1e-10);
+
+        RANS::Point attached;
+        attached.state << 1., .1, 0., 0., 3., .02, .1;
+        attached.molecularViscosity = .001;
+        attached.cellLength = .25;
+        attached.wallDistance = .01;
+        auto shield = RANS::TryDESShield(equation.RANS().KernelParameters(), attached);
+        REQUIRE(bool(shield));
+        CHECK(shield.value == 1);
+    }
+    R::Array<DNDS::real> values(R::RowLayout::Dense(2, 2));
+    {
+        auto write = values.Write();
+        write.View()(0, 1) = 0;
+        write.View()(1, 1) = 1;
+    }
+    const auto read = values.Read();
+    const auto table = C::CellCenterViscosityView::From(read.View<R::TableRows>(), false);
+    C::FiniteVolumeDetail::FluxKernelPolicy policy;
+    policy.desDissipation = true;
+    policy.dissipationCoefficient = .2;
+    CHECK(policy.DissipationAtFace(table, 0, 1) == doctest::Approx(.6));
+    CHECK(policy.DissipationAtFace(table, 1, 0) == doctest::Approx(.6));
+    CHECK(policy.DissipationAtFace(table, 1, DNDS::UnInitIndex) == 1.);
+    CHECK(table.AtFace(0, 1) == -1.);
 }
 
 TEST_CASE("Full-width LVR applies the shared P1 target to SA across grouping and overlap")
