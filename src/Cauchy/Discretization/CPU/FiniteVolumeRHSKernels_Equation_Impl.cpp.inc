@@ -9,6 +9,7 @@
 #include "Physics/Incompressible/RANSPoint.hpp"
 #include "Cauchy/Physics/ACMFlux.hpp"
 #include "Cauchy/Physics/ViscousFlux.hpp"
+#include "Cauchy/Boundary/PerfectGasBoundary.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "Cauchy/Riemann/RiemannFluxMath.hpp"
 #include "DNDS/Core/OMP.hpp"
@@ -344,6 +345,14 @@ namespace DNDS::Cauchy::CPU
                 }
                 auto leftFlow = left.Flow(request.flowFirst), rightFlow = right.Flow(request.flowFirst);
                 const bool wallFluxState = noRsOnWall && !internal && boundaryKind == BoundaryKind::NoSlipWall;
+                const bool mirrorIsothermal = fluxPolicy.isothermalWallInviscidMirror && !wallFluxState &&
+                                              !internal && boundaryKind == BoundaryKind::NoSlipWall && sample.boundary.isothermal;
+                Vector3 wallVelocity{};
+                if (mirrorIsothermal)
+                {
+                    wallVelocity = sample.boundary.WallVelocityAt({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, OptionalRef<const RigidFrame>(frame));
+                    leftFlow = ReflectWallVelocity(rightFlow, wallVelocity);
+                }
                 const auto prepareWallState = [&]
                 {
                     face.values = left.values;
@@ -380,8 +389,9 @@ namespace DNDS::Cauchy::CPU
                     output = PointEvaluator::FluxState(flow, properties);
                     return {};
                 };
-                auto status = wallFluxState ? evaluateDirect(leftFlow, face, leftData)
-                                            : evaluateReconstructedPoint(iCell, left, leftFlow, sample, false, leftData);
+                auto status = wallFluxState      ? evaluateDirect(leftFlow, face, leftData)
+                              : mirrorIsothermal ? evaluateDirect(leftFlow, right, leftData)
+                                                 : evaluateReconstructedPoint(iCell, left, leftFlow, sample, false, leftData);
                 if (!status)
                     return status;
                 status = wallFluxState ? evaluateDirect(rightFlow, face, rightData)
@@ -415,7 +425,8 @@ namespace DNDS::Cauchy::CPU
                             return exterior.status.At(iCell, sample.point);
                         meanRight = exterior.value;
                     }
-                    meanLeftData = request.preparedMean
+                    meanLeftData = mirrorIsothermal ? equation.PrepareFluxState(ReflectWallVelocity(meanRight, wallVelocity))
+                                   : request.preparedMean
                                        ? Riemann::AcousticState{{meanLeft, (*request.preparedMean)(iCell, 0)}, (*request.preparedMean)(iCell, 1)}
                                        : equation.PrepareFluxState(meanLeft);
                     meanRightData = request.preparedMean && internal
@@ -465,7 +476,9 @@ namespace DNDS::Cauchy::CPU
                                        : convection.contact;
                 for (index j = 0; j < width; ++j)
                     if (j < request.flowFirst || j >= request.flowFirst + 5)
-                        flux[j] = wallFluxState ? face.values[j] * speedLeft : AdvectedScalarFlux(left.values[j], right.values[j], speedLeft, speedRight, alpha);
+                        flux[j] = wallFluxState ? face.values[j] * speedLeft
+                                                : AdvectedScalarFlux(mirrorIsothermal ? right.values[j] : left.values[j],
+                                                                     right.values[j], speedLeft, speedRight, alpha);
                 for (int j = 0; j < 5; ++j)
                 {
                     flux[request.flowFirst + j] = flowFlux[j];
@@ -481,7 +494,8 @@ namespace DNDS::Cauchy::CPU
                         DNDS_assert_info(!ransModel && independent == 0 && request.flowFirst == 0 && width == 5,
                                          "primitive-gradient leaf requires pure flow5");
                         const auto &gas = equation.Gas();
-                        auto primitive = gas.Primitive(leftFlow);
+                        const auto viscousLeftFlow = mirrorIsothermal ? left.Flow(request.flowFirst) : leftFlow;
+                        auto primitive = gas.Primitive(viscousLeftFlow);
                         FlowGradient gradient{};
                         for (int j = 0; j < 5; ++j)
                             for (int d = 0; d < 3; ++d)
@@ -536,7 +550,7 @@ namespace DNDS::Cauchy::CPU
                         {
                             FlowState faceMean{};
                             for (int j = 0; j < 5; ++j)
-                                faceMean[j] = .5 * (leftFlow[j] + rightFlow[j]);
+                                faceMean[j] = .5 * (viscousLeftFlow[j] + rightFlow[j]);
                             primitive = gas.Primitive(faceMean);
                             if (!sample.boundary.isothermal)
                             {

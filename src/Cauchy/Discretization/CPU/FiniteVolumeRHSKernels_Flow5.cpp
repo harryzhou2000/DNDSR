@@ -4,6 +4,7 @@
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"
 #include "Cauchy/Discretization/ViscousFlux.hpp"
 #include "Cauchy/Physics/PerfectGasCompute.hpp"
+#include "Cauchy/Boundary/PerfectGasBoundary.hpp"
 #include <cstdio>
 #include <cstdlib>
 
@@ -249,13 +250,19 @@ namespace DNDS::Cauchy::CPU
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                     const bool wallFluxState = noRsOnWall && !internal && boundaryKind == BoundaryKind::NoSlipWall;
+                    const bool mirrorIsothermal = fluxPolicy.isothermalWallInviscidMirror && !wallFluxState &&
+                                                  !internal && boundaryKind == BoundaryKind::NoSlipWall && sample.boundary.isothermal;
+                    const Vector3 wallVelocity = mirrorIsothermal
+                                                     ? sample.boundary.WallVelocityAt(point, OptionalRef<const RigidFrame>(frame))
+                                                     : Vector3{};
                     const auto convectiveLeftResult = wallFluxState ? FiniteVolumeDetail::BoundaryFaceValue(sample, gas, left.state, request.time, frame, incoming)
                                                                     : NumericalResult<FlowState>{left.state};
                     if (!convectiveLeftResult)
                         return convectiveLeftResult.status.At(iCell, sample.point);
                     const auto &convectiveLeft = convectiveLeftResult.value;
                     const auto convectiveRight = wallFluxState ? convectiveLeft : right;
-                    const auto leftFlux = equation.PrepareFluxState(convectiveLeft), rightFlux = equation.PrepareFluxState(convectiveRight);
+                    const auto leftFlux = equation.PrepareFluxState(mirrorIsothermal ? ReflectWallVelocity(right, wallVelocity) : convectiveLeft);
+                    const auto rightFlux = equation.PrepareFluxState(convectiveRight);
                     const auto gridVelocity = frame.GridVelocity(point);
                     const auto leftMean = Load(mean, iCell);
                     const auto otherMean = internal ? Load(mean, sample.other) : FlowState{};
@@ -264,7 +271,9 @@ namespace DNDS::Cauchy::CPU
                     if (!rightMeanResult)
                         return rightMeanResult.status.At(iCell, sample.point);
                     const auto &rightMean = rightMeanResult.value;
-                    const auto leftMeanData = hasThermo ? Riemann::AcousticState{{leftMean, thermo(iCell, 0)}, thermo(iCell, 1)} : equation.PrepareFluxState(leftMean);
+                    const auto leftMeanData = mirrorIsothermal ? equation.PrepareFluxState(ReflectWallVelocity(rightMean, wallVelocity))
+                                              : hasThermo      ? Riemann::AcousticState{{leftMean, thermo(iCell, 0)}, thermo(iCell, 1)}
+                                                               : equation.PrepareFluxState(leftMean);
                     const auto rightMeanData = !internal || !hasThermo ? equation.PrepareFluxState(rightMean) : Riemann::AcousticState{{rightMean, thermo(sample.other, 0)}, thermo(sample.other, 1)};
                     auto fluxSettings = baseFluxSettings;
                     if (useWave)

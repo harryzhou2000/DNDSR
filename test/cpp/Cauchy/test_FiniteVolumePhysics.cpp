@@ -393,7 +393,7 @@ TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics
 TEST_CASE("Equation wall values preserve internal energy and support empty owners on a physical 3D mesh")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 1);
-    for (int scenario = 0; scenario < 5; ++scenario)
+    for (int scenario = 0; scenario < 6; ++scenario)
     {
         C::DomainSettings settings;
         settings.mesh.dimension = 3;
@@ -401,7 +401,7 @@ TEST_CASE("Equation wall values preserve internal energy and support empty owner
         settings.equation.viscosity = .002;
         settings.numerics.viscousGradient = "polynomial";
         settings.numerics.faceFallback = false;
-        settings.boundaries["7"].kind = scenario < 2 || scenario == 4 ? "noSlipWall" : scenario == 2 ? "farfield"
+        settings.boundaries["7"].kind = scenario < 2 || scenario >= 4 ? "noSlipWall" : scenario == 2 ? "farfield"
                                                                                                      : "analytic";
         settings.boundaries["7"].primitive = {.9, -.3, .1, .2, 1.2};
         if (scenario == 2 || scenario == 3)
@@ -409,12 +409,21 @@ TEST_CASE("Equation wall values preserve internal energy and support empty owner
             settings.numerics.reconstruction = "variational";
             settings.numerics.cfv.maxOrder = 3;
         }
-        if (scenario == 1 || scenario == 4)
+        if (scenario == 1 || scenario >= 4)
         {
             settings.boundaries["7"].thermal = "isothermal";
             settings.boundaries["7"].temperature = .7;
         }
         settings.numerics.noRsOnWall = scenario == 4;
+        if (scenario == 5)
+        {
+            settings.equation.transport = "inviscid";
+            settings.equation.viscosity = 0;
+            settings.numerics.flux = "Roe_M9";
+            settings.numerics.riemann.rotation = "velocityJump";
+            settings.numerics.riemann.secondaryFlux = "Roe_M2";
+            settings.numerics.isothermalWallInviscidMirror = true;
+        }
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
         auto raw = fv.Metrics().BuildField(5);
@@ -441,6 +450,16 @@ TEST_CASE("Equation wall values preserve internal energy and support empty owner
         fv.Evaluate(generic, expected, *genericReconstruction, *genericWork, engine, stream);
         fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
         Compare(result, expected, 2e-12);
+        if (scenario == 5)
+        {
+            const auto owned = result.ReadOwned();
+            const auto flow = owned.Block("flow");
+            for (I cell = 0; cell < flow.RowCount(); ++cell)
+            {
+                CHECK(std::abs(flow(cell, 0)) < 1e-12);
+                CHECK(std::abs(flow(cell, 4)) < 1e-12);
+            }
+        }
         C::AuxiliaryRequest request;
         request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
         auto originalAux = fv.BuildAuxiliaryValues(request), equationAux = fv.BuildAuxiliaryValues(request);

@@ -11,5 +11,6 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         bool pressureStencil = false;
         bool noRsOnWall = false;
         bool noGRPOnWall = false;
+        bool isothermalWallInviscidMirror = false;
     };
 }

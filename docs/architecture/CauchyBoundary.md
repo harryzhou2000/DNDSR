@@ -49,6 +49,13 @@ The `noRsOnWall` option instead uses the physical wall state for thermodynamics.
 `noGRPOnWall` suppresses the polynomial jump penalty while retaining the gradient.
 Neither option changes the prescribed wall temperature or silently changes dt.
 
+With `isothermalWallInviscidMirror=true`, the convective left state is
+formed from the isothermal exterior by reflecting its velocity about the
+wall velocity at fixed density and internal energy. The same pairing is
+used for the mean states that drive rotation and wave-speed estimates.
+The viscous flux and reconstruction retain their own wall states.
+`noRsOnWall` takes precedence if both options are enabled.
+
 RANS follows the active Euler policy: SA's `USE_FIX_ZERO_SA_NUT_AT_WALL` zero
 target is honored in reconstruction and RHS. Two-equation wall values use
 the cell mean and nodal-distance-derived mean distance. Molecular viscosity is

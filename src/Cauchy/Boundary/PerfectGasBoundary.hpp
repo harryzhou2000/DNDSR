@@ -47,6 +47,19 @@ namespace DNDS::Cauchy
         return velocity;
     }
 
+    /// Reflect momentum about the wall velocity at fixed density and internal energy.
+    DNDS_DEVICE_CALLABLE inline FlowState ReflectWallVelocity(
+        FlowState state, const Vector3 &wallVelocity) noexcept
+    {
+        for (int d = 0; d < 3; ++d)
+        {
+            const real difference = state[0] * wallVelocity[d] - state[1 + d];
+            state[1 + d] += 2 * difference;
+            state[4] += 2 * wallVelocity[d] * difference;
+        }
+        return state;
+    }
+
     /// Prescribed-in-reconstruction physical face or reflected exterior flow
     /// state. exterior=true requests the state for flux/mirrored reconstruction;
     /// false gives the physical face target. Isothermal exterior density uses

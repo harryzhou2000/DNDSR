@@ -124,6 +124,8 @@ namespace DNDS::Cauchy::CUDA::Detail
         const bool internal = sample.other != UnInitIndex;
         const bool wall = !internal && condition.kind == BoundaryKind::NoSlipWall;
         const bool wallFluxState = wall && controls.fluxPolicy.noRsOnWall;
+        const bool mirrorIsothermal = wall && condition.isothermal && controls.fluxPolicy.isothermalWallInviscidMirror && !wallFluxState;
+        const auto wallVelocity = mirrorIsothermal ? PrepareWallVelocity(condition, sample.ownPoint, controls.frame) : Vector3{};
         PerfectGasKernelPoint<Components> left, right, face;
         ReconstructPoint<Components, PolynomialScalar>(geometry, parameters, controls, fields, sample, false, left, fallbacks);
         if (internal)
@@ -150,7 +152,9 @@ namespace DNDS::Cauchy::CUDA::Detail
             if (!status)
                 return status.At(sample.cell, sample.point);
         }
-        auto leftData = wallFluxState ? Acoustic(gas, face.Flow()) : PointAcoustic(parameters, controls, fields, sample, false, left, fallbacks);
+        auto leftData = wallFluxState      ? Acoustic(gas, face.Flow())
+                        : mirrorIsothermal ? Acoustic(gas, ReflectWallVelocity(right.Flow(), wallVelocity))
+                                           : PointAcoustic(parameters, controls, fields, sample, false, left, fallbacks);
         if (!leftData)
             return leftData.status.At(sample.cell, sample.point);
         auto rightData = wallFluxState ? Acoustic(gas, face.Flow()) : internal ? PointAcoustic(parameters, controls, fields, sample, true, right, fallbacks)
@@ -179,11 +183,11 @@ namespace DNDS::Cauchy::CUDA::Detail
                     return result.status.At(sample.cell, sample.point);
                 rightMean = result.value;
             }
-            if (fields.hasPreparedMean)
+            if (fields.hasPreparedMean && !mirrorIsothermal)
                 meanLeftData = {{leftMean, fields.preparedMean(sample.cell, 0)}, fields.preparedMean(sample.cell, 1)};
             else
             {
-                const auto result = Acoustic(gas, leftMean);
+                const auto result = Acoustic(gas, mirrorIsothermal ? ReflectWallVelocity(rightMean, wallVelocity) : leftMean);
                 if (!result)
                     return result.status.At(sample.cell, sample.point);
                 meanLeftData = result.value;
@@ -249,7 +253,9 @@ namespace DNDS::Cauchy::CUDA::Detail
                                ? .5 * (std::abs(speedLeft) + std::abs(speedRight))
                                : convection.contact;
         for (int j = 5; j < Components; ++j)
-            flux[j] = wallFluxState ? face.values[j] * speedLeft : AdvectedScalarFlux(left.values[j], right.values[j], speedLeft, speedRight, alpha);
+            flux[j] = wallFluxState ? face.values[j] * speedLeft
+                                    : AdvectedScalarFlux(mirrorIsothermal ? right.values[j] : left.values[j],
+                                                         right.values[j], speedLeft, speedRight, alpha);
         // Cauchy omits the former isotropic 2*rho*k/3 momentum flux and energy work.
         if (controls.viscous && (internal || wall))
         {
