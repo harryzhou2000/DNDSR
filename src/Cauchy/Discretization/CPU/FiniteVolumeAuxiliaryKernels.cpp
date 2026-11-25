@@ -132,6 +132,7 @@ namespace DNDS::Cauchy::CPU
                 const bool acm = equation.IsACM();
                 const Riemann::AcousticState leftData{{acm ? FlowState{} : left.Flow(request.flowFirst), leftProperties[0]}, leftProperties[1]};
                 real convection = 0, diffusion = 0, jump = 0, minimum = leftProperties[0];
+                real maximum = minimum;
                 const auto count = metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace);
                 for (index q = 0; q < count; ++q)
                 {
@@ -210,7 +211,10 @@ namespace DNDS::Cauchy::CPU
                     if (wave && !acm)
                         jump = std::max(jump, Riemann::TransverseSignalJump(leftData, rightData, normal));
                     if (pressure)
+                    {
                         minimum = std::min(minimum, rightProperties[0]);
+                        maximum = std::max(maximum, rightProperties[0]);
+                    }
                 }
                 if (request.enabled[1])
                 {
@@ -220,12 +224,17 @@ namespace DNDS::Cauchy::CPU
                 if (request.enabled[2])
                     request.values[2](iAux, 0) = jump;
                 if (request.enabled[3])
+                {
                     request.values[3](iAux, 0) = minimum;
+                    request.values[3](iAux, 1) = maximum;
+                }
                 if (request.useScratch)
                 {
                     request.scratch(iAux, 0) = convection + diffusion;
                     request.scratch(iAux, 1) = jump;
                     request.scratch(iAux, 2) = minimum;
+                    if (request.scratch.Width() == 4)
+                        request.scratch(iAux, 3) = maximum;
                 }
             }
             return {};
@@ -251,7 +260,7 @@ namespace DNDS::Cauchy::CPU
                     { OMP::ForRows(0, cells.RowCount(), [&](index iRow)
                                    {
             const index iCell = cellAt(iRow);
-            real sum = 0, wave = 0, pressure = std::numeric_limits<real>::max();
+            real sum = 0, wave = 0, minimum = std::numeric_limits<real>::max(), maximum = std::numeric_limits<real>::lowest();
             for (index entry = request.stencil.auxiliaryCellOffsets(iCell, 0);
                  entry < request.stencil.auxiliaryCellOffsets(iCell + 1, 0); ++entry)
             {
@@ -262,14 +271,20 @@ namespace DNDS::Cauchy::CPU
                 if (request.enabled[5])
                     wave = std::max(wave, request.enabled[2] ? request.values[2](iAux, 0) : request.scratch(iAux, 1));
                 if (request.enabled[6])
-                    pressure = std::min(pressure, request.enabled[3] ? request.values[3](iAux, 0) : request.scratch(iAux, 2));
+                {
+                    minimum = std::min(minimum, request.enabled[3] ? request.values[3](iAux, 0) : request.scratch(iAux, 2));
+                    maximum = std::max(maximum, request.enabled[3] ? request.values[3](iAux, 1) : request.scratch(iAux, 3));
+                }
             }
             if (request.enabled[4])
                 request.values[4](iCell, 0) = sum + metric.GetCellVol(iCell) * rotationBound;
             if (request.enabled[5])
                 request.values[5](iCell, 0) = wave;
             if (request.enabled[6])
-                request.values[6](iCell, 0) = pressure; }); });
+            {
+                request.values[6](iCell, 0) = minimum;
+                request.values[6](iCell, 1) = maximum;
+            } }); });
     }
 
 }

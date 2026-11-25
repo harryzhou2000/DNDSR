@@ -51,7 +51,8 @@ namespace DNDS::Cauchy::CUDA::Detail
         Pair<Components> mean;
         Reconstruction reconstruction;
         ViscousInput viscous;
-        Pair<1> waveJump, pressureMinimum;
+        Pair<1> waveJump;
+        Pair<2> pressureMinimum;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<2>> preparedMean;
         CellCenterViscosityView centerViscosity;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<Components, Components>> incoming;
@@ -96,7 +97,7 @@ namespace DNDS::Cauchy::CUDA::Detail
         if (fields.hasWave)
             result.waveJump = ProjectRHSField<Runtime::FixedRows<1, 1>>(fields.waveJump);
         if (fields.hasPressure)
-            result.pressureMinimum = ProjectRHSField<Runtime::FixedRows<1, 1>>(fields.pressureMinimum);
+            result.pressureMinimum = ProjectRHSField<Runtime::FixedRows<2, 2>>(fields.pressureMinimum);
         result.centerViscosity = fields.centerViscosity;
         result.hasPreparedMean = fields.hasPreparedMean;
         result.hasIncoming = fields.hasIncoming;

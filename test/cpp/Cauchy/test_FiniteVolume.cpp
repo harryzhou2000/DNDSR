@@ -1768,7 +1768,7 @@ TEST_CASE("Riemann spatial stencils are computed by owners and exchanged across 
                 const auto point = fv.Metrics().GetCellCent(iCell);
                 const auto own = primitive(point[0], point[1]);
                 const auto sound = std::sqrt(settings.equation.gamma * own[4] / own[0]);
-                double expectedJump = 0, expectedPressure = own[4], expectedRadius = 0;
+                double expectedJump = 0, expectedPressure = own[4], expectedMaxPressure = own[4], expectedRadius = 0;
                 // Independent Cartesian oracle. In particular, ghost rows
                 // include all four neighbors of their owner, not only the
                 // subset incident to this rank's owned cells.
@@ -1782,12 +1782,14 @@ TEST_CASE("Riemann spatial stencils are computed by owners and exchanged across 
                         const double velocityJump = sign * (next[1 + direction] - own[1 + direction]);
                         expectedJump = std::max({expectedJump, std::abs(velocityJump + acousticJump), std::abs(velocityJump - acousticJump), std::abs(acousticJump)});
                         expectedPressure = std::min(expectedPressure, next[4]);
+                        expectedMaxPressure = std::max(expectedMaxPressure, next[4]);
                         expectedRadius += std::max(std::abs(own[1 + direction]) + sound,
                                                    std::abs(next[1 + direction]) + std::sqrt(settings.equation.gamma * next[4] / next[0])) /
                                           8.;
                     }
                 CHECK(waves(iCell, 0) == doctest::Approx(expectedJump).epsilon(3e-12));
                 CHECK(pressures(iCell, 0) == doctest::Approx(expectedPressure).epsilon(3e-12));
+                CHECK(pressures(iCell, 1) == doctest::Approx(expectedMaxPressure).epsilon(3e-12));
                 if (iCell < fv.Metrics().NumCell())
                     CHECK(sums.View()(iCell, 0) == doctest::Approx(expectedRadius).epsilon(3e-12));
                 ++tested[iCell < fv.Metrics().NumCell() ? 0 : 1];
@@ -2589,13 +2591,17 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
         // catches an operator that silently re-prepares or ignores the bundle.
         if (auxiliary.cellWaveJump || auxiliary.cellPressureMinimum)
         {
-            auto substitute = fv.Metrics().BuildField(1), changed = fv.Metrics().BuildField(5);
+            auto substitute = fv.Metrics().BuildField(auxiliary.cellPressureMinimum ? 2 : 1), changed = fv.Metrics().BuildField(5);
             for (auto *array : {&substitute.Owned(), &substitute.Ghost()})
             {
                 auto write = array->Write();
                 const auto view = write.View<R::UniformTableRows>();
                 for (DNDS::index iCell = 0; iCell < view.RowCount(); ++iCell)
+                {
                     view(iCell, 0) = auxiliary.cellWaveJump ? 100 : 1e-6;
+                    if (auxiliary.cellPressureMinimum)
+                        view(iCell, 1) = 1.;
+                }
             }
             auto own = substitute.Owned().Read(), ghost = substitute.Ghost().Read(), recGhost = coefficients.Ghost().Read();
             auto modified = input;
@@ -2619,6 +2625,70 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             CHECK(anyDiffers == 1);
         }
     }
+}
+
+TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 4);
+    for (const bool generic : {false, true})
+        for (const double ratio : {1.04, 1.525, 2.1})
+        {
+            CAPTURE(generic);
+            CAPTURE(ratio);
+            const auto evaluate = [&](bool blend, bool llf)
+            {
+                C::DomainSettings settings;
+                settings.boundaries["7"].kind = "extrapolate";
+                settings.numerics.reconstruction = "gradient";
+                settings.numerics.cfv.maxOrder = 1;
+                settings.numerics.flux = llf ? "rusanov" : "HLLC";
+                auto &riemann = settings.numerics.riemann;
+                riemann.useStencil = false;
+                if (!llf)
+                {
+                    riemann.rotation = "velocityJump";
+                    riemann.secondaryFlux = "Roe_M9";
+                }
+                riemann.pressureLLFBlend = blend;
+                const auto equation = C::EquationSystem::Resolve(settings.equation);
+                C::FiniteVolume fv(mesh, settings, equation);
+                CHECK(fv.CompleteRHSAuxiliaryRequest().cellPressureMinimum == blend);
+                auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+                {
+                    auto write = state.Owned().Write();
+                    for (DNDS::index cell = 0; cell < write.View().RowCount(); ++cell)
+                    {
+                        const auto point = fv.Metrics().GetCellCent(cell);
+                        const bool high = int(4 * point[0]) % 2 == 0;
+                        const auto u = equation.Gas().Conservative({high ? 1.2 : 1., high ? .6 : .1, high ? -.2 : .3, .04, high ? ratio : 1.});
+                        for (int j = 0; j < 5; ++j)
+                            write.View()(cell, j) = u[j];
+                    }
+                }
+                auto logical = Bind(fv, state), output = Bind(fv, residual);
+                auto reconstruction = fv.BuildReconstructionState(logical);
+                auto work = fv.BuildWorkspace(logical, {}, C::FiniteVolume::WorkspaceOptions(
+                                                            generic ? C::FiniteVolume::RHSKernelPolicy::Generic : C::FiniteVolume::RHSKernelPolicy::Auto));
+                R::EagerEngine engine;
+                const auto stream = engine.CreateCPUStream();
+                fv.Evaluate(logical, output, *reconstruction, *work, engine, stream);
+                engine.Synchronize();
+                return residual.Owned();
+            };
+            const auto base = evaluate(false, false), llf = evaluate(false, true), blend = evaluate(true, false);
+            const auto a = base.Read(), b = llf.Read(), c = blend.Read();
+            const double weight = ratio < 1.05 ? 0. : ratio > 2 ? 1. : .5;
+            double difference = 0;
+            for (DNDS::index cell = 0; cell < a.View().RowCount(); ++cell)
+                for (int j = 0; j < 5; ++j)
+                {
+                    const double expected = (1 - weight) * a.View()(cell, j) + weight * b.View()(cell, j);
+                    CHECK(c.View()(cell, j) == doctest::Approx(expected).epsilon(1e-11).scale(1));
+                    difference = std::max(difference, std::abs(a.View()(cell, j) - b.View()(cell, j)));
+                }
+            MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            CHECK(difference > 1e-5);
+        }
 }
 
 TEST_CASE("Direct FV consumes physical gradients without coefficients and splits flux from source")

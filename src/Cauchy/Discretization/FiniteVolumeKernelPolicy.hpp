@@ -12,5 +12,11 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         bool noRsOnWall = false;
         bool noGRPOnWall = false;
         bool isothermalWallInviscidMirror = false;
+        bool pressureLLFBlend = false;
+        real pressureLLFBlendStart = 1.05, pressureLLFBlendFull = 2;
+        DNDS_DEVICE_CALLABLE bool NeedsPressureBounds(bool useStencil) const noexcept
+        {
+            return (useStencil && pressureStencil) || pressureLLFBlend;
+        }
     };
 }

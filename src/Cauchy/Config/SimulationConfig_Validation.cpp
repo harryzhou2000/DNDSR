@@ -83,6 +83,11 @@ namespace DNDS::Cauchy
                                   std::isfinite(riemann.dLambda) && riemann.dLambda >= 0 && std::isfinite(riemann.referenceMach) && riemann.referenceMach > 0 &&
                                   std::isfinite(riemann.pressureStencilMin) && riemann.pressureStencilMin > 0,
                               "invalid Cauchy Riemann controls");
+        DNDS_check_throw_info(std::isfinite(riemann.pressureLLFBlendStart) && riemann.pressureLLFBlendStart >= 1 &&
+                                  std::isfinite(riemann.pressureLLFBlendFull) && riemann.pressureLLFBlendFull > riemann.pressureLLFBlendStart,
+                              "LLF pressure blend requires finite ratios with 1 <= start < full");
+        DNDS_check_throw_info(!riemann.pressureLLFBlend || equation.system == "compressible",
+                              "LLF pressure blending requires compressible flow");
         PrimitiveValid(settings.initialPrimitive);
         DNDS_check_throw_info(std::isfinite(settings.initialTemperature) && settings.initialTemperature >= 0 &&
                                   (equation.eos != "perfectGas" || settings.initialMassFractions.empty()),

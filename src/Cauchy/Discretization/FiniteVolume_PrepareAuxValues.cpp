@@ -48,16 +48,16 @@ namespace DNDS::Cauchy
         if (request.faceWaveJump)
             values.faceWaveJump.emplace(R::RowLayout::Dense(faces, 1), Device());
         if (request.facePressureMinimum)
-            values.facePressureMinimum.emplace(R::RowLayout::Dense(faces, 1), Device());
+            values.facePressureMinimum.emplace(R::RowLayout::Dense(faces, 2), Device());
         if (request.cellSpectralSum)
             values.cellSpectralSum.emplace(Metrics().BuildField(1));
         if (request.cellWaveJump)
             values.cellWaveJump.emplace(Metrics().BuildField(1));
         if (request.cellPressureMinimum)
-            values.cellPressureMinimum.emplace(Metrics().BuildField(1));
+            values.cellPressureMinimum.emplace(Metrics().BuildField(2));
         if ((request.cellSpectralSum && !request.faceSpectralRadius) || (request.cellWaveJump && !request.faceWaveJump) ||
             (request.cellPressureMinimum && !request.facePressureMinimum))
-            values._faceScratch.emplace(R::RowLayout::Dense(faces, 3), Device());
+            values._faceScratch.emplace(R::RowLayout::Dense(faces, request.cellPressureMinimum ? 4 : 3), Device());
         const auto label = [](const auto &array, const char *name)
         {
             if (array)
@@ -67,7 +67,7 @@ namespace DNDS::Cauchy
         label(values.cellTurbulentViscosity, "cellTurbulentViscosity");
         label(values.faceSpectralRadius, "faceSpectralRadius");
         label(values.faceWaveJump, "faceWaveJump");
-        label(values.facePressureMinimum, "facePressureMinimum");
+        label(values.facePressureMinimum, "facePressureBounds");
         label(values._faceScratch, "faceScratch");
         const auto labelCells = [](const auto &field, const char *name)
         {
@@ -79,7 +79,7 @@ namespace DNDS::Cauchy
         };
         labelCells(values.cellSpectralSum, "cellSpectralSum");
         labelCells(values.cellWaveJump, "cellWaveJump");
-        labelCells(values.cellPressureMinimum, "cellPressureMinimum");
+        labelCells(values.cellPressureMinimum, "cellPressureBounds");
         return values;
     }
     AuxiliaryRequest FiniteVolume::CompleteRHSAuxiliaryRequest(AuxiliaryRequest request) const
@@ -89,10 +89,8 @@ namespace DNDS::Cauchy
             _data->settings.numerics.limiter == "WBAP")
             request.meanThermodynamics = true;
         if (_data->settings.numerics.riemann.useStencil)
-        {
             request.cellWaveJump = request.cellWaveJump || _data->fluxPolicy.transverseSignal;
-            request.cellPressureMinimum = request.cellPressureMinimum || _data->fluxPolicy.pressureStencil;
-        }
+        request.cellPressureMinimum = request.cellPressureMinimum || _data->fluxPolicy.NeedsPressureBounds(_data->settings.numerics.riemann.useStencil);
         return request;
     }
     std::vector<index> FiniteVolume::AuxiliaryFaces() const

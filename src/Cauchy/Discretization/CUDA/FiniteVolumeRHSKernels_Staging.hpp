@@ -39,7 +39,8 @@ namespace DNDS::Cauchy::CUDA::Detail
         Field<Components * Modes> coefficients, viscousCoefficients;
         Field<Components * Dimension> gradients, viscousGradients;
         Field<5 * Dimension> primitiveGradients;
-        Field<1> waveJump, pressureMinimum;
+        Field<1> waveJump;
+        Field<2> pressureMinimum;
         Field<2> preparedMean;
         CellCenterViscosityView centerViscosity;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<Components, Components>> incoming;
@@ -75,7 +76,7 @@ namespace DNDS::Cauchy::CUDA::Detail
             return fields.hasPreparedMean ? &fields.preparedMean(iCell, column) : nullptr;
         if (column == 2)
             return controls.useStencil && controls.fluxPolicy.transverseSignal ? &fields.waveJump(iCell, 0) : nullptr;
-        return controls.useStencil && controls.fluxPolicy.pressureStencil ? &fields.pressureMinimum(iCell, 0) : nullptr;
+        return controls.fluxPolicy.NeedsPressureBounds(controls.useStencil) ? &fields.pressureMinimum(iCell, column - 3) : nullptr;
     }
 
     template <int C, int M, int D>
@@ -102,7 +103,7 @@ namespace DNDS::Cauchy::CUDA::Detail
             result.primitiveGradients = {values, sample.cell, sample.other, 5 * D, shape.width, shape.ViscousFirst()};
         result.preparedMean = {values, sample.cell, sample.other, 2, shape.width, shape.AuxFirst()};
         result.waveJump = {values, sample.cell, sample.other, 1, shape.width, shape.AuxFirst() + 2};
-        result.pressureMinimum = {values, sample.cell, sample.other, 1, shape.width, shape.AuxFirst() + 3};
+        result.pressureMinimum = {values, sample.cell, sample.other, 2, shape.width, shape.AuxFirst() + 3};
         result.incoming = fields.incoming;
         result.centerViscosity = fields.centerViscosity;
         result.hasPreparedMean = fields.hasPreparedMean;

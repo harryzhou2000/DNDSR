@@ -286,7 +286,7 @@ namespace DNDS::Cauchy
         const auto arrays = EquationAuxiliaryArrays(output);
         const index faces = _data->stencil.stencilFaces.RowCount();
         const index rows[10]{Metrics().NumCellProc(), faces, faces, faces, Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCellProc(), Metrics().NumCell(), Metrics().NumCellProc() - Metrics().NumCell()};
-        const index widths[8]{_data->equation.HasMixture() ? 5 : 3, 2, 1, 1, 1, 1, 1, 1};
+        const index widths[8]{_data->equation.HasMixture() ? 5 : 3, 2, 1, 2, 1, 1, 2, 1};
         if (output.cellTurbulentViscosity)
             DNDS_check_throw_info(_data->equation.HasRANS() && output.cellTurbulentViscosity->Layout().Kind() == R::RowLayoutKind::Table,
                                   "cell turbulent viscosity requires RANS and a scalar table");
@@ -307,9 +307,11 @@ namespace DNDS::Cauchy
                     if (arrays[j])
                         DNDS_check_throw_info(!Algebra::Detail::Overlaps(arrays[k]->Storage(), arrays[j]->Storage()), "equation auxiliary outputs overlap");
             }
-        for (const auto *field : {&output.cellSpectralSum, &output.cellWaveJump, &output.cellPressureMinimum})
+        for (const auto *field : {&output.cellSpectralSum, &output.cellWaveJump})
             if (*field)
                 Metrics().ValidateField(**field, 1);
+        if (output.cellPressureMinimum)
+            Metrics().ValidateField(*output.cellPressureMinimum, 2);
         for (int part = 0; part < 2; ++part)
         {
             const auto &derived = part ? output.derivedGhost : output.derivedOwned;
@@ -332,8 +334,9 @@ namespace DNDS::Cauchy
             }
         }
         const bool needScratch = (arrays[4] && !arrays[1]) || (arrays[5] && !arrays[2]) || (arrays[6] && !arrays[3]);
-        if (needScratch && (!output._faceScratch || output._faceScratch->RowCount() != faces))
-            output._faceScratch.emplace(R::RowLayout::Dense(faces, 3), Device());
+        const index scratchWidth = arrays[6] ? 4 : 3;
+        if (needScratch && (!output._faceScratch || output._faceScratch->RowCount() != faces || output._faceScratch->Layout().Width() != scratchWidth))
+            output._faceScratch.emplace(R::RowLayout::Dense(faces, scratchWidth), Device());
         output._equationOrigin.reset();
         if (Device() != R::Device::Host())
             return AuxiliaryPreparation::BuildQueuedState(*this, state, output, time, inputs);

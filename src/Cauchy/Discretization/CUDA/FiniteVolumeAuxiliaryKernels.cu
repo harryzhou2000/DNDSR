@@ -65,6 +65,7 @@ namespace DNDS::Cauchy::CUDA
             if constexpr (!Mechanical)
                 leftData = {{left.Flow(), leftResult.value[0]}, leftResult.value[1]};
             real convection = 0, diffusion = 0, jump = 0, minimum = leftResult.value[0];
+            real maximum = minimum;
             const auto count = metric.FaceQuadratureEnd(iFace) - first;
             for (index q = 0; q < count; ++q)
             {
@@ -132,7 +133,10 @@ namespace DNDS::Cauchy::CUDA
                 if (!Mechanical && request.needWave)
                     jump = std::max(jump, Riemann::TransverseSignalJump(leftData, rightData, sample.normal));
                 if (request.needPressure)
+                {
                     minimum = std::min(minimum, rightResult.value[0]);
+                    maximum = std::max(maximum, rightResult.value[0]);
+                }
             }
             if (request.spectral.RowCount())
             {
@@ -142,12 +146,17 @@ namespace DNDS::Cauchy::CUDA
             if (request.wave.RowCount())
                 request.wave(iAux, 0) = jump;
             if (request.pressure.RowCount())
+            {
                 request.pressure(iAux, 0) = minimum;
+                request.pressure(iAux, 1) = maximum;
+            }
             if (request.scratch.RowCount())
             {
                 request.scratch(iAux, 0) = convection + diffusion;
                 request.scratch(iAux, 1) = jump;
                 request.scratch(iAux, 2) = minimum;
+                if (request.scratch.Width() == 4)
+                    request.scratch(iAux, 3) = maximum;
             }
             return {};
         }
@@ -168,7 +177,7 @@ namespace DNDS::Cauchy::CUDA
             for (index iRow = index(blockIdx.x) * blockDim.x + threadIdx.x; iRow < count; iRow += index(gridDim.x) * blockDim.x)
             {
                 const index iCell = cellAt(iRow);
-                real sum = 0, wave = 0, pressure = std::numeric_limits<real>::max();
+                real sum = 0, wave = 0, minimum = std::numeric_limits<real>::max(), maximum = std::numeric_limits<real>::lowest();
                 for (index entry = stencil.auxiliaryCellOffsets(iCell, 0); entry < stencil.auxiliaryCellOffsets(iCell + 1, 0); ++entry)
                 {
                     const index iAux = stencil.auxiliaryCellFaces(entry, 0);
@@ -177,14 +186,20 @@ namespace DNDS::Cauchy::CUDA
                     if (request.waveMaximum.RowCount())
                         wave = std::max(wave, request.wave.RowCount() ? request.wave(iAux, 0) : request.scratch(iAux, 1));
                     if (request.pressureMinimum.RowCount())
-                        pressure = std::min(pressure, request.pressure.RowCount() ? request.pressure(iAux, 0) : request.scratch(iAux, 2));
+                    {
+                        minimum = std::min(minimum, request.pressure.RowCount() ? request.pressure(iAux, 0) : request.scratch(iAux, 2));
+                        maximum = std::max(maximum, request.pressure.RowCount() ? request.pressure(iAux, 1) : request.scratch(iAux, 3));
+                    }
                 }
                 if (request.spectralSum.RowCount())
                     request.spectralSum(iCell, 0) = sum + metric.GetCellVol(iCell) * request.angularSpeed;
                 if (request.waveMaximum.RowCount())
                     request.waveMaximum(iCell, 0) = wave;
                 if (request.pressureMinimum.RowCount())
-                    request.pressureMinimum(iCell, 0) = pressure;
+                {
+                    request.pressureMinimum(iCell, 0) = minimum;
+                    request.pressureMinimum(iCell, 1) = maximum;
+                }
             }
         }
         unsigned Blocks(index count) { return unsigned(std::min<index>((count + 127) / 128, 1024)); }
@@ -265,8 +280,8 @@ namespace DNDS::Cauchy::CUDA
                               "CUDA auxiliary face shape mismatch");
         CheckRows(request.spectral, rows, 2, false);
         CheckRows(request.wave, rows, 1, false);
-        CheckRows(request.pressure, rows, 1, false);
-        CheckRows(request.scratch, rows, 3, false);
+        CheckRows(request.pressure, rows, 2, false);
+        CheckRows(request.scratch, rows, request.scratch.Width() == 4 ? 4 : 3, false);
         if (request.preparedMeans.RowCount())
             CheckRows(request.preparedMeans, request.allCells, 3, true);
         DNDS_check_throw_info(!request.incoming.RowCount() || request.incoming.Width() == request.state.components,
@@ -314,13 +329,14 @@ namespace DNDS::Cauchy::CUDA
         R::CheckKernelArgumentBudget<AuxiliaryCellRequest, AuxiliaryIndices>();
         const index rows = request.ownedCells;
         DNDS_check_throw_info(rows >= 0 && request.stencil.RowCount() == 1, "CUDA auxiliary cell descriptor is incomplete");
-        for (const auto output : {request.spectralSum, request.waveMaximum, request.pressureMinimum})
+        for (const auto output : {request.spectralSum, request.waveMaximum})
             CheckRows(output, rows, 1, false);
+        CheckRows(request.pressureMinimum, rows, 2, false);
         const auto faceRows = request.faceNumber;
         CheckRows(request.spectral, faceRows, 2, bool(request.spectralSum.RowCount()) && !request.scratch.RowCount());
         CheckRows(request.wave, faceRows, 1, bool(request.waveMaximum.RowCount()) && !request.scratch.RowCount());
-        CheckRows(request.pressure, faceRows, 1, bool(request.pressureMinimum.RowCount()) && !request.scratch.RowCount());
-        CheckRows(request.scratch, faceRows, 3, false);
+        CheckRows(request.pressure, faceRows, 2, bool(request.pressureMinimum.RowCount()) && !request.scratch.RowCount());
+        CheckRows(request.scratch, faceRows, request.pressureMinimum.RowCount() && !request.pressure.RowCount() ? 4 : (request.scratch.Width() == 4 ? 4 : 3), false);
         if (!cells.RowCount())
             return;
         cells.Visit([&](auto cellAt)

@@ -10,6 +10,7 @@
 #include "Cauchy/Physics/ACMFlux.hpp"
 #include "Cauchy/Physics/ViscousFlux.hpp"
 #include "Cauchy/Boundary/PerfectGasBoundary.hpp"
+#include "Cauchy/Discretization/PressureLLFBlend.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "Cauchy/Riemann/RiemannFluxMath.hpp"
 #include "DNDS/Core/OMP.hpp"
@@ -43,10 +44,10 @@ namespace DNDS::Cauchy::CPU
         const auto &fluxRequirements = fluxPolicy.required;
         const auto &baseFluxSettings = fluxPolicy.settings;
         const bool useWaveJump = request.useStencil && fluxPolicy.transverseSignal;
-        const bool usePressureMinimum = request.useStencil && fluxPolicy.pressureStencil;
+        const bool usePressureBounds = fluxPolicy.NeedsPressureBounds(request.useStencil);
         const bool preparedWaveJump = request.preparedWaveJump;
         const bool preparedPressureMinimum = request.preparedPressureMinimum;
-        if ((useWaveJump && !preparedWaveJump) || (usePressureMinimum && !preparedPressureMinimum))
+        if ((useWaveJump && !preparedWaveJump) || (usePressureBounds && !preparedPressureMinimum))
             return NumericalStatus{NumericalError::InvalidInput};
         const int species = request.species;
         const int independent = std::max(0, species - 1);
@@ -441,22 +442,19 @@ namespace DNDS::Cauchy::CPU
                         jump = std::max(jump, request.waveJump(sample.other, 0));
                     fluxSettings.dLambda = std::max(fluxSettings.dLambda, jump);
                 }
-                if (usePressureMinimum)
-                {
-                    real minimum = request.pressureMinimum(iCell, 0);
-                    if (internal)
-                        minimum = std::min(minimum, request.pressureMinimum(sample.other, 0));
-                    fluxSettings.pressureStencilMin = std::min(fluxSettings.pressureStencilMin, minimum);
-                }
+                const real llfWeight = usePressureBounds ? FiniteVolumeDetail::ApplyFacePressureStencil(
+                                                               fluxPolicy, request.useStencil, request.pressureMinimum, iCell, sample.other, fluxSettings)
+                                                         : 0;
                 const auto faceNormal = fluxSettings.rotation.Enabled() ? request.stencil.FluxFaceNormal(sample.face, sample.side) : normal;
-                const auto convection = Riemann::Math::EvaluateDirections(
+                auto convection = Riemann::Math::EvaluateDirections(
                     fluxOperator.Kind(), fluxSettings.rotation, meanLeftData.flow.conservative, meanRightData.flow.conservative, normal, faceNormal,
                     [&](Riemann::Solver kind, const Vector3 &direction)
                     {
                         const auto prepared = equation.PrepareRiemann(Riemann::RiemannFlux(kind), leftData, rightData, meanLeftData, meanRightData, direction, grid);
                         return Riemann::Math::Evaluate(kind, prepared.Input(leftData, rightData, direction, grid), fluxSettings);
                     });
-                const auto &flowFlux = convection.flux;
+                auto &flowFlux = convection.flux;
+                FiniteVolumeDetail::BlendFlowToLLF(flowFlux, llfWeight, leftData, rightData, normal, grid);
                 FlowState lowFlowFlux{};
                 if (request.produceLow)
                     lowFlowFlux = Riemann::Rusanov(wallFluxState ? leftData : meanLeftData,
@@ -471,14 +469,17 @@ namespace DNDS::Cauchy::CPU
                 // acoustic flux. Roe's prepared contact magnitude is the
                 // Euler velocity/entropy-fix policy. Rusanov's diagnostic
                 // contact is acoustic, so use an explicit velocity speed.
-                const real alpha = rusanovFlux && !convection.rotated
-                                       ? .5 * (std::abs(speedLeft) + std::abs(speedRight))
-                                       : convection.contact;
+                const real scalarLLFSpeed = .5 * (std::abs(speedLeft) + std::abs(speedRight));
+                const real alpha = rusanovFlux && !convection.rotated ? scalarLLFSpeed : convection.contact;
                 for (index j = 0; j < width; ++j)
                     if (j < request.flowFirst || j >= request.flowFirst + 5)
+                    {
+                        const auto leftScalar = mirrorIsothermal ? right.values[j] : left.values[j];
                         flux[j] = wallFluxState ? face.values[j] * speedLeft
-                                                : AdvectedScalarFlux(mirrorIsothermal ? right.values[j] : left.values[j],
-                                                                     right.values[j], speedLeft, speedRight, alpha);
+                                                : FiniteVolumeDetail::BlendAdvectedScalarToLLF(
+                                                      AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, alpha),
+                                                      llfWeight, leftScalar, right.values[j], speedLeft, speedRight, scalarLLFSpeed);
+                    }
                 for (int j = 0; j < 5; ++j)
                 {
                     flux[request.flowFirst + j] = flowFlux[j];

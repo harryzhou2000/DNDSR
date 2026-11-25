@@ -81,7 +81,8 @@ namespace DNDS::Cauchy
             if (!controls.mechanical && !controls.direct && !controls.firstOrder && controls.viscous && !controls.primitiveGradient &&
                 !controls.distinctViscous && !controls.produceLow && !n.cfv.cacheDiffBase &&
                 !controls.positivity && !controls.faceFallback && !controls.fluxPolicy.settings.rotation.Enabled() &&
-                (!controls.useStencil || (!controls.fluxPolicy.transverseSignal && !controls.fluxPolicy.pressureStencil)) &&
+                (!controls.useStencil || !controls.fluxPolicy.transverseSignal) &&
+                !controls.fluxPolicy.NeedsPressureBounds(controls.useStencil) &&
                 controls.solver == Riemann::Solver::Roe_M1 && !owner->hasInterfaces && !owner->hasRotatedFrames &&
                 !owner->motion.At(0).moving && !owner->settings.execution.overlap &&
                 !owner->equation.HasMixture() && owner->mesh->getMPI().size == 1 && owner->rhsUniformFacePoints > 0 &&

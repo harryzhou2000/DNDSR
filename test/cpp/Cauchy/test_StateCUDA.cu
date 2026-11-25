@@ -983,6 +983,66 @@ TEST_CASE("P1 WBAP_Barth limits the WBAP result before gradient PP on CPU and CU
     }
 }
 
+TEST_CASE("Packed pressure stencil and LLF blending agree on CPU and CUDA")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 4);
+    const auto device = R::Device::CUDA(0);
+    const R::ExecutionContext transfer{device, nullptr};
+    for (const bool modal : {false, true})
+    {
+        CAPTURE(modal);
+        C::DomainSettings settings;
+        settings.boundaries["7"].kind = "extrapolate";
+        settings.numerics.reconstruction = modal ? "variational" : "gradient";
+        settings.numerics.cfv.maxOrder = modal ? 3 : 1;
+        settings.numerics.cfv.SORInstead = false;
+        settings.numerics.flux = "AUSMPWPlus";
+        settings.numerics.riemann.pressureLLFBlend = true;
+        settings.numerics.riemann.rotation = "velocityJump";
+        settings.numerics.riemann.secondaryFlux = "Roe_M9";
+        settings.execution.kernels.rhsMapping = modal ? "ctaSegments" : "thread";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        const C::FiniteVolume cpu(mesh, settings, equation);
+        const auto gpu = cpu.Placed(device, transfer);
+        auto hostMean = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(5));
+        {
+            auto write = hostMean.CoupledField().Owned().Write();
+            for (I cell = 0; cell < write.View().RowCount(); ++cell)
+            {
+                const auto x = cpu.Metrics().GetCellCent(cell);
+                const bool high = int(x[0] * 4) % 2 == 0;
+                const auto u = equation.Gas().Conservative({1. + .1 * x[2], high ? .5 : .04, .05 + .15 * x[1], .02, high ? 1.525 : 1.});
+                for (int j = 0; j < 5; ++j)
+                    write.View()(cell, j) = u[j];
+            }
+        }
+        std::optional<R::Array<real>> expected;
+        for (const bool onGPU : {false, true})
+        {
+            const auto &plan = onGPU ? gpu : cpu;
+            auto state = C::EquationDofs::Coupled(equation.Schema(), plan.Metrics().BuildField(5));
+            state.CoupledField().Owned().CopyFrom(hostMean.CoupledField().Owned(), onGPU ? transfer : R::ExecutionContext{}).Wait();
+            auto rec = plan.BuildReconstructionState(state);
+            auto work = plan.BuildWorkspace(state);
+            auto residual = C::EquationDofOperations::NewVector(state);
+            R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+            const auto stream = onGPU ? engine.CreateStream(std::make_shared<R::CUDALauncher>(0)) : engine.CreateCPUStream();
+            plan.Evaluate(state, residual, *rec, *work, engine, stream);
+            engine.Synchronize();
+            auto result = residual.CoupledField().Owned().To(R::Device::Host());
+            if (!expected)
+                expected.emplace(std::move(result));
+            else
+            {
+                const auto a = expected->Read(), b = result.Read();
+                for (I cell = 0; cell < a.View().RowCount(); ++cell)
+                    for (int j = 0; j < 5; ++j)
+                        CHECK(b.View()(cell, j) == doctest::Approx(a.View()(cell, j)).epsilon(3e-10).scale(1));
+            }
+        }
+    }
+}
+
 TEST_CASE("Managed characteristics feed WBAP without a host observation between operators")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);

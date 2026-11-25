@@ -621,9 +621,11 @@ checker, alias/free fan-in, checked/unchecked policy boundaries and portable MPI
 
 Riemann spatial corrections belong to the FV preparation layer. By default,
 `numerics.riemann.useStencil` builds the incident-face maximum wave jump for
-Roe_M6/M8/M9 and HLLEP variants, and the pressure minimum for AUSMPWPlus.
-An owned cell uses its complete incident-face means; the two scalar values
-are exchanged on the ordinary cell field's ghost mapping. A ghost cell's
+Roe_M6/M8/M9 and HLLEP variants, and the packed pressure bounds for AUSMPWPlus.
+An owned cell uses its complete incident-face means. Its pressure minimum
+and maximum occupy columns 0 and 1 of a single halo field, respectively.
+The auxiliary API keeps the historical `cellPressureMinimum` and
+`facePressureMinimum` member names for these two-column values. A ghost cell's
 stencil is supplied by its owner, never inferred from partial local closure.
 The face combines its parents' maxima/minima. The pointwise Riemann module
 still receives equation-prepared pressure and sound speeds, without EOS calls.
@@ -645,6 +647,17 @@ uses the union of both solvers' stencil requirements. The low-order
 positivity flux keeps its face-normal Rusanov definition. When the frozen
 Roe Jacobian is selected, it uses the combined wave magnitudes with the
 existing face-normal characteristic basis.
+
+`numerics.riemann.pressureLLFBlend` independently opts into a pressure-sensor
+blend of the final convective flux toward face-normal LLF. The sensor is
+the maximum divided by the minimum of the combined two-cell pressure
+stencil. `pressureLLFBlendStart` and `pressureLLFBlendFull` default to
+`1.05` and `2`. For the ratio mapped and clipped to $s\in[0,1]$ between
+these thresholds, the LLF fraction is $s^2(3-2s)$. LLF uses the same
+admissible face states as the canonical solver. The blend precedes addition
+of viscous fluxes, with its own pressure stencil request even when
+`useStencil=false`. The independent positivity flux and approximate
+Jacobian retain their existing definitions.
 
 With spatial preparation enabled, `dLambda` is a signal floor and
 `pressureStencilMin` a pressure upper bound. Set `useStencil=false` for exact
@@ -810,7 +823,7 @@ coefficient view; the primitive scheme requires the primitive-gradient view.
 These alternatives are checked once before the cell loop. The auxiliary bundle
 currently contains optional mean thermodynamics `[pressure, sound speed,
 diffusivity]`, the cell wave-jump signal used by the H correction, and cell
-pressure minima used by AUSMPW+. New cached temperature, dissipation masks or
+pressure bounds used by AUSMPW+ and pressure-triggered LLF blending. New cached temperature, dissipation masks or
 other cell/face fields belong in this bundle with an explicit indexing contract.
 This is argument grouping; it does not pack or copy array payloads. Missing
 optional thermodynamics are calculated from the supplied means. Missing signals

@@ -37,7 +37,9 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         return {required, kernel, flux.Kind() == Riemann::Solver::Rusanov,
                 flux.UsesTransverseSignal() || (kernel.rotation.Enabled() && secondary.UsesTransverseSignal()),
                 flux.UsesPressureStencil() || (kernel.rotation.Enabled() && secondary.UsesPressureStencil()),
-                settings.numerics.noRsOnWall, settings.numerics.noGRPOnWall, settings.numerics.isothermalWallInviscidMirror};
+                settings.numerics.noRsOnWall, settings.numerics.noGRPOnWall, settings.numerics.isothermalWallInviscidMirror,
+                settings.numerics.riemann.pressureLLFBlend, settings.numerics.riemann.pressureLLFBlendStart,
+                settings.numerics.riemann.pressureLLFBlendFull};
     }
     inline Runtime::RowLayout FieldLayout(const Runtime::RowLayout &prototype, index rows, index width)
     {

@@ -18,7 +18,8 @@ namespace DNDS::Cauchy::CUDA
         result.reconstruction = reconstruct ? controls.components * (controls.direct ? controls.dimension : controls.modes) : 0;
         result.viscous = controls.primitiveGradient ? 5 * controls.dimension : controls.viscous && controls.distinctViscous ? result.reconstruction
                                                                                                                             : 0;
-        result.width = controls.components + result.reconstruction + result.viscous + 4;
+        result.width = controls.components + result.reconstruction + result.viscous +
+                       (controls.fluxPolicy.NeedsPressureBounds(controls.useStencil) ? 5 : 4);
         return result;
     }
     size_t RHSFacePackages::LaneScratchBytes(const RHSKernelControls &controls)

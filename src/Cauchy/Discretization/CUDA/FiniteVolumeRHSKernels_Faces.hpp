@@ -1,4 +1,5 @@
 #pragma once
+#include "Cauchy/Discretization/PressureLLFBlend.hpp"
 
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Reconstruction.hpp"
 #include "Cauchy/Physics/RiemannPreparation.hpp"
@@ -211,13 +212,10 @@ namespace DNDS::Cauchy::CUDA::Detail
                 jump = std::max(jump, fields.waveJump(sample.other, 0));
             settings.dLambda = std::max(settings.dLambda, jump);
         }
-        if (controls.useStencil && controls.fluxPolicy.pressureStencil)
-        {
-            real minimum = fields.pressureMinimum(sample.cell, 0);
-            if (internal)
-                minimum = std::min(minimum, fields.pressureMinimum(sample.other, 0));
-            settings.pressureStencilMin = std::min(settings.pressureStencilMin, minimum);
-        }
+        const real llfWeight = controls.fluxPolicy.NeedsPressureBounds(controls.useStencil)
+                                   ? FiniteVolumeDetail::ApplyFacePressureStencil(controls.fluxPolicy, controls.useStencil,
+                                                                                   fields.pressureMinimum, sample.cell, sample.other, settings)
+                                   : 0;
         Riemann::FluxResult convection;
         const auto faceNormal = settings.rotation.Enabled() ? geometry.stencil.FluxFaceNormal(sample.face, sample.side) : sample.normal;
         if constexpr (std::is_same_v<FluxScalar, real>)
@@ -234,6 +232,7 @@ namespace DNDS::Cauchy::CUDA::Detail
                 return result.status.At(sample.cell, sample.point);
             convection = result.value;
         }
+        FiniteVolumeDetail::BlendFlowToLLF(convection.flux, llfWeight, leftData.value, rightData.value, sample.normal, grid);
         std::array<real, Components> flux{}, low{};
         for (int j = 0; j < 5; ++j)
             flux[j] = convection.flux[j];
@@ -249,13 +248,16 @@ namespace DNDS::Cauchy::CUDA::Detail
             speedLeft += (leftFlow[1 + d] / leftFlow[0] - grid[d]) * sample.normal[d];
             speedRight += (rightFlow[1 + d] / rightFlow[0] - grid[d]) * sample.normal[d];
         }
-        const real alpha = controls.solver == Riemann::Solver::Rusanov && !convection.rotated
-                               ? .5 * (std::abs(speedLeft) + std::abs(speedRight))
-                               : convection.contact;
+        const real scalarLLFSpeed = .5 * (std::abs(speedLeft) + std::abs(speedRight));
+        const real alpha = controls.solver == Riemann::Solver::Rusanov && !convection.rotated ? scalarLLFSpeed : convection.contact;
         for (int j = 5; j < Components; ++j)
+        {
+            const auto leftScalar = mirrorIsothermal ? right.values[j] : left.values[j];
             flux[j] = wallFluxState ? face.values[j] * speedLeft
-                                    : AdvectedScalarFlux(mirrorIsothermal ? right.values[j] : left.values[j],
-                                                         right.values[j], speedLeft, speedRight, alpha);
+                                    : FiniteVolumeDetail::BlendAdvectedScalarToLLF(
+                                          AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, alpha),
+                                          llfWeight, leftScalar, right.values[j], speedLeft, speedRight, scalarLLFSpeed);
+        }
         // Cauchy omits the former isotropic 2*rho*k/3 momentum flux and energy work.
         if (controls.viscous && (internal || wall))
         {

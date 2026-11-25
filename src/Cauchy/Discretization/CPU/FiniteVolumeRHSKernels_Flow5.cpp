@@ -5,6 +5,7 @@
 #include "Cauchy/Discretization/ViscousFlux.hpp"
 #include "Cauchy/Physics/PerfectGasCompute.hpp"
 #include "Cauchy/Boundary/PerfectGasBoundary.hpp"
+#include "Cauchy/Discretization/PressureLLFBlend.hpp"
 #include <cstdio>
 #include <cstdlib>
 
@@ -126,7 +127,7 @@ namespace DNDS::Cauchy::CPU
         }
         if (usePressure)
         {
-            if (const auto status = checkField(pressureInput, 1); !status)
+            if (const auto status = checkField(pressureInput, 2); !status)
                 return status;
         }
         if (!(result.RowCount() == request.ownedCells && result.Width() == 5))
@@ -140,8 +141,8 @@ namespace DNDS::Cauchy::CPU
         if (hasThermo)
             if (!(thermo.Width() == 3 && thermo.RowCount() >= (needGhost ? request.allCells : request.ownedCells)))
                 return NumericalStatus{NumericalError::InvalidState, 11, -1};
-        if (!(!request.useStencil ||
-              ((!fluxPolicy.transverseSignal || useWave) && (!fluxPolicy.pressureStencil || usePressure))))
+        if ((request.useStencil && fluxPolicy.transverseSignal && !useWave) ||
+            (fluxPolicy.NeedsPressureBounds(request.useStencil) && !usePressure))
             return NumericalStatus{NumericalError::InvalidState, 12, -1};
         auto compute = [&](index iCell, RHSKernelDiagnostics &diagnostics) -> NumericalStatus
         {
@@ -283,17 +284,14 @@ namespace DNDS::Cauchy::CPU
                             jump = std::max(jump, waveInput(sample.other, 0));
                         fluxSettings.dLambda = std::max(fluxSettings.dLambda, jump);
                     }
-                    if (usePressure)
-                    {
-                        real minimum = pressureInput(iCell, 0);
-                        if (internal)
-                            minimum = std::min(minimum, pressureInput(sample.other, 0));
-                        fluxSettings.pressureStencilMin = std::min(fluxSettings.pressureStencilMin, minimum);
-                    }
+                    const real llfWeight = fluxPolicy.NeedsPressureBounds(request.useStencil)
+                                               ? FiniteVolumeDetail::ApplyFacePressureStencil(fluxPolicy, request.useStencil, pressureInput, iCell, sample.other, fluxSettings)
+                                               : 0;
                     const auto faceNormal = fluxSettings.rotation.Enabled() ? request.stencil.FluxFaceNormal(iFace, side) : normal;
                     auto flux = EvaluatePerfectGasRiemann(gas, fluxOperator.Kind(), leftFlux, rightFlux, leftMeanData, rightMeanData,
                                                           normal, gridVelocity, faceNormal, fluxSettings)
                                     .flux;
+                    FiniteVolumeDetail::BlendFlowToLLF(flux, llfWeight, leftFlux, rightFlux, normal, gridVelocity);
                     FlowState lowFlux{};
                     if (produceLow)
                         lowFlux = wallFluxState ? Riemann::Rusanov(leftFlux, rightFlux, normal, gridVelocity) : Riemann::Rusanov(leftMeanData, rightMeanData, normal, gridVelocity);

@@ -221,10 +221,12 @@ TEST_CASE("Auxiliary core completes during a real mean halo write and full publi
                     if (output.faceWaveJump)
                         output.faceWaveJump.emplace(Layout(faces, 1, layout));
                     if (output.facePressureMinimum)
-                        output.facePressureMinimum.emplace(Layout(faces, 1, layout));
-                    for (auto *field : {&output.cellSpectralSum, &output.cellWaveJump, &output.cellPressureMinimum})
+                        output.facePressureMinimum.emplace(Layout(faces, 2, layout));
+                    for (auto *field : {&output.cellSpectralSum, &output.cellWaveJump})
                         if (*field)
                             field->emplace(fv.Metrics().BuildField(Layout(0, 1, layout)));
+                    if (output.cellPressureMinimum)
+                        output.cellPressureMinimum.emplace(fv.Metrics().BuildField(Layout(0, 2, layout)));
                     const auto ownedVersion = state.Owned().Version();
                     const auto ghostVersion = state.Ghost().Version();
                     auto preparation = fv.BeginAuxValues(Bind(fv, state), output, .25);
@@ -425,7 +427,7 @@ TEST_CASE("Unused private face scratch is safe when caller supplied outputs move
     const auto faces = DNDS::index(large.AuxiliaryFaces().size());
     output.faceSpectralRadius.emplace(Layout(faces, 2, 1));
     output.faceWaveJump.emplace(Layout(faces, 1, 2));
-    output.facePressureMinimum.emplace(Layout(faces, 1, 0));
+    output.facePressureMinimum.emplace(Layout(faces, 2, 0));
     auto reference = large.BuildAuxiliaryValues({false, true, true, true, false, false, false});
     large.PrepareAuxValues(Bind(large, state), reference);
     large.PrepareAuxValues(Bind(large, state), output);

@@ -137,8 +137,9 @@ namespace DNDS::Cauchy
             if (signal)
             {
                 DNDS_check_throw_info(signal->Space().Same(state.Space()), "Jacobian signal row space differs");
-                checkTable(signal->Owned(), owned, 1);
-                checkTable(signal->Ghost(), all - owned, 1);
+                const index width = pressure && signal == &*auxiliary.cellPressureMinimum ? 2 : 1;
+                checkTable(signal->Owned(), owned, width);
+                checkTable(signal->Ghost(), all - owned, width);
                 checkAlias(signal->Owned());
                 checkAlias(signal->Ghost());
             }
@@ -197,7 +198,11 @@ namespace DNDS::Cauchy
                 target.SetName(name, DNDS_ALLOCATION_SITE());
             }
             R::SubmitArrays(engine, stream, [](R::ExecutionContext context, auto owned, auto ghost, auto output)
-                            { CUDA::FreezeJacobianSignal(context, owned, ghost, output); }, R::ReadAs<R::TableRows>(input.Owned()), R::ReadAs<R::TableRows>(input.Ghost()), R::WriteAs<R::TableRows>(target));
+                            {
+                                // The approximate Jacobian uses only the AUSMPW+ minimum.
+                                owned.width = ghost.width = 1;
+                                CUDA::FreezeJacobianSignal(context, owned, ghost, output);
+                            }, R::ReadAs<R::TableRows>(input.Owned()), R::ReadAs<R::TableRows>(input.Ghost()), R::WriteAs<R::TableRows>(target));
         };
         if (wave)
             freezeSignal(*auxiliary.cellWaveJump, scratch->waveJump, "Cauchy/Jacobian/waveJump");

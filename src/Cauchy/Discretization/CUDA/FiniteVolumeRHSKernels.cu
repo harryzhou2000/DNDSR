@@ -144,10 +144,10 @@ namespace DNDS::Cauchy::CUDA
             DNDS_check_throw_info(fields.hasWave, "CUDA RHS wave stencil was not prepared");
             ValidateField(fields.waveJump, owned, ghost, 1, requireGhost);
         }
-        if (controls.useStencil && controls.fluxPolicy.pressureStencil)
+        if (controls.fluxPolicy.NeedsPressureBounds(controls.useStencil))
         {
             DNDS_check_throw_info(fields.hasPressure, "CUDA RHS pressure stencil was not prepared");
-            ValidateField(fields.pressureMinimum, owned, ghost, 1, requireGhost);
+            ValidateField(fields.pressureMinimum, owned, ghost, 2, requireGhost);
         }
         if (fields.hasIncoming)
             DNDS_check_throw_info(fields.incoming.Width() == controls.components && fields.incoming.kind == R::RowLayoutKind::Table &&
