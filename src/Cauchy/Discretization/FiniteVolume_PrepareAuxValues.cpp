@@ -18,7 +18,7 @@ namespace DNDS::Cauchy
         if (_data->equation.HasMixture() && _data->settings.numerics.characteristicLimiter &&
             _data->settings.numerics.limiter == "WBAP")
             request.meanThermodynamics = true;
-        request.cellTurbulentViscosity = request.cellTurbulentViscosity || _data->settings.numerics.ransCellCenterViscosity || _data->fluxPolicy.desDissipation;
+        request.cellTurbulentViscosity = request.cellTurbulentViscosity || _data->settings.numerics.ransCellCenterViscosity || _data->fluxPolicy.UsesDESDissipation();
         DNDS_check_throw_info(!request.cellTurbulentViscosity || _data->equation.HasRANS(),
                               "cell turbulent viscosity requires a RANS closure");
         AuxiliaryValues values;
@@ -42,7 +42,7 @@ namespace DNDS::Cauchy
         if (request.meanThermodynamics && !values._derivedThermodynamics)
             values.meanThermodynamics.emplace(R::RowLayout::Dense(Metrics().NumCellProc(), _data->equation.HasMixture() ? 5 : 3), Device());
         if (request.cellTurbulentViscosity)
-            values.cellTurbulentViscosity.emplace(R::RowLayout::Dense(Metrics().NumCellProc(), _data->fluxPolicy.desDissipation ? 2 : 1), Device());
+            values.cellTurbulentViscosity.emplace(R::RowLayout::Dense(Metrics().NumCellProc(), _data->fluxPolicy.UsesDESDissipation() ? 2 : 1), Device());
         if (request.faceSpectralRadius)
             values.faceSpectralRadius.emplace(R::RowLayout::Dense(faces, 2), Device());
         if (request.faceWaveJump)
@@ -64,7 +64,7 @@ namespace DNDS::Cauchy
                 array->SetName(std::string("Cauchy/auxiliary/") + name, DNDS_ALLOCATION_SITE());
         };
         label(values.meanThermodynamics, "meanThermodynamics");
-        label(values.cellTurbulentViscosity, _data->fluxPolicy.desDissipation ? "cellTurbulentViscosityAndDESShield" : "cellTurbulentViscosity");
+        label(values.cellTurbulentViscosity, _data->fluxPolicy.UsesDESDissipation() ? "cellTurbulentViscosityAndDESShield" : "cellTurbulentViscosity");
         label(values.faceSpectralRadius, "faceSpectralRadius");
         label(values.faceWaveJump, "faceWaveJump");
         label(values.facePressureMinimum, "facePressureBounds");
@@ -84,7 +84,7 @@ namespace DNDS::Cauchy
     }
     AuxiliaryRequest FiniteVolume::CompleteRHSAuxiliaryRequest(AuxiliaryRequest request) const
     {
-        request.cellTurbulentViscosity = request.cellTurbulentViscosity || _data->settings.numerics.ransCellCenterViscosity || _data->fluxPolicy.desDissipation;
+        request.cellTurbulentViscosity = request.cellTurbulentViscosity || _data->settings.numerics.ransCellCenterViscosity || _data->fluxPolicy.UsesDESDissipation();
         if (_data->equation.HasMixture() && _data->settings.numerics.characteristicLimiter &&
             _data->settings.numerics.limiter == "WBAP")
             request.meanThermodynamics = true;

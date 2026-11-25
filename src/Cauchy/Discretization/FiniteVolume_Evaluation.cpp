@@ -54,7 +54,7 @@ namespace DNDS::Cauchy
             };
             std::optional<AuxiliaryPreparation> preparation;
             std::optional<BoundaryInputs> boundary;
-            const bool gradientAuxiliary = _data->fluxPolicy.desDissipation ||
+            const bool gradientAuxiliary = _data->fluxPolicy.UsesDESDissipation() ||
                                            (_data->equation.HasRANS() && _data->equation.RANS().ComponentNumber() == 2);
             local([&]
                   {
@@ -302,7 +302,7 @@ namespace DNDS::Cauchy
         const TimelineScope timeline("Cauchy/FV/Evaluate");
         if (!auxiliary && work.rhsAuxiliary)
             auxiliary.Emplace(*work.rhsAuxiliary);
-        const bool gradientAuxiliary = auxiliary && (_data->fluxPolicy.desDissipation ||
+        const bool gradientAuxiliary = auxiliary && (_data->fluxPolicy.UsesDESDissipation() ||
                                                      (_data->equation.HasRANS() && _data->equation.RANS().ComponentNumber() == 2));
         const bool centerSourceGradient = auxiliary && _data->equation.HasRANS() &&
                                           _data->settings.implicit.sourceJacobianMode == "center";
@@ -348,7 +348,7 @@ namespace DNDS::Cauchy
             reconstruction.binding.Check(state);
             if (residual)
             {
-                DNDS_check_throw_info((!_data->fluxPolicy.desDissipation && (work.meanOnly || !_data->settings.numerics.ransCellCenterViscosity)) ||
+                DNDS_check_throw_info((!_data->fluxPolicy.UsesDESDissipation() && (work.meanOnly || !_data->settings.numerics.ransCellCenterViscosity)) ||
                                           (auxiliary && auxiliary->cellTurbulentViscosity),
                                       "RANS face viscosity or DES dissipation requires prepared cell turbulence");
                 auto &output = *residual;

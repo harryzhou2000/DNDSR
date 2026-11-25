@@ -83,7 +83,7 @@ namespace DNDS::Cauchy
                 !controls.positivity && !controls.faceFallback && !controls.fluxPolicy.settings.rotation.Enabled() &&
                 (!controls.useStencil || !controls.fluxPolicy.transverseSignal) &&
                 !controls.fluxPolicy.NeedsPressureBounds(controls.useStencil) &&
-                controls.fluxPolicy.dissipationCoefficient == 1 && !controls.fluxPolicy.desDissipation &&
+                controls.fluxPolicy.dissipationCoefficient == 1 && !controls.fluxPolicy.UsesDESDissipation() &&
                 controls.solver == Riemann::Solver::Roe_M1 && !owner->hasInterfaces && !owner->hasRotatedFrames &&
                 !owner->motion.At(0).moving && !owner->settings.execution.overlap &&
                 !owner->equation.HasMixture() && owner->mesh->getMPI().size == 1 && owner->rhsUniformFacePoints > 0 &&
@@ -323,7 +323,7 @@ namespace DNDS::Cauchy
         controls.time = time;
         controls.frame = owner->motion.At(time).KernelParameters();
         controls.captureBoundaryFlux = captureBoundaryFlux;
-        const auto &viscosity = (n.ransCellCenterViscosity || controls.fluxPolicy.desDissipation) && auxiliary && auxiliary->cellTurbulentViscosity ? *auxiliary->cellTurbulentViscosity : empty;
+        const auto &viscosity = (n.ransCellCenterViscosity || controls.fluxPolicy.UsesDESDissipation()) && auxiliary && auxiliary->cellTurbulentViscosity ? *auxiliary->cellTurbulentViscosity : empty;
         if (!controls.firstOrder && (!controls.direct || controls.linear))
         {
             if (controls.direct)

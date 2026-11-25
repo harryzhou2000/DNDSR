@@ -37,6 +37,7 @@
 
 #include "DNDS/Core/Defines.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
+#include <type_traits>
 #include <utility>
 
 /** @brief When set to 1, cap turbulent viscosity at 1e5 * mu_laminar for k-epsilon. */
@@ -52,6 +53,15 @@
 /** @brief RANS turbulence model functions (eddy viscosity, viscous flux, source terms). */
 namespace DNDS::Physics::RANS
 {
+    enum class SAHybridMode
+    {
+        Unknown = -1,
+        DDES = 0,
+        IDDES = 1,
+        WMLES = 2,
+        DES97 = 3
+    };
+
     /** @brief Spalart-Allmaras kernel configuration. */
     struct SAConfig
     {
@@ -71,10 +81,10 @@ namespace DNDS::Physics::RANS
         return sqr(0.41 * d) * std::max(smallReal, gradUNorm);
     }
 
-    DNDS_DEVICE_CALLABLE inline real SAIDDESShield(real alpha, real rdt, int mode)
+    DNDS_DEVICE_CALLABLE inline real SAIDDESShield(real alpha, real rdt, SAHybridMode mode)
     {
         const real fB = std::min(2 * std::exp(-9 * sqr(alpha)), 1.0);
-        return mode == 2 ? fB : std::max(fB, std::tanh(cube(8 * rdt)));
+        return mode == SAHybridMode::WMLES ? fB : std::max(fB, std::tanh(cube(8 * rdt)));
     }
 
     DNDS_DEVICE_CALLABLE inline real SADDESShield(real rd)
@@ -93,19 +103,19 @@ namespace DNDS::Physics::RANS
      * distance. Its default zero explicitly omits that term when unavailable.
      * psi is the SA low-Re correction, evaluated using the selected ft2 policy.
      */
-    DNDS_DEVICE_CALLABLE inline real GetLength_SA_DES(real d, real hMax, real cDES, int DESMode,
+    DNDS_DEVICE_CALLABLE inline real GetLength_SA_DES(real d, real hMax, real cDES, SAHybridMode desMode,
                                                       real nuTur, real nuLam, real gradUNorm, real psi,
                                                       real hWallNormal = 0)
     {
-        DNDS_HD_assert(DESMode >= 0 && DESMode <= 3);
+        DNDS_HD_assert(desMode >= SAHybridMode::DDES && desMode <= SAHybridMode::DES97);
         if (cDES > 100)
             return d;
         DNDS_HD_assert(cDES > 0 && hMax > 0 && d > 0 && hWallNormal >= 0);
-        if (DESMode == 3)
+        if (desMode == SAHybridMode::DES97)
             return std::min(d, cDES * hMax);
 
         const real denominator = SADESDenominator(d, gradUNorm);
-        if (DESMode == 0)
+        if (desMode == SAHybridMode::DDES)
         {
             const real rd = (nuTur + nuLam) / denominator;
             const real shield = SADDESShield(rd);
@@ -123,8 +133,14 @@ namespace DNDS::Physics::RANS
         const real fl = std::tanh(std::pow(sqr(3.55) * rdl, 10));
         const real fe1 = 2 * std::exp(-(alpha >= 0 ? 11.09 : 9.0) * sqr(alpha));
         const real fe = std::max(fe1 - 1, 0.0) * psi * (1 - std::max(ft, fl));
-        const real fdTilde = SAIDDESShield(alpha, rdt, DESMode);
+        const real fdTilde = SAIDDESShield(alpha, rdt, desMode);
         return std::max(fdTilde * (1 + fe) * d + (1 - fdTilde) * lLES, lLES * smallReal);
+    }
+
+    DNDS_DEVICE_CALLABLE inline real GetLength_SA_DES(real d, real hMax, real cDES, int mode,
+                                                      real nuTur, real nuLam, real gradUNorm, real psi, real hWallNormal = 0)
+    {
+        return GetLength_SA_DES(d, hMax, cDES, static_cast<SAHybridMode>(mode), nuTur, nuLam, gradUNorm, psi, hWallNormal);
     }
 
     /** @brief Wilcox k-omega kernel configuration. */
@@ -1135,7 +1151,7 @@ namespace DNDS::Physics::RANS
                                                         real d,
                                                         real cDES,
                                                         real hMax,
-                                                        int DESMode,
+                                                        SAHybridMode DESMode,
                                                         TSource &source, int rotCor, int mode,
                                                         const SAConfig &saConfig,
                                                         int SAVersion, const Eigen::Matrix<real, dim, dim> *vorticityCorrection)
@@ -1300,17 +1316,17 @@ namespace DNDS::Physics::RANS
         }
     }
 
-    /// Historical SA signature. Absolute-velocity gradients need no additional
-    /// frame correction. This forwarding call keeps existing source/function-
-    /// pointer types and compiles away the null correction branch.
-    template <int dim, class TU, class TDiffU, class TSource, bool Diagnose = true>
+    /// Absolute-velocity gradients need no additional frame correction.
+    /// Accept the legacy Euler integer at this boundary and route by enum.
+    template <int dim, class TU, class TDiffU, class TSource, bool Diagnose = true, class DESSelection>
     DNDS_DEVICE_CALLABLE void GetSource_SA(TU &&state, TDiffU &&gradient, real muRef, real viscosity, real gamma,
-                                           real wallDistance, real cDES, real hMax, int DESMode,
+                                           real wallDistance, real cDES, real hMax, DESSelection desMode,
                                            TSource &source, int rotationCorrection, int mode,
                                            const SAConfig &config, int version = 0)
     {
+        static_assert(std::is_same_v<DESSelection, SAHybridMode> || std::is_same_v<DESSelection, int>);
         GetSource_SAWithVorticity<dim, TU, TDiffU, TSource, Diagnose>(std::forward<TU>(state), std::forward<TDiffU>(gradient),
-                                                                      muRef, viscosity, gamma, wallDistance, cDES, hMax, DESMode,
+                                                                      muRef, viscosity, gamma, wallDistance, cDES, hMax, static_cast<SAHybridMode>(desMode),
                                                                       source, rotationCorrection, mode, config, version, nullptr);
     }
 }

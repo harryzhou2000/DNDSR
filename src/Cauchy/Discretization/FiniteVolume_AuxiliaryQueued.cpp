@@ -83,7 +83,7 @@ namespace DNDS::Cauchy
             }
             if (input.boundary)
                 boundary = *input.boundary;
-            if ((data->fluxPolicy.desDissipation && buffers.cellTurbulentViscosity) ||
+            if ((data->fluxPolicy.UsesDESDissipation() && buffers.cellTurbulentViscosity) ||
                 (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2))
             {
                 DNDS_check_throw_info(gradients && data->wallDistance, "RANS auxiliary transport or DES shielding requires current gradients and wall distance");
@@ -176,7 +176,7 @@ namespace DNDS::Cauchy
             const index end = ghost ? data->metrics.NumCellProc() : data->metrics.NumCell();
             if (means && (buffers.meanThermodynamics || buffers.cellTurbulentViscosity))
                 R::SubmitArrays(engine, stream, [pin, first, end](R::ExecutionContext context, auto u, auto ug, auto g, auto gg, auto out, auto viscosity, auto status, auto wall, auto length)
-                                { CUDA::PrepareAuxiliaryMeans(context, pin->StateInput(u, ug, g, gg, wall, length), out, viscosity, status, first, end); }, R::ReadAs<R::TableRows>(field.Owned()), R::ReadAs<R::TableRows>(uGhost), R::ReadAs<R::TableRows>(gOwned), R::ReadAs<R::TableRows>(gGhost), R::WriteAs<R::TableRows>(Output(0)), R::WriteAs<R::TableRows>(Output(7)), R::WriteAs<R::FixedRows<1>>(scratch->meanStatus), R::ReadAs<R::TableRows>(hasWall ? data->wallDistance->CellMeans() : scratch->empty), R::ReadAs<R::TableRows>(data->fluxPolicy.desDissipation ? data->ransCellLength : scratch->empty));
+                                { CUDA::PrepareAuxiliaryMeans(context, pin->StateInput(u, ug, g, gg, wall, length), out, viscosity, status, first, end); }, R::ReadAs<R::TableRows>(field.Owned()), R::ReadAs<R::TableRows>(uGhost), R::ReadAs<R::TableRows>(gOwned), R::ReadAs<R::TableRows>(gGhost), R::WriteAs<R::TableRows>(Output(0)), R::WriteAs<R::TableRows>(Output(7)), R::WriteAs<R::FixedRows<1>>(scratch->meanStatus), R::ReadAs<R::TableRows>(hasWall ? data->wallDistance->CellMeans() : scratch->empty), R::ReadAs<R::TableRows>(data->fluxPolicy.UsesDESDissipation() ? data->ransCellLength : scratch->empty));
             if (!needFaces)
                 return;
             const auto &incoming = boundary ? FiniteVolumeDetail::BoundaryFluxInput(data->stencil, *boundary)

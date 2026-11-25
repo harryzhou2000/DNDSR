@@ -6,17 +6,19 @@
 
 namespace DNDS::Cauchy::CheckpointMetadata
 {
-    static void RemoveInactiveQCR(Json &model)
+    static void NormalizeRANS(Json &model)
     {
         // This optional switch did not exist in early RANS checkpoints.
         // Only the inactive default normalizes away; true remains physical.
         if (model.is_object() && !model.value("useQCR", false))
             model.erase("useQCR");
+        if (model.contains("desMode"))
+            model["desMode"] = model["desMode"].get<Physics::RANS::SAHybridMode>();
     }
     nlohmann::json CompatibleEquationMetadata(Json value)
     {
         if (value.is_object() && value.contains("rans"))
-            RemoveInactiveQCR(value["rans"]);
+            NormalizeRANS(value["rans"]);
         return value;
     }
     static index CanonicalPeriodicZone(index zone)
@@ -113,7 +115,7 @@ namespace DNDS::Cauchy::CheckpointMetadata
             if (settings.contains("equation") && settings["equation"].value("eos", std::string("perfectGas")) == "perfectGas")
                 settings["equation"].erase("mixture");
             if (settings.contains("equation") && settings["equation"].contains("rans"))
-                RemoveInactiveQCR(settings["equation"]["rans"]);
+                NormalizeRANS(settings["equation"]["rans"]);
             settings.erase("execution");
             settings.erase("implicit");
             if (settings.contains("motion") && settings["motion"].value("angularVelocity", Vector3{}) == Vector3{} &&
@@ -246,9 +248,12 @@ namespace DNDS::Cauchy::CheckpointMetadata
                         (*riemann)["rotation"] = "none";
                     if (!riemann->contains("secondaryFlux"))
                         (*riemann)["secondaryFlux"] = "";
-                    if (riemann->value("dissipationMode", std::string("fullUpwind")) == "fullUpwind")
+                    const auto mode = riemann->value("dissipationMode", Riemann::DissipationMode::FullUpwind);
+                    if (mode == Riemann::DissipationMode::FullUpwind)
                         for (const auto *name : {"dissipationMode", "dissipationCoefficient"})
                             riemann->erase(name);
+                    else
+                        (*riemann)["dissipationMode"] = mode;
                     if (!riemann->value("pressureLLFBlend", false))
                         for (const auto *name : {"pressureLLFBlend", "pressureLLFBlendStart", "pressureLLFBlendFull"})
                             riemann->erase(name);

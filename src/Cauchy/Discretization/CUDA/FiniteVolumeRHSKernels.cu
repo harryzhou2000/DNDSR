@@ -132,7 +132,7 @@ namespace DNDS::Cauchy::CUDA
         if (fields.centerViscosity.values.RowCount())
             DNDS_check_throw_info(fields.centerViscosity.values.RowCount() == g.cells.RowCount() && controls.components > (controls.mechanical ? 4 : 5),
                                   "CUDA RHS cell turbulence requires a local table and a RANS model");
-        if (controls.fluxPolicy.desDissipation)
+        if (controls.fluxPolicy.UsesDESDissipation())
             DNDS_check_throw_info(fields.centerViscosity.values.RowCount() == g.cells.RowCount() && fields.centerViscosity.values.Width() == 2,
                                   "CUDA RHS DES dissipation requires a prepared cell shielding column");
         if (controls.primitiveGradient)

@@ -24,7 +24,7 @@ namespace DNDS::Physics::RANS
         DNDS_check_throw_info(positive(_settings.viscosityReference) && positive(_settings.turbulentPrandtl) &&
                                   positive(_settings.turbulentSchmidt) && positive(_settings.desScale),
                               "invalid RANS scales");
-        DNDS_check_throw_info(_settings.desMode >= 0 && _settings.desMode <= 3 &&
+        DNDS_check_throw_info(_settings.desMode >= SAHybridMode::DDES && _settings.desMode <= SAHybridMode::DES97 &&
                                   (_settings.saVersion == 0 || _settings.saVersion == 1 || _settings.saVersion == 9001),
                               "invalid SA variant or DES mode");
         DNDS_check_throw_info(nonnegative(_settings.sa.productionLimit) && nonnegative(_settings.kOmega.productionLimit) &&

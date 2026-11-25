@@ -137,13 +137,13 @@ namespace DNDS::Cauchy
     }
     void RiemannSettings::ValidateDissipation(bool compressible, std::string_view ransModel, real desScale) const
     {
-        DNDS_check_throw_info(dissipationMode == "fullUpwind" || dissipationMode == "constant" || dissipationMode == "DES",
+        DNDS_check_throw_info(dissipationMode >= Riemann::DissipationMode::FullUpwind && dissipationMode <= Riemann::DissipationMode::DES,
                               "riemann.dissipationMode must be fullUpwind, constant, or DES");
         DNDS_check_throw_info(std::isfinite(dissipationCoefficient) && dissipationCoefficient >= 0 && dissipationCoefficient <= 1,
                               "riemann.dissipationCoefficient must lie in [0,1]");
-        DNDS_check_throw_info(dissipationMode == "fullUpwind" || compressible,
+        DNDS_check_throw_info(dissipationMode == Riemann::DissipationMode::FullUpwind || compressible,
                               "Riemann dissipation control requires a compressible equation");
-        DNDS_check_throw_info(dissipationMode != "DES" ||
+        DNDS_check_throw_info(dissipationMode != Riemann::DissipationMode::DES ||
                                   ((ransModel == "SA" || ransModel == "KOmegaSST") && desScale > 0 && desScale <= 100),
                               "DES dissipation requires active SA or SST hybrid RANS (0 < desScale <= 100)");
     }

@@ -92,7 +92,7 @@ namespace DNDS::Cauchy
             {
                 boundary = *inputs.boundary;
             }
-            const bool des = data->fluxPolicy.desDissipation && bool(buffers.cellTurbulentViscosity);
+            const bool des = data->fluxPolicy.UsesDESDissipation() && bool(buffers.cellTurbulentViscosity);
             if (des || (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2))
             {
                 DNDS_check_throw_info(gradients && data->wallDistance, "RANS auxiliary transport or DES shielding requires mean gradients and wall distance");

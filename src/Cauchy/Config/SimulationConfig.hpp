@@ -180,13 +180,19 @@ namespace DNDS::Cauchy
                                 { return {{"type", "object"}, {"additionalProperties", {{"type", "integer"}}}}; });
         }
     };
+    namespace Riemann
+    {
+        NLOHMANN_JSON_SERIALIZE_ENUM(DissipationMode,
+                                     {{DissipationMode::Unknown, nullptr}, {DissipationMode::FullUpwind, "fullUpwind"}, {DissipationMode::Constant, "constant"}, {DissipationMode::DES, "DES"}, {DissipationMode::FullUpwind, 0}, {DissipationMode::Constant, 1}, {DissipationMode::DES, 2}})
+    }
+
     struct RiemannSettings
     {
         real fixScale = 1, incrementScale = 1, dLambda = 0, referenceMach = .1, pressureStencilMin = 1e300;
         bool useStencil = true;
         bool pressureLLFBlend = false;
         real pressureLLFBlendStart = 1.05, pressureLLFBlendFull = 2;
-        std::string dissipationMode = "fullUpwind";
+        Riemann::DissipationMode dissipationMode = Riemann::DissipationMode::FullUpwind;
         real dissipationCoefficient = 1;
         std::string rotation = "none", secondaryFlux;
         DNDS_DECLARE_CONFIG(RiemannSettings)
@@ -197,7 +203,12 @@ namespace DNDS::Cauchy
             DNDS_FIELD(referenceMach, "Positive AUSM+-up reference Mach cutoff");
             DNDS_FIELD(pressureStencilMin, "AUSMPW+ stencil pressure upper bound; exact scalar input when useStencil is false");
             DNDS_FIELD(useStencil, "Supply cell-face-cell wave/pressure stencils to fluxes that use them; false keeps the explicit scalar inputs");
-            DNDS_FIELD(dissipationMode, "Convective dissipation before pressure LLF blending: fullUpwind, constant, or DES");
+            config.field_schema(&T::dissipationMode, "dissipationMode", "Flow5 dissipation before pressure LLF blending; legacy integers 0 through 2 use the same order",
+                                []() -> nlohmann::ordered_json
+                                {
+                                    return {{"default", "fullUpwind"},
+                                            {"oneOf", {{{"type", "string"}, {"enum", {"fullUpwind", "constant", "DES"}}}, {{"type", "integer"}, {"minimum", 0}, {"maximum", 2}}}}};
+                                });
             DNDS_FIELD(dissipationCoefficient, "Dissipation multiplier for constant mode or the unshielded DES region; 0 is central, 1 is full upwind", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(pressureLLFBlend, "Blend the final compressible convective flux toward face-normal LLF using the pressure stencil ratio, independently of useStencil");
             DNDS_FIELD(pressureLLFBlendStart, "Pressure stencil max/min ratio at the start of LLF blending");

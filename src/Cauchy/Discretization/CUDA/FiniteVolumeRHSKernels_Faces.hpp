@@ -255,9 +255,7 @@ namespace DNDS::Cauchy::CUDA::Detail
         {
             const auto leftScalar = mirrorIsothermal ? right.values[j] : left.values[j];
             flux[j] = wallFluxState ? face.values[j] * speedLeft
-                                    : FiniteVolumeDetail::BlendAdvectedScalarToLLF(
-                                          AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, settings.dissipationScale * alpha),
-                                          llfWeight, leftScalar, right.values[j], speedLeft, speedRight, scalarLLFSpeed);
+                                    : AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, alpha);
         }
         // Cauchy omits the former isotropic 2*rho*k/3 momentum flux and energy work.
         if (controls.viscous && (internal || wall))

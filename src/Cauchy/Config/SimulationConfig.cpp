@@ -259,6 +259,8 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(domainIndices.emplace(domain.placement.name, iDomain).second, "duplicate Cauchy domain name");
             ValidateDomain(domain, size);
             ResolvedExecutionPlan::Resolve(domain);
+            resolved["settings"]["equation"]["rans"]["desMode"] = domain.settings.equation.rans.desMode;
+            numerics["riemann"]["dissipationMode"] = domain.settings.numerics.riemann.dissipationMode;
             data->domains.push_back(std::move(domain));
         }
         Config::ValidatePartialJsonSchema(data->root["time"], TimeSettings::schema(), "/time");

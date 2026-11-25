@@ -2652,7 +2652,7 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
                 riemann.pressureLLFBlend = blend;
                 if (coefficient != 1)
                 {
-                    riemann.dissipationMode = "constant";
+                    riemann.dissipationMode = C::Riemann::DissipationMode::Constant;
                     riemann.dissipationCoefficient = coefficient;
                 }
                 const auto equation = C::EquationSystem::Resolve(settings.equation);

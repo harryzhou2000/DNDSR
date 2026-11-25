@@ -50,7 +50,7 @@ namespace DNDS::Cauchy
             settings.numerics.riemann.ValidateDissipation(!equation.IsACM(),
                 equation.HasRANS() ? std::string_view(equation.RANS().Settings().model) : "none",
                 equation.HasRANS() ? equation.RANS().Settings().desScale : veryLargeReal);
-            if (settings.numerics.riemann.dissipationMode == "DES")
+            if (settings.numerics.riemann.dissipationMode == Riemann::DissipationMode::DES)
                 for (const auto &[zone, condition] : settings.boundaries)
                     DNDS_check_throw_info(condition.kind != "interface",
                         "DES dissipation requires the remote cell shield across a coupled-domain interface");

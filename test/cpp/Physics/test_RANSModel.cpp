@@ -163,7 +163,7 @@ TEST_CASE("Status-returning RANS point math preserves the CPU closure and report
             settings.model = name;
             settings.viscosityReference = .004;
             settings.desScale = desMode == 0 ? DNDS::veryLargeReal : .65;
-            settings.desMode = desMode;
+            settings.desMode = static_cast<R::SAHybridMode>(desMode);
             settings.sst.implicitAdditionalSinks = true;
             const R::Model model(settings);
             auto point = Fixture();

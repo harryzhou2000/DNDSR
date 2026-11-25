@@ -40,8 +40,8 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
                 settings.numerics.noRsOnWall, settings.numerics.noGRPOnWall, settings.numerics.isothermalWallInviscidMirror,
                 settings.numerics.riemann.pressureLLFBlend, settings.numerics.riemann.pressureLLFBlendStart,
                 settings.numerics.riemann.pressureLLFBlendFull,
-                settings.numerics.riemann.dissipationMode == "fullUpwind" ? 1 : settings.numerics.riemann.dissipationCoefficient,
-                settings.numerics.riemann.dissipationMode == "DES"};
+                settings.numerics.riemann.dissipationMode == Riemann::DissipationMode::FullUpwind ? 1 : settings.numerics.riemann.dissipationCoefficient,
+                settings.numerics.riemann.dissipationMode};
     }
     inline Runtime::RowLayout FieldLayout(const Runtime::RowLayout &prototype, index rows, index width)
     {

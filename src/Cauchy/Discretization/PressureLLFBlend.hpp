@@ -1,6 +1,5 @@
 #pragma once
 #include "Cauchy/Discretization/FiniteVolumeKernelPolicy.hpp"
-#include "Cauchy/Physics/PhysicalFlux.hpp"
 
 namespace DNDS::Cauchy::FiniteVolumeDetail
 {
@@ -53,11 +52,4 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
             flux[j] = BlendFluxValue(flux[j], llf[j], weight);
     }
 
-    DNDS_DEVICE_CALLABLE inline real BlendAdvectedScalarToLLF(real flux, real weight, real left, real right,
-                                                              real speedLeft, real speedRight, real llfSpeed) noexcept
-    {
-        if (weight == 0)
-            return flux;
-        return BlendFluxValue(flux, AdvectedScalarFlux(left, right, speedLeft, speedRight, llfSpeed), weight);
-    }
 }

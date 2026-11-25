@@ -81,6 +81,55 @@ namespace
     }
 }
 
+TEST_CASE("Flow dissipation and pressure LLF leave RANS convection unchanged")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    const auto evaluate = [&](bool control)
+    {
+        auto settings = Settings();
+        settings.numerics.flux = "Roe_M9";
+        settings.numerics.riemann.useStencil = false;
+        if (control)
+        {
+            settings.numerics.riemann.dissipationMode = C::Riemann::DissipationMode::Constant;
+            settings.numerics.riemann.dissipationCoefficient = .1;
+            settings.numerics.riemann.pressureLLFBlend = true;
+        }
+        const auto equation = Equation(settings);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = State(fv, true);
+        Fill(state, fv, true);
+        {
+            auto write = state.WriteOwned();
+            const auto flow = write.Block("flow");
+            for (I i = 0; i < fv.Metrics().NumCell(); ++i)
+                if (fv.Metrics().GetCellCent(i)[0] < .5)
+                    flow(i, 4) *= 3;
+        }
+        auto output = C::EquationDofOperations::NewVector(state);
+        auto reconstruction = fv.BuildReconstructionState(state);
+        auto work = fv.BuildWorkspace(state);
+        R::EagerEngine engine;
+        fv.Evaluate(state, output, *reconstruction, *work, engine, engine.CreateCPUStream());
+        engine.Synchronize();
+        return output;
+    };
+    const auto baseline = evaluate(false), controlled = evaluate(true);
+    const auto before = baseline.ReadOwned(), after = controlled.ReadOwned();
+    const auto ransBefore = before.Block("rans"), ransAfter = after.Block("rans");
+    const auto flowBefore = before.Block("flow"), flowAfter = after.Block("flow");
+    double flowChange = 0;
+    for (I i = 0; i < baseline.PhysicalField(0).Owned().RowCount(); ++i)
+    {
+        CHECK(ransAfter(i, 0) == doctest::Approx(ransBefore(i, 0)).epsilon(1e-13).scale(1));
+        flowChange = std::max(flowChange, std::abs(flowAfter(i, 4) - flowBefore(i, 4)));
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &flowChange, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+    CHECK(flowChange > 1e-5);
+}
+
 TEST_CASE("Hybrid RANS dissipation prepares the cell shield and averages it symmetrically")
 {
     namespace RANS = DNDS::Physics::RANS;
@@ -93,7 +142,7 @@ TEST_CASE("Hybrid RANS dissipation prepares the cell shield and averages it symm
         auto settings = Settings();
         settings.equation.rans.model = model;
         settings.equation.rans.desScale = .65;
-        settings.numerics.riemann.dissipationMode = "DES";
+        settings.numerics.riemann.dissipationMode = C::Riemann::DissipationMode::DES;
         settings.numerics.riemann.dissipationCoefficient = .2;
         CHECK_THROWS(settings.numerics.riemann.ValidateDissipation(true, model, DNDS::veryLargeReal));
         CHECK_THROWS(settings.numerics.riemann.ValidateDissipation(false, model, .65));
@@ -132,10 +181,11 @@ TEST_CASE("Hybrid RANS dissipation prepares the cell shield and averages it symm
     const auto read = values.Read();
     const auto table = C::CellCenterViscosityView::From(read.View<R::TableRows>(), false);
     C::FiniteVolumeDetail::FluxKernelPolicy policy;
-    policy.desDissipation = true;
+    policy.dissipationMode = C::Riemann::DissipationMode::DES;
     policy.dissipationCoefficient = .2;
     CHECK(policy.DissipationAtFace(table, 0, 1) == doctest::Approx(.6));
     CHECK(policy.DissipationAtFace(table, 1, 0) == doctest::Approx(.6));
+    CHECK(policy.DissipationAtFace(table, 0, DNDS::UnInitIndex) == .2);
     CHECK(policy.DissipationAtFace(table, 1, DNDS::UnInitIndex) == 1.);
     CHECK(table.AtFace(0, 1) == -1.);
 }
@@ -725,7 +775,7 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
             if (std::string(name) == "SA" || std::string(name) == "KOmegaSST")
             {
                 modelSettings.desScale = .01;
-                modelSettings.desMode = 3;
+                modelSettings.desMode = DNDS::Physics::RANS::SAHybridMode::DES97;
             }
             const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
             const int components = equation.RANS().ComponentNumber(), width = 5 + components;

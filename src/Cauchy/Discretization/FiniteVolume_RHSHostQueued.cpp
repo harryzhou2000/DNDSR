@@ -221,7 +221,7 @@ namespace DNDS::Cauchy
             pin->primitive = addField(*primitiveGradient);
         if (auxiliary)
         {
-            if ((n.ransCellCenterViscosity || pin->owner->fluxPolicy.desDissipation) && auxiliary->cellTurbulentViscosity)
+            if ((n.ransCellCenterViscosity || pin->owner->fluxPolicy.UsesDESDissipation()) && auxiliary->cellTurbulentViscosity)
                 pin->viscosity = addRead(*auxiliary->cellTurbulentViscosity);
             if (auxiliary->meanThermodynamics)
                 pin->meanThermodynamics = addRead(*auxiliary->meanThermodynamics);

@@ -55,7 +55,7 @@ namespace DNDS::Cauchy
                                                   !Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Ghost().Storage()),
                                               "face output aliases equation fields");
         }
-        if (_data->fluxPolicy.desDissipation || (!work.meanOnly && _data->settings.numerics.ransCellCenterViscosity))
+        if (_data->fluxPolicy.UsesDESDissipation() || (!work.meanOnly && _data->settings.numerics.ransCellCenterViscosity))
         {
             if (!auxiliary && work.rhsAuxiliary)
                 auxiliary.Emplace(*work.rhsAuxiliary);

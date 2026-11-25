@@ -7,6 +7,9 @@
 
 namespace DNDS::Physics::RANS
 {
+    NLOHMANN_JSON_SERIALIZE_ENUM(SAHybridMode,
+                                 {{SAHybridMode::Unknown, nullptr}, {SAHybridMode::DDES, "DDES"}, {SAHybridMode::IDDES, "IDDES"}, {SAHybridMode::WMLES, "WMLES"}, {SAHybridMode::DES97, "DES97"}, {SAHybridMode::DDES, 0}, {SAHybridMode::IDDES, 1}, {SAHybridMode::WMLES, 2}, {SAHybridMode::DES97, 3}})
+
     /// Physical closure controls, independent of mesh, equation allocation and
     /// nonlinear iteration. Existing kernel configurations retain their defaults.
     struct ModelSettings
@@ -14,7 +17,8 @@ namespace DNDS::Physics::RANS
         std::string model = "none";
         real viscosityReference = 1, turbulentPrandtl = .9, turbulentSchmidt = .9;
         real desScale = veryLargeReal;
-        int desMode = 1, saVersion = 0;
+        SAHybridMode desMode = SAHybridMode::IDDES;
+        int saVersion = 0;
         bool saRotationCorrection = true, useQCR = false;
         SAConfig sa;
         KOmegaConfig kOmega;
@@ -27,7 +31,12 @@ namespace DNDS::Physics::RANS
             DNDS_FIELD(turbulentPrandtl, "Turbulent heat conductivity uses cp*mu_t/Pr_t");
             DNDS_FIELD(turbulentSchmidt, "Turbulent species diffusivity uses mu_t/(rho*Sc_t)");
             DNDS_FIELD(desScale, "Euler DES scale; greater than 100 disables SA DES, also multiplies SST cell length");
-            DNDS_FIELD(desMode, "SA DES mode: 0 DDES, 1 IDDES, 2 WMLES, 3 DES97");
+            config.field_schema(&T::desMode, "desMode", "SA hybrid mode; legacy integers 0 through 3 use the same order",
+                                []() -> nlohmann::ordered_json
+                                {
+                                    return {{"default", "IDDES"},
+                                            {"oneOf", {{{"type", "string"}, {"enum", {"DDES", "IDDES", "WMLES", "DES97"}}}, {{"type", "integer"}, {"minimum", 0}, {"maximum", 3}}}}};
+                                });
             DNDS_FIELD(saVersion, "Euler SA variant: 0 current, 1 oldest legacy, 9001 historical sign-error reproduction");
             DNDS_FIELD(saRotationCorrection, "Euler SA-R production correction; supplied velocity is absolute");
             DNDS_FIELD(useQCR, "Euler QCR correction of turbulent stress; disabled by default");

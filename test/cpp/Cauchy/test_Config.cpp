@@ -416,8 +416,21 @@ TEST_CASE("Configured RANS exposes Euler DES and QCR controls without a unit-len
     const auto config = C::SimulationConfig::Resolve(input, 1);
     const auto &rans = config.Domains()[0].settings.equation.rans;
     CHECK(rans.desScale == .01);
-    CHECK(rans.desMode == 3);
+    CHECK(rans.desMode == DNDS::Physics::RANS::SAHybridMode::DES97);
+    CHECK(config.Root()["domains"][0]["settings"]["equation"]["rans"]["desMode"] == "DES97");
     CHECK(rans.useQCR);
+    input["defaults"]["equation"]["rans"]["desMode"] = "WMLES";
+    input["defaults"]["numerics"]["riemann"]["dissipationMode"] = 2;
+    const auto hybrid = C::SimulationConfig::Resolve(input, 1);
+    CHECK(hybrid.Domains()[0].settings.equation.rans.desMode == DNDS::Physics::RANS::SAHybridMode::WMLES);
+    CHECK(hybrid.Domains()[0].settings.numerics.riemann.dissipationMode == C::Riemann::DissipationMode::DES);
+    CHECK(hybrid.Root()["domains"][0]["settings"]["numerics"]["riemann"]["dissipationMode"] == "DES");
+    input["defaults"]["numerics"]["riemann"]["dissipationMode"] = 3;
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+    input["defaults"]["numerics"]["riemann"]["dissipationMode"] = "fullUpwind";
+    input["defaults"]["equation"]["rans"]["desMode"] = "bad";
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+    input["defaults"]["equation"]["rans"]["desMode"] = "WMLES";
     input["defaults"]["equation"]["rans"]["model"] = "none";
     CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
 }

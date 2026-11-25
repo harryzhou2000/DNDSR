@@ -783,7 +783,7 @@ TEST_CASE("shared SA: explicit frame vorticity matches corrected velocity gradie
     correctedGradient.block<dim, dim>(0, 1) -= state[0] * correction;
     Eigen::Vector<real, nVars> explicitFrame = Eigen::Vector<real, nVars>::Zero(), fromGradient = explicitFrame, uncorrected = explicitFrame;
     DNDS::Physics::RANS::GetSource_SAWithVorticity<dim>(state, gradient, 1e-5, g_mu, g_gamma,
-                                                        0.1, 1e10, 0.1, 0, explicitFrame, 0, 0, g_saConfig, 0, &correction);
+                                                        0.1, 1e10, 0.1, DNDS::Physics::RANS::SAHybridMode::DDES, explicitFrame, 0, 0, g_saConfig, 0, &correction);
     GetSource_SA<dim>(state, correctedGradient, 1e-5, g_mu, g_gamma,
                       0.1, 1e10, 0.1, 0, fromGradient, 0, 0, g_saConfig);
     GetSource_SA<dim>(state, gradient, 1e-5, g_mu, g_gamma,

@@ -215,7 +215,7 @@ TEST_CASE("SA and k-omega CUDA point closures agree with canonical CPU source tr
             settings.model = name;
             settings.viscosityReference = .004;
             settings.desScale = desMode == 0 ? DNDS::veryLargeReal : .65;
-            settings.desMode = desMode;
+            settings.desMode = static_cast<DNDS::Physics::RANS::SAHybridMode>(desMode);
             settings.sst.implicitAdditionalSinks = true;
             const P::Model model(settings);
             const auto parameters = model.KernelParameters();

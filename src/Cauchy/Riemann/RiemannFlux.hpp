@@ -54,6 +54,14 @@ namespace DNDS::Cauchy::Riemann
         AUSMPlusUp2
     };
 
+    enum class DissipationMode
+    {
+        Unknown = -1,
+        FullUpwind = 0,
+        Constant = 1,
+        DES = 2
+    };
+
     enum class RotationMode
     {
         None,

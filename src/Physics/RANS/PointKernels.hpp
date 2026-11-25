@@ -64,7 +64,7 @@ namespace DNDS::Physics::RANS
         }
         if (parameters.kind != ModelKind::SA)
             return NumericalStatus{NumericalError::UnsupportedRequest};
-        if (parameters.desMode == 3)
+        if (parameters.desMode == SAHybridMode::DES97)
             return d <= lesLength ? 1.0 : 0.0;
 
         const real chi = point.state[5] * parameters.viscosityReference / point.molecularViscosity;
@@ -75,7 +75,7 @@ namespace DNDS::Physics::RANS
         const Eigen::Matrix3d velocityGradient =
             (point.gradient.template block<3, 3>(0, 1) - point.gradient.col(0) * velocity.transpose()) / rho;
         const real denominator = SADESDenominator(d, velocityGradient.norm());
-        if (parameters.desMode == 0)
+        if (parameters.desMode == SAHybridMode::DDES)
         {
             const real ft2 = parameters.sa.useFt2 ? 1.2 * std::exp(-.5 * sqr(chi)) : 0.0;
             const real psi = SADESPsi(chi, fnu1, 1 - chi / (1 + chi * fnu1), ft2);

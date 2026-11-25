@@ -253,7 +253,7 @@ namespace DNDS::Cauchy
             request.ransMean = mean.Block("rans");
         std::optional<R::Array<real>::ReadLease> viscosityRead;
         const bool useCenterViscosity = owner->settings.numerics.ransCellCenterViscosity;
-        if ((useCenterViscosity || owner->fluxPolicy.desDissipation) && auxiliary && auxiliary->cellTurbulentViscosity)
+        if ((useCenterViscosity || owner->fluxPolicy.UsesDESDissipation()) && auxiliary && auxiliary->cellTurbulentViscosity)
         {
             viscosityRead.emplace(auxiliary->cellTurbulentViscosity->Read());
             request.centerViscosity = CellCenterViscosityView::From(viscosityRead->View<R::UniformTableRows>(), useCenterViscosity);

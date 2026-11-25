@@ -43,7 +43,8 @@ namespace DNDS::Physics::RANS
         ModelKind kind = ModelKind::None;
         real viscosityReference = 1, turbulentPrandtl = .9, turbulentSchmidt = .9;
         real desScale = veryLargeReal;
-        int desMode = 1, saVersion = 0;
+        SAHybridMode desMode = SAHybridMode::IDDES;
+        int saVersion = 0;
         bool saRotationCorrection = true;
         SAConfig sa;
         KOmegaConfig kOmega;
