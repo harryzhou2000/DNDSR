@@ -142,6 +142,46 @@ TEST_CASE("Rotated M9/M2 combines Euler fluxes along the selected axes")
         }
     }
 }
+TEST_CASE("Velocity-jump rotation blends the secondary axis on a logarithmic interval")
+{
+    const C::Vector3 normal{.6, .8, 0}, faceNormal{1, 0, 0};
+    constexpr auto primary = F::Solver::Roe_M9, secondary = F::Solver::Roe_M2;
+    const F::Rotation rotation{F::RotationMode::VelocityJump, secondary};
+
+    for (const auto &[relativeJump, weight] : {std::pair<double, double>{0., 0.},
+                                               {5e-8, 0.},
+                                               {2e-7, 0.},
+                                               {5e-4, 0.},
+                                               {std::sqrt(1e-5), .5},
+                                               {2e-2, 1.}})
+    {
+        CAPTURE(relativeJump);
+        const double jump = relativeJump / std::sqrt(1 - relativeJump * relativeJump);
+        const C::FlowState left{1, .3 * jump, .5, .4 * jump, 3};
+        const C::FlowState right{1, -.3 * jump, .5, -.4 * jump, 3};
+        const double expectedX = 1 - weight + .6 * weight, expectedZ = .8 * weight;
+        const double norm = std::hypot(expectedX, expectedZ);
+        int secondaryCalls = 0;
+        const auto result = F::Math::EvaluateDirections(
+            primary, rotation, left, right, normal, faceNormal,
+            [&](F::Solver solver, const C::Vector3 &direction)
+            {
+                if (solver == secondary)
+                {
+                    ++secondaryCalls;
+                    CHECK(direction[0] == doctest::Approx(expectedX / norm));
+                    CHECK(direction[1] == 0);
+                    CHECK(direction[2] == doctest::Approx(expectedZ / norm));
+                }
+                else if (relativeJump <= 1e-7)
+                    CHECK(direction == normal);
+                return F::FluxResult{};
+            });
+        CHECK(result.rotated == (relativeJump > 1e-7));
+        CHECK(secondaryCalls == (relativeJump > 1e-7 ? 1 : 0));
+    }
+}
+
 TEST_CASE("All Euler fluxes satisfy stationary face consistency and reversal independently of legacy")
 {
     C::EquationSettings settings;

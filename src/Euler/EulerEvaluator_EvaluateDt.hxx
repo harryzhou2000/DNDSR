@@ -8,6 +8,7 @@
 #include "Euler/EulerEvaluator.hpp"
 #include "Geom/Compat/LegacyMeshRead.hpp"
 #include "Euler/RANS_ke.hpp"
+#include "Physics/RiemannRotation.hpp"
 #include "Solver/Linear.hpp"
 
 #define CGAL_DISABLE_ROUNDING_MATH_CHECK // for valgrind
@@ -1460,21 +1461,16 @@ namespace DNDS::Euler
             TVec veloR = URMeanXy(Seq123) / URMeanXy(0);
             TVec diffVelo = veloR - veloL;
             real diffVeloN = diffVelo.norm();
-            real veloLN = veloL.norm();
-            real veloRN = veloR.norm();
-            if (diffVeloN < (smallReal * 10) * (veloLN + veloRN) || diffVeloN < std::sqrt(verySmallReal))
+            real speedSum = veloL.norm() + veloR.norm();
+            if (Physics::RiemannRotationSmallJump(diffVeloN, speedSum))
                 runRsOnNorm();
             else
             {
-                TVec N1;
-                if (settings.rsRotateScheme == 1)
-                    N1 = diffVelo / diffVeloN;
-                else if (settings.rsRotateScheme == 2)
-                    N1 = unitNormC;
-                else
-                    DNDS_assert(false);
+                DNDS_assert(settings.rsRotateScheme == 1 || settings.rsRotateScheme == 2);
+                const TVec N1 = settings.rsRotateScheme == 1
+                                    ? Physics::RiemannVelocityJumpAxis<dim>(diffVelo, diffVeloN, speedSum, unitNormC)
+                                    : unitNormC;
                 DNDS_assert_info(std::abs(N1.norm() - 1) < 1e-5, fmt::format("{}", diffVeloN));
-                N1 *= sign(N1.dot(unitNormC));
                 TReal_Batch N1Proj = N1.transpose() * unitNorm;
 
                 TVec_Batch N2 = unitNorm - N1 * N1Proj;

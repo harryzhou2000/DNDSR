@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Riemann/RiemannFlux.hpp"
+#include "Physics/RiemannRotation.hpp"
 #include <algorithm>
 
 /** @file RiemannFluxMath.hpp
@@ -67,9 +68,8 @@ namespace DNDS::Cauchy::Riemann::Math
     DNDS_DEVICE_CALLABLE inline bool AUSM(Solver kind) { return kind >= Solver::AUSMPWPlus; }
     DNDS_DEVICE_CALLABLE inline bool Roe(Solver kind) { return kind >= Solver::Roe && kind <= Solver::Roe_M9; }
 
-    /// Euler's rotated flux: the secondary solver acts along the mean
-    /// velocity jump (or the face-center normal), and the primary solver
-    /// along the orthogonal remainder of the quadrature normal.
+    /// The secondary solver acts along the rotation axis, and the primary
+    /// solver along the orthogonal remainder of the quadrature normal.
     /// EvaluateDirection prepares any direction-dependent thermodynamics
     /// and dispatches the solver for that direction.
     template <class Scalar, class EvaluateDirection>
@@ -81,23 +81,18 @@ namespace DNDS::Cauchy::Riemann::Math
             return evaluate(primary, normal);
 
         const auto leftVelocity = Velocity(leftMean), rightVelocity = Velocity(rightMean);
-        Vector3T<Scalar> axis{};
+        Vector3T<Scalar> velocityJump{};
         for (int d = 0; d < 3; ++d)
-            axis[d] = rightVelocity[d] - leftVelocity[d];
-        const Scalar jump = DNDS::Math::ScalarSqrt(Dot(axis, axis));
+            velocityJump[d] = rightVelocity[d] - leftVelocity[d];
+        const Scalar jump = DNDS::Math::ScalarSqrt(Dot(velocityJump, velocityJump));
         const Scalar speed = DNDS::Math::ScalarSqrt(Dot(leftVelocity, leftVelocity)) +
                              DNDS::Math::ScalarSqrt(Dot(rightVelocity, rightVelocity));
-        if (jump <= Scalar(10 * smallReal) * speed || jump <= Scalar(1e-100))
+        if (DNDS::Physics::RiemannRotationSmallJump(jump, speed))
             return evaluate(primary, normal);
 
-        if (rotation.mode == RotationMode::FaceNormal)
-            axis = faceNormal;
-        else
-        {
-            const Scalar orientation = Dot(axis, faceNormal) < 0 ? Scalar(-1) : Scalar(1);
-            for (auto &value : axis)
-                value = orientation * value / jump;
-        }
+        const auto axis = rotation.mode == RotationMode::VelocityJump
+                              ? DNDS::Physics::RiemannVelocityJumpAxis<3>(velocityJump, jump, speed, faceNormal)
+                              : faceNormal;
         const Scalar secondaryWeight = Dot(axis, normal);
         Vector3T<Scalar> tangent{};
         for (int d = 0; d < 3; ++d)
