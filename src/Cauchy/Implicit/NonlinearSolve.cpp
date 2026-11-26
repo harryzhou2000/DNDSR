@@ -235,7 +235,8 @@ namespace DNDS::Cauchy
                     std::isfinite(data.report.reconstructionRelativeUpdate);
                 if (!data.report.reconstructionUpdateMeasured)
                     data.report.reconstructionRelativeUpdate = 0;
-                data.convergence.Observe(data.report.residual);
+                const auto &preceding = data.problem.control.precedingStageResidualMax;
+                data.convergence.Observe(data.report.residual, preceding.empty() ? nullptr : &preceding);
                 data.report.initialResidual = data.convergence.Initial();
                 data.report.referenceResidual = data.convergence.Reference();
                 data.report.residualTargetRatio = data.convergence.TargetRatio();

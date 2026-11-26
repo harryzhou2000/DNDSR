@@ -220,6 +220,55 @@ TEST_CASE("Native physical implicit methods preserve uniform periodic flow and t
             CHECK(final[j] == doctest::Approx(initial[j]).epsilon(5e-14));
     }
 }
+TEST_CASE("ESDIRK residual maxima follow the configured scope and reset for each step")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (const std::string reference : {"stepRunningMaximum", "runningMaximum"})
+    {
+        CAPTURE(reference);
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "constant";
+        settings.implicit.iterations = 3;
+        settings.implicit.minIterations = 2;
+        settings.implicit.residualReference = reference;
+        C::TimeSettings time;
+        time.method = "esdirk3";
+        C::Domain domain("wave", mesh, settings, time);
+        DensityWave(domain);
+        std::vector<C::NonlinearProgress> history;
+        domain.SetProgressObserver([&](const auto &sample)
+                                   { history.push_back(sample); });
+        for (const double dt : {.025, .005})
+        {
+            history.clear();
+            REQUIRE(domain.Advance(dt).accepted);
+            REQUIRE(domain.LastImplicitStages().size() == 3);
+            std::vector<double> stageMax(5, 0), stepMax(5, 0);
+            int stage = -1, observedStages = 0;
+            bool inherited = false;
+            for (const auto &sample : history)
+            {
+                if (sample.stage != stage)
+                {
+                    stage = sample.stage;
+                    ++observedStages;
+                    std::fill(stageMax.begin(), stageMax.end(), 0);
+                    CHECK(sample.initialResidual == sample.residual);
+                }
+                REQUIRE(sample.residual.size() == stageMax.size());
+                for (size_t j = 0; j < stageMax.size(); ++j)
+                {
+                    stageMax[j] = std::max(stageMax[j], sample.residual[j]);
+                    stepMax[j] = std::max(stepMax[j], sample.residual[j]);
+                    inherited |= observedStages > 1 && stepMax[j] > stageMax[j];
+                }
+                CHECK(sample.referenceResidual == (reference == "stepRunningMaximum" ? stepMax : stageMax));
+            }
+            CHECK(observedStages == 3);
+            CHECK(inherited);
+        }
+    }
+}
 TEST_CASE("P3 implicit periodic transport conserves flow and discard restores the VR warm guess")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);

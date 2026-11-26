@@ -440,9 +440,9 @@ TEST_CASE("Cauchy nonlinear progress reports completed iterations and zero-based
 }
 TEST_CASE("Implicit convergence retains initial and running references without hiding unselected components")
 {
-    CHECK(C::ImplicitSettings{}.residualReference == "runningMaximum");
+    CHECK(C::ImplicitSettings{}.residualReference == "stepRunningMaximum");
     const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
-    for (const auto *reference : {"initial", "runningMaximum"})
+    for (const auto *reference : {"initial", "runningMaximum", "stepRunningMaximum"})
     {
         C::ImplicitSettings settings;
         settings.relativeTolerance = .1;
@@ -455,7 +455,7 @@ TEST_CASE("Implicit convergence retains initial and running references without h
         policy.Observe({4, 1, 0, 0, 0});
         policy.Observe({.3, .2, 0, 0, 0});
         CHECK(policy.Initial() == C::FlowState{2, 3, 0, 0, 0});
-        const bool running = settings.residualReference == "runningMaximum";
+        const bool running = settings.residualReference != "initial";
         CHECK(policy.Reference()[0] == (running ? 4 : 2));
         CHECK(policy.Accepted() == running);
         CHECK(policy.TargetRatio() == doctest::Approx(running ? .75 : 1.5));

@@ -414,6 +414,11 @@ namespace DNDS::Cauchy
         SetTimeStage(_state.stageGroup->stage);
         auto control = ProgressControl();
         control.resume = _state.internalResume;
+        // Each completed stage already holds the maximum over its predecessors.
+        // BeginStep clears the reports for a new attempt, and internal resume
+        // restores this same reference from the saved nonlinear cursor.
+        if (!control.resume && _implicitControls.residualReference == "stepRunningMaximum" && !_lastImplicit.empty())
+            control.precedingStageResidualMax = _lastImplicit.back().referenceResidual;
         if (auto rate = _state.timeStepper->ImplicitStageRate(*_state.stageGroup, _state.trial))
             control.quiescent = [this, rate, observer = std::move(control.quiescent)](const NonlinearSolveState &cursor)
             {

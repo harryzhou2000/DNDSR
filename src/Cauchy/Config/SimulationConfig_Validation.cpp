@@ -227,7 +227,8 @@ namespace DNDS::Cauchy
                                                             (width * width) % linear.matrixStorage.offDiagonal.rowStridePaddingMultiple == 0))),
                               "copy-free AmgX requires primary int32 sparse indices and aos diagonal/off-diagonal blocks");
         DNDS_check_throw_info((normOrder == 1 || normOrder == 2) &&
-                                  (residualReference == "initial" || residualReference == "runningMaximum"),
+                                  (residualReference == "initial" || residualReference == "runningMaximum" ||
+                                   residualReference == "stepRunningMaximum"),
                               "invalid implicit residual norm/reference/components");
         std::vector<std::string> selected;
         for (const auto &component : residualComponents)

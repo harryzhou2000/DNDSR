@@ -118,6 +118,8 @@ namespace DNDS::Cauchy
         index iterationOrdinal = 0;
         /// Optional diagnostic of the reconstruction used by the observed residual.
         std::function<std::pair<index, real>()> measureReconstructionPositivity;
+        /// Component-wise maxima observed in earlier stages of this step attempt.
+        std::vector<real> precedingStageResidualMax;
     };
     template <class Norms>
     struct BasicNonlinearIterationReport

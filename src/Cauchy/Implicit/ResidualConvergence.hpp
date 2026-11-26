@@ -30,14 +30,23 @@ namespace DNDS::Cauchy
                 width += index(block.components.size());
             DNDS_check_throw_info(width == index(prototype.size()), "residual norms differ from equation schema");
         }
-        void Observe(const Norms &residual)
+        void Observe(const Norms &residual, const Norms *precedingStageMax = nullptr)
         {
             DNDS_check_throw_info(residual.size() == _initial.size(), "residual component count changed");
             for (auto value : residual)
                 DNDS_check_throw_info(std::isfinite(value) && value >= 0, "invalid global residual norm");
             if (!_started)
+            {
                 _initial = _reference = residual;
-            else if (_settings.residualReference == "runningMaximum")
+                if (precedingStageMax && _settings.residualReference == "stepRunningMaximum")
+                {
+                    DNDS_check_throw_info(precedingStageMax->size() == residual.size(), "preceding stage residual reference shape differs");
+                    for (auto value : *precedingStageMax)
+                        DNDS_check_throw_info(std::isfinite(value) && value >= 0, "invalid preceding stage residual reference");
+                    _reference = *precedingStageMax;
+                }
+            }
+            if (_settings.residualReference != "initial")
                 for (index j = 0; j < index(residual.size()); ++j)
                     _reference[j] = std::max(_reference[j], residual[j]);
             _started = true;

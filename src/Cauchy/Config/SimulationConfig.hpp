@@ -572,7 +572,7 @@ namespace DNDS::Cauchy
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
         real algebraicRateTolerance = 1e-8;
         int normOrder = 2;
-        std::string residualReference = "runningMaximum";
+        std::string residualReference = "stepRunningMaximum";
         std::vector<std::string> residualComponents{"auto"};
         std::vector<std::string> ResolveResidualComponents(bool acm) const
         {
@@ -614,11 +614,12 @@ namespace DNDS::Cauchy
             DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-integrated stage residual tolerance");
             DNDS_FIELD(algebraicRateTolerance, "Absolute volume-weighted RMS tolerance on the spatial algebraic rate at each implicit solve (code units)");
             DNDS_FIELD(normOrder, "Volume-integrated residual norm order: 1 or 2");
-            DNDS_FIELD(residualReference, "runningMaximum (Euler default) or initial per-component reference within one solve; reset at solve entry");
+            DNDS_FIELD(residualReference, "Per-component reference: stepRunningMaximum (default) carries maxima across implicit stages of the current step attempt; runningMaximum resets at each stage; initial uses the first observation in each stage");
             DNDS_FIELD(residualComponents, "Named nonlinear convergence components. [auto] resolves to density for compressible flow or momentum for ACM. Empty selects all. ACM continuity is also checked independently");
             DNDS_FIELD(pseudoCFL, "Initial local pseudo-time CFL for each stage");
             DNDS_FIELD(maxPseudoCFL, "Maximum pseudo-time CFL");
             DNDS_FIELD(pseudoGrowth, "CFL growth factor after each nonlinear correction");
+            DNDS_FIELD(pseudoGrowthStart, "First completed nonlinear correction after which CFL grows; zero starts with the first correction");
             DNDS_FIELD(nIterCellSmoothScale, "Euler geometric pseudo-time smoothing passes at FV setup; zero disables it");
             DNDS_FIELD(ransRelaxation, "Additional implicit RANS increment multiplier in (0,1], applied before scalar repair");
             DNDS_FIELD(relaxation, "Multiplier on each computed correction in (0,1]");

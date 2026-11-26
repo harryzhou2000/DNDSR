@@ -553,10 +553,9 @@ transient with an outer residual stop is not this steady mode.
 `implicit.consoleInterval` enables rank-zero progress at selected nonlinear
 iterations; zero disables it. These norms are the uncompressed equation
 residual. Defaults use volume-integrated L2 and density-only convergence, tested
-against its running maximum within the solve and the absolute floor. The
-running-maximum reference is Euler's default behavior; `initial` remains an
-explicit alternative. Explicit controls are
-`normOrder=1|2`, `residualReference="initial"|"runningMaximum"` and the distinct
+against its running maximum within the current physical step attempt and the
+absolute floor. Explicit controls are `normOrder=1|2`,
+`residualReference="stepRunningMaximum"|"runningMaximum"|"initial"` and the distinct
 component names in `residualComponents` (default `["rho"]`; `[]` selects every
 resolved equation). Use names from the equation schema, e.g. `["rho", "rhou"]`
 or `["rhoY:H2", "rhoY:H2O"]`. A `block.component` spelling such as `flow.rho`
@@ -566,8 +565,14 @@ cell defect `r=V*defect`, L1 is `sum(abs(r))` and L2 is
 `sqrt(sum(r^2/V))`; neither result is divided by total volume. This matches
 Euler's volume-integrated absolute convention, while relative convergence
 remains a ratio of the same definition. Selection only controls
-acceptance: all component norms are still computed and reported. Reference
-norms reset at solve entry and running maxima include the current evaluation.
+acceptance: all component norms are still computed and reported. The default
+`stepRunningMaximum` carries each component's maximum observed residual forward
+to later implicit stages. Every fresh step or retry starts a new reference.
+An exact internal resume restores the reference saved with the nonlinear cursor.
+`runningMaximum` starts a separate maximum at each stage, and `initial` uses the
+stage's first observation. Reports always retain the current stage's initial
+residual. Single-stage methods and the coupled DITR solve use one reference for
+their single solve. Running maxima include the current evaluation.
 Single-level and finest p-FAS acceptance use the same small policy after the
 existing global norm reduction, with no additional collective.
 Console physical-step, implicit-stage and nonlinear-iteration labels are
