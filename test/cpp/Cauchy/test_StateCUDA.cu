@@ -1,5 +1,5 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
@@ -18,10 +18,10 @@ namespace K = C::CUDA;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
 using DNDS::real;
-static DNDS::MPIInfo mpi;
 
 TEST_CASE("Queued limiter statistics keep integer counts and deterministic minima")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto device = R::Device::CUDA(0);
     for (const I rows : {I(0), I(1025)})
     {
@@ -49,6 +49,7 @@ TEST_CASE("Queued limiter statistics keep integer counts and deterministic minim
 
 TEST_CASE("Queued status reduction preserves earlier failures across reused producer buffers")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto device = R::Device::CUDA(0);
     R::EagerEngine engine;
     const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
@@ -99,9 +100,11 @@ TEST_CASE("Queued status reduction preserves earlier failures across reused prod
 
 TEST_CASE("Spatial placement retains metric identity and allocates VR boundary values without host staging")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto mesh = CFVTest::CartesianHexes(mpi, 3);
     const auto device = R::Device::CUDA(0);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (const std::string family : {"constant", "gradient", "variational"})
     {
         C::DomainSettings settings;
@@ -138,9 +141,11 @@ TEST_CASE("Spatial placement retains metric identity and allocates VR boundary v
 
 TEST_CASE("Queued boundary operator retains P3 basis and matches CPU physical and mirrored targets")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto mesh = CFVTest::CartesianHexes(mpi, 3);
     const auto device = R::Device::CUDA(0);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (const bool cached : {true, false})
     {
         C::DomainSettings settings;
@@ -227,11 +232,13 @@ TEST_CASE("Queued boundary operator retains P3 basis and matches CPU physical an
 
 TEST_CASE("Managed CUDA volume sources retain distributed geometry and match CPU sampling")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     auto mesh = CFVTest::CartesianHexes(mpi, 3);
     mesh->BuildNodeWallDist([](auto zone)
                             { return zone == 7; });
     const auto device = R::Device::CUDA(0);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (const bool polynomial : {false, true})
     {
         C::DomainSettings settings;
@@ -345,6 +352,7 @@ TEST_CASE("Managed CUDA volume sources retain distributed geometry and match CPU
 
 TEST_CASE("SST mean-gradient auxiliary schedule is shared by inline worker and CUDA execution")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     auto mesh = CFVTest::CartesianHexes(mpi, 3);
     mesh->BuildNodeWallDist([](auto zone)
                             { return zone == 7; });
@@ -365,7 +373,8 @@ TEST_CASE("SST mean-gradient auxiliary schedule is shared by inline worker and C
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume cpu(mesh, settings, equation);
         const auto device = R::Device::CUDA(0);
-        const auto context = R::ExecutionContext::CUDA(0);
+        CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+        const auto context = nonDefaultStream.Context();
         auto gpu = cpu.Placed(device, context);
         auto means = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(7));
         {
@@ -421,6 +430,7 @@ TEST_CASE("SST mean-gradient auxiliary schedule is shared by inline worker and C
 
 TEST_CASE("Queued auxiliary operator matches CPU on a distributed periodic mesh with optional outputs")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
     C::DomainSettings settings;
     settings.numerics.reconstruction = "constant";
@@ -432,7 +442,8 @@ TEST_CASE("Queued auxiliary operator matches CPU on a distributed periodic mesh 
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume cpu(mesh, settings, equation);
     const auto device = R::Device::CUDA(0);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     auto gpu = cpu.Placed(device, context);
     auto means = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(5));
     {
@@ -505,9 +516,11 @@ TEST_CASE("Queued auxiliary operator matches CPU on a distributed periodic mesh 
 
 TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distributed inputs")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
     const auto device = R::Device::CUDA(0);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (const int degree : {0, 1, 3})
     {
         C::DomainSettings settings;
@@ -709,6 +722,7 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
 
 TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty partitions and first failure")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto device = R::Device::CUDA(0);
     for (const std::string model : {"none", "SA", "KOmegaWilcox", "KOmegaSST"})
     {
@@ -796,6 +810,7 @@ TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty p
 
 TEST_CASE("CUDA analytic error uses the CPU oracle quadrature and fixed-tree rank-local reductions")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     for (const int dimension : {2, 3})
     {
         const auto mesh = dimension == 2 ? CauchyTest::PeriodicQuads(mpi, 17) : CFVTest::CartesianHexes(mpi, 3);
@@ -909,6 +924,7 @@ TEST_CASE("CUDA analytic error uses the CPU oracle quadrature and fixed-tree ran
 
 TEST_CASE("P1 WBAP_Barth limits the WBAP result before gradient PP on CPU and CUDA")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto mesh = CFVTest::CartesianHexes(mpi, 6);
     C::DomainSettings settings;
     settings.boundaries["7"].kind = "extrapolate";
@@ -963,7 +979,8 @@ TEST_CASE("P1 WBAP_Barth limits the WBAP result before gradient PP on CPU and CU
     for (const bool cuda : {false, true})
     {
         const auto device = cuda ? R::Device::CUDA(0) : R::Device::Host();
-        const R::ExecutionContext context{device, nullptr};
+        CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+        const auto context = nonDefaultStream.Context();
         auto plan = cuda ? cpu.Placed(device, context) : cpu;
         auto state = C::EquationDofs::Coupled(equation.Schema(), plan.Metrics().BuildField(5));
         state.CoupledField().Owned().CopyFrom(mean.CoupledField().Owned(), context).Wait();
@@ -984,9 +1001,11 @@ TEST_CASE("P1 WBAP_Barth limits the WBAP result before gradient PP on CPU and CU
 
 TEST_CASE("Packed pressure stencil and LLF blending agree on CPU and CUDA")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto mesh = CFVTest::CartesianHexes(mpi, 4);
     const auto device = R::Device::CUDA(0);
-    const R::ExecutionContext transfer{device, nullptr};
+    CauchyTest::NonDefaultCUDAStream nonDefaultTransferStream;
+    const auto transfer = nonDefaultTransferStream.Context();
     for (const bool modal : {false, true})
     {
         CAPTURE(modal);
@@ -1044,6 +1063,7 @@ TEST_CASE("Packed pressure stencil and LLF blending agree on CPU and CUDA")
 
 TEST_CASE("Managed characteristics feed WBAP without a host observation between operators")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
     C::DomainSettings settings;
     settings.numerics.reconstruction = "variational";
@@ -1071,7 +1091,8 @@ TEST_CASE("Managed characteristics feed WBAP without a host observation between 
     {
         CAPTURE(backend);
         const auto device = backend == 2 ? R::Device::CUDA(0) : R::Device::Host();
-        const R::ExecutionContext transfer{device, nullptr};
+        CauchyTest::NonDefaultCUDAStream nonDefaultTransferStream;
+        const auto transfer = nonDefaultTransferStream.Context();
         auto plan = backend == 2 ? cpu.Placed(device, transfer) : cpu;
         auto state = C::EquationDofs::Coupled(equation.Schema(), plan.Metrics().BuildField(5));
         state.CoupledField().Owned().CopyFrom(means.CoupledField().Owned(), transfer).Wait();
@@ -1111,15 +1132,4 @@ TEST_CASE("Managed characteristics feed WBAP without a host observation between 
                         CHECK(b.View()(iRow, j) == doctest::Approx(a.View()(iRow, j)).epsilon(2e-10).scale(1));
             }
     }
-}
-
-int main(int argc, char **argv)
-{
-    DNDS::MPI::Init_thread(&argc, &argv);
-    mpi = DNDS::MPIInfo(MPI_COMM_WORLD);
-    doctest::Context context;
-    context.applyCommandLine(argc, argv);
-    const int result = context.run();
-    DNDS::MPI::Finalize();
-    return result;
 }

@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "NativeMeshOverlapFixture.hpp"
 #include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
@@ -112,14 +111,4 @@ TEST_CASE("Detached snapshot publication retains validation and explicit placeme
     CHECK_THROWS(copy.AcquireRead());
     CHECK_THROWS(copy.To(R::Device::Host()));
     CHECK(moved.AcquireRead().HostView().NumCell() == first.HostView().NumCell());
-}
-
-int main(int argc, char **argv)
-{
-    // Native row kernels may create OMP/CPU workers even with controller MPI.
-    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
-        return 1;
-    const auto result = doctest::Context(argc, argv).run();
-    DNDS::MPI::Finalize();
-    return result;
 }

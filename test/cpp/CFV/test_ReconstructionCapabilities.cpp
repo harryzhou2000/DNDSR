@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "ReconstructionFixture.hpp"
@@ -9,10 +8,15 @@ namespace C = DNDS::CFV;
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
-static DNDS::MPIInfo mpi;
 
 namespace
 {
+    DNDS::MPIInfo CapabilitiesMPI()
+    {
+        DNDS::MPIInfo world;
+        world.setWorld();
+        return world;
+    }
     void Fill(C::FVField &field, const G::UnstructuredMesh &mesh)
     {
         auto write = field.Owned().Write();
@@ -54,6 +58,7 @@ namespace
 
 TEST_CASE("Sweep capability profiles preserve full Jacobi SOR and WBAP arithmetic in 2D and 3D")
 {
+    const auto mpi = CapabilitiesMPI();
     for (int dim : {2, 3})
     {
         auto mesh = dim == 2 ? G::OverlapTest::BuildNativeFixture(mpi, true, 4).mesh : CFVTest::CartesianHexes(mpi, 2);
@@ -124,6 +129,7 @@ TEST_CASE("Sweep capability profiles preserve full Jacobi SOR and WBAP arithmeti
 
 TEST_CASE("Original operator and preconditioner profiles remain independent under complete SVD truncation")
 {
+    const auto mpi = CapabilitiesMPI();
     // Rotated periodic closure also exercises a different source/target frame,
     // and leaves ranks beyond the two owners empty in np4/np8 runs.
     auto mesh = CFVTest::Sector(mpi);
@@ -166,6 +172,7 @@ TEST_CASE("Original operator and preconditioner profiles remain independent unde
 
 TEST_CASE("Inverse-only preparation includes self-periodic diagonal corrections")
 {
+    const auto mpi = CapabilitiesMPI();
     auto mesh = G::UnstructuredMesh::FromNative(mpi, G::ConstructNativeMesh(NativePeriodicFixtures::QuadraticTorus(mpi)));
     mesh->PrepareNativeTopology();
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
@@ -182,6 +189,7 @@ TEST_CASE("Inverse-only preparation includes self-periodic diagonal corrections"
 
 TEST_CASE("Sampling-only preparation is independent of matrix capabilities and ranks agree before setup")
 {
+    const auto mpi = CapabilitiesMPI();
     auto mesh = G::OverlapTest::BuildNativeFixture(mpi, true, 2).mesh;
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
     C::ReconstructionCapabilities sampling{false, false, false, false, false};
@@ -226,15 +234,4 @@ TEST_CASE("Sampling-only preparation is independent of matrix capabilities and r
         mutation.Commit();
     }
     CHECK_THROWS(plan.StorageReport()); // Reduced profiles retain the same geometry-generation guard.
-}
-
-int main(int argc, char **argv)
-{
-    const int status = DNDS::MPI::Init_thread(&argc, &argv);
-    if (status != MPI_SUCCESS)
-        return status;
-    mpi.setWorld();
-    const int result = doctest::Context(argc, argv).run();
-    DNDS::MPI::Finalize();
-    return result;
 }

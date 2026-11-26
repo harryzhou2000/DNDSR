@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/IO/NativeMeshOpenFOAM.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
@@ -183,12 +182,4 @@ TEST_CASE("Source setup partitions parents before refinement and retains parent-
     if (mpi.size > 1)
         CHECK_THROWS(G::DeriveAndPartitionNativeMesh(quadratic, mpi, options, 0, mpi.rank == 0 ? 0 : 1));
     CHECK(quadratic->MeshNamespace() == stamp);
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

@@ -1,5 +1,5 @@
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -24,7 +24,8 @@ namespace
 TEST_CASE("Complete-face packages preserve mixed rules tails and bounded point tiles")
 {
     const auto device = R::Device::CUDA(0);
-    const R::ExecutionContext context{device, nullptr};
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     std::vector<I> counts;
     for (I iFace = 0; iFace < 43; ++iFace)
         counts.push_back(std::array<I, 5>{9, 4, 1, 81, 300}[iFace % 5]);
@@ -81,7 +82,8 @@ TEST_CASE("Complete-face packages preserve mixed rules tails and bounded point t
 TEST_CASE("Nine-point packages pack tightly across warps within the CTA budget")
 {
     const auto device = R::Device::CUDA(0);
-    const R::ExecutionContext context{device, nullptr};
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     std::vector<I> counts(40, 9);
     R::Array<I> empty(R::RowLayout::Dense(0, 1), device);
     const auto all = R::RowSelectionShape::AllRows(I(counts.size()));

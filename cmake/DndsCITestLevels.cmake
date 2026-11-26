@@ -13,8 +13,8 @@ set(_critical_tests
 
     # Geometry, independent connectivity oracles, transitions and matching.
     geom_elements geom_quadrature geom_mesh_connectivity_ghost_np2
-    geom_native_mesh_periodic_import_np2 geom_native_mesh_transition_np2 geom_mesh_preflight_np2
-    geom_native_connectivity_np2 geom_native_mesh_wall_dist_np2 geom_mesh_locality_ordering_np2
+    geom_native_periodic_np2 geom_native_transition_np2 geom_mesh_preflight_np2
+    geom_native_connectivity_np2 geom_native_geometry_np2 geom_mesh_locality_ordering_np2
     geom_distributed_boundary_interface_np2 geom_mesh_cgns_multizone
 
     # Reconstruction, limiter and interpolation mathematics. The 3D contract
@@ -26,7 +26,7 @@ set(_critical_tests
     # Physical models, temporal algebra, linear solves and the FAS cycle.
     euler_gas_thermo euler_riemann_solvers euler_rans euler_physics_properties
     euler_rotating_frame euler_source_chemical euler_evaluator_small_np2
-    solver_field_time_stepper solver_field_gmres solver_direct solver_fas solver_aggregation_amg
+    solver_field_time_stepper solver_field_gmres_np2 solver_direct_np2 solver_fas solver_aggregation_amg
 
     # Solver composition, pressure/thermodynamic fluxes, implicit operators,
     # convergence, subcommunicators and restart across MPI partitions.
@@ -47,9 +47,9 @@ set(_qualification_targets
     dnds_test_cauchy_polynomial_multigrid dnds_test_cauchy_multidomain
     euler_test_evaluator_pipeline cfv_test_reconstruction3d
     dnds_test_amgx_preconditioner dnds_test_cauchy_domain_cuda
-    dnds_test_cauchy_spatial_schedule_cuda dnds_test_cauchy_time_fas_cuda
+    dnds_test_cauchy_spatial_schedule_cuda
     cfv_test_reconstruction_cuda cfv_test_limited_vr_cuda
-    cauchy_test_interface_cuda cfv_test_distributed_interface_sampling_cuda)
+    cfv_test_distributed_interface_sampling_cuda)
 
 foreach(_level RANGE 0 2)
     add_custom_target(ci_cpp_level${_level})

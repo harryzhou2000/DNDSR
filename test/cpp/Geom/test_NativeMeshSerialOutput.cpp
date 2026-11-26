@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/IO/NativeMeshSerialOutput.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
@@ -201,12 +200,4 @@ TEST_CASE("Serial output facade rejects absent native authority and retains succ
     reader.BuildSerialOut();
     CHECK(reader.nativeSerialOutput != prepared);
     CHECK_NOTHROW(prepared->ValidateSource(*native->CurrentNativeState()));
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

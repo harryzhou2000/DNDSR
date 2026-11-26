@@ -1,5 +1,5 @@
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "CompactStencilFixture.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeAuxiliaryKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
@@ -27,7 +27,8 @@ namespace
             for (I iRow = 0; iRow < I(values.size()); ++iRow)
                 write.View()(iRow, 0) = values[iRow];
         }
-        return host.To(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+        CauchyTest::NonDefaultCUDAStream uploadStream;
+        return host.To(R::Device::CUDA(0), uploadStream.Context());
     }
     R::Array<real> DeviceStates(const std::vector<C::FlowState> &values)
     {
@@ -38,14 +39,16 @@ namespace
                 for (int j = 0; j < 5; ++j)
                     write.View()(iRow, j) = values[iRow][j];
         }
-        return host.To(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+        CauchyTest::NonDefaultCUDAStream uploadStream;
+        return host.To(R::Device::CUDA(0), uploadStream.Context());
     }
 }
 
 TEST_CASE("CUDA boundary producers match generic CPU face exterior and interface states")
 {
     const auto device = R::Device::CUDA(0), host = R::Device::Host();
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (const std::string model : {"none", "SA", "KOmegaWilcox", "KOmegaSST"})
     {
         INFO("boundary model=" << model);
@@ -195,7 +198,8 @@ TEST_CASE("CUDA boundary producers match generic CPU face exterior and interface
 TEST_CASE("CUDA auxiliary means match generic CPU thermodynamics and RANS transport with ghost gradients")
 {
     const auto device = R::Device::CUDA(0);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (const std::string model : {"none", "SA", "KOmegaWilcox", "KOmegaSST"})
     {
         INFO("model=" << model);
@@ -295,7 +299,8 @@ TEST_CASE("CUDA auxiliary means match generic CPU thermodynamics and RANS transp
 TEST_CASE("CUDA face auxiliaries distinguish rotated neighbor physical boundary and interface then reduce by cell")
 {
     const auto device = R::Device::CUDA(0);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     C::PerfectGasSpatialParameters parameters;
     parameters.dimension = 2;
     parameters.Validate(5);

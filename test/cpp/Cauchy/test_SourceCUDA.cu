@@ -1,6 +1,6 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeSourceKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
@@ -31,7 +31,8 @@ namespace
 TEST_CASE("CUDA RANS quadrature sources and destruction diagonals match generic CPU")
 {
     const auto device = R::Device::CUDA(0);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (const std::string model : {"SA", "KOmegaWilcox", "KOmegaSST"})
         for (int operation = 0; operation < 6; ++operation)
         {
@@ -272,7 +273,8 @@ TEST_CASE("CUDA RANS quadrature sources and destruction diagonals match generic 
 TEST_CASE("CUDA moving-axis source preserves scalar components")
 {
     const auto device = R::Device::CUDA(0), host = R::Device::Host();
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     auto mean = Table<real>(2, 7, [](I i, I j)
                             { return 1 + .2 * i + .1 * j; });
     auto geometry = Table<real>(2, 1, [](I i, I)

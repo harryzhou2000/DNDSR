@@ -1,9 +1,9 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 // Host-only test driver: device work is launched through the public C++
 // wrappers. Compile the independent Eigen inverse oracle with the host
 // compiler, rather than instantiating its dynamic LU in a CUDA translation unit.
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Implicit/CUDA/LinearBlockKernels.hpp"
 #include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include "DNDS/Runtime/Array/ArrayCopy.hpp"
@@ -63,7 +63,8 @@ TEST_CASE("CUDA assembled actions and Jacobi preserve sparse block order and cor
     for (I iRow = 0; iRow < rows; ++iRow)
         position[order[iRow]] = iRow;
     const C::LinearPatternStorage pattern(columns, order, position, core, dependent);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (bool tiled : {false, true})
         for (int components : {5, 6, 7})
             for (bool fullDiagonal : {false, true})

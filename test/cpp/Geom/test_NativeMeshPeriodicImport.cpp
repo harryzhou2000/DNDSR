@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/IO/NativeMeshPeriodicImport.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
@@ -316,12 +315,4 @@ TEST_CASE("Native periodic CGNS import builds directly on a nonzero reader and r
         std::filesystem::remove(path);
         std::filesystem::remove(properties);
     }
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const auto result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

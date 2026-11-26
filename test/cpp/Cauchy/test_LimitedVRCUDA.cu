@@ -1,5 +1,5 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeLimitedVRKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeLimitedVRKernels.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
@@ -12,7 +12,6 @@ namespace K = C::CUDA;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
 using DNDS::real;
-static DNDS::MPIInfo mpi;
 
 namespace
 {
@@ -37,11 +36,13 @@ namespace
 
 TEST_CASE("Full-width LVR target and direct sensors agree on CPU and CUDA")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     CauchyTest::CompactManagedStencilFixture fixture(CFVTest::CartesianHexes(DNDS::MPIInfo(MPI_COMM_SELF), 2));
     const C::PerfectGas gas;
     const C::ThermalBounds bounds{1e-5, 1e-5, 1e-5};
     const auto device = R::Device::CUDA(0);
-    const R::ExecutionContext context{device, nullptr};
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     const auto geometry = fixture.metrics.AcquireRead();
     const auto metric = geometry.HostView();
     auto means = fixture.metrics.BuildField(6), gradients = fixture.metrics.BuildField(6 * 3);
@@ -126,15 +127,4 @@ TEST_CASE("Full-width LVR target and direct sensors agree on CPU and CUDA")
             Equal(base, dbase);
         }
     engine.Close();
-}
-
-int main(int argc, char **argv)
-{
-    DNDS::MPI::Init_thread(&argc, &argv);
-    mpi = DNDS::MPIInfo(MPI_COMM_WORLD);
-    doctest::Context context;
-    context.applyCommandLine(argc, argv);
-    const int result = context.run();
-    DNDS::MPI::Finalize();
-    return result;
 }

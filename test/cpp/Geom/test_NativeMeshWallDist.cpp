@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
@@ -234,16 +233,6 @@ TEST_CASE("Native curved wall preserves method conventions and remote midpoint z
         if (nodes.LocalToGlobal(node) == 6)
             CHECK(std::abs(mesh->NodeWallDist(node).norm() - exact) < coarseError / 2);
 }
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    doctest::Context context(argc, argv);
-    const int result = context.run();
-    MPI_Finalize();
-    return result;
-}
-
 TEST_CASE("Wall distance rejects an unpublished mesh collectively")
 {
     DNDS::MPIInfo mpi(MPI_COMM_WORLD);

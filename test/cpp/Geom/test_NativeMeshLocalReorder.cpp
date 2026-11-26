@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
@@ -526,7 +525,7 @@ TEST_CASE("Local cell reorder accepts padded combined IDs and retains noncell pa
     CHECK_NOTHROW(coordinateAlias.Write());
 }
 
-TEST_CASE("Shared local partition helper handles disconnected empty and singleton face graphs")
+TEST_CASE("Shared local partition helper handles disconnected empty and singleton face graphs" * doctest::test_suite("rank-local"))
 {
     const G::tLocalMatStruct original{{1}, {0}, {3}, {2}, {}};
     const auto partitions = G::PartitionSerialAdj_Metis(original.begin(), original.end(), 2);
@@ -550,12 +549,4 @@ TEST_CASE("Shared local partition helper handles disconnected empty and singleto
     G::tLocalMatStruct one{{}};
     const auto singlePermutation = G::detail::ComputeCellPermutation(one, std::vector<std::vector<I>>{{}}, 1, 2, 2);
     CHECK(singlePermutation.cellOld2New == std::vector<I>{0});
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

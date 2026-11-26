@@ -1,6 +1,6 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeGradientKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeGradientKernels.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
@@ -70,7 +70,8 @@ TEST_CASE("CUDA Cauchy centered Barth PP and primitive means match generic CPU")
     CHECK(cpuGeometry.View().metric.periodic.OtherRotation(0, 0)(0, 1) == -1);
     CHECK(cpuGeometry.View().metric.periodic.OtherRotation(0, 0)(1, 0) == 1);
     const auto device = R::Device::CUDA(0), host = R::Device::Host();
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     const CauchyTest::CompactStencilFixture gpuGeometry(fixture, context);
     // ACM stores velocity in [0,3), including when SA or SST follows it.
     for (const I components : {4, 5, 6})

@@ -1220,7 +1220,7 @@ namespace
 
 }
 
-TEST_CASE("Canonical topology role keys equal the independent full-image reference for every supported subentity")
+TEST_CASE("Canonical topology role keys equal the independent full-image reference for every supported subentity" * doctest::test_suite("rank-local"))
 {
     std::mt19937_64 random(0x3856c0a9ULL);
     size_t checked = 0;

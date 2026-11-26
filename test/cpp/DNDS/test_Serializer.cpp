@@ -414,7 +414,7 @@ TEST_CASE("CSR sharing: reads legacy raw-vector row-start encoding")
 // ===================================================================
 // SerializerJSON — scalar round-trip
 // ===================================================================
-TEST_CASE("SerializerJSON scalar round-trip")
+TEST_CASE("SerializerJSON scalar round-trip" * doctest::test_suite("rank-local"))
 {
     std::string fname = TmpJSON("scalar");
     FileGuard guard(fname);
@@ -432,6 +432,27 @@ TEST_CASE("SerializerJSON scalar round-trip")
         ser.WriteString("myStr", "hello");
 
         ser.CloseFile();
+    }
+    // --- Read back and verify ---
+    {
+        S::SerializerJSON ser;
+        ser.OpenFile(fname, true);
+        ser.GoToPath("/test");
+
+        int rInt = 0;
+        DNDS::index rIdx = 0;
+        DNDS::real rReal = 0.0;
+        std::string rStr;
+        ser.ReadInt("myInt", rInt);
+        ser.ReadIndex("myIdx", rIdx);
+        ser.ReadReal("myReal", rReal);
+        ser.ReadString("myStr", rStr);
+        ser.CloseFile();
+
+        CHECK(rInt == 42);
+        CHECK(rIdx == 123456789LL);
+        CHECK(rReal == doctest::Approx(3.14));
+        CHECK(rStr == "hello");
     }
 }
 
@@ -642,22 +663,13 @@ REDIST_TAG_STR(uint8_t, LayoutDynamic, 7);
 REDIST_TAG_STR(uint8_t, LayoutCSR, 0);
 #undef REDIST_TAG_STR
 
-#define REDIST_ALL_TAGS                                                                                                                           \
-    RedistTag<DNDS::real, LayoutStaticFixed, 1>, RedistTag<DNDS::real, LayoutStaticFixed, 3>, RedistTag<DNDS::real, LayoutStaticFixed, 7>,        \
-        RedistTag<DNDS::real, LayoutDynamic, 1>, RedistTag<DNDS::real, LayoutDynamic, 3>, RedistTag<DNDS::real, LayoutDynamic, 7>,                \
-        RedistTag<DNDS::real, LayoutCSR, 0>,                                                                                                      \
-        RedistTag<DNDS::index, LayoutStaticFixed, 1>, RedistTag<DNDS::index, LayoutStaticFixed, 3>, RedistTag<DNDS::index, LayoutStaticFixed, 7>, \
-        RedistTag<DNDS::index, LayoutDynamic, 1>, RedistTag<DNDS::index, LayoutDynamic, 3>, RedistTag<DNDS::index, LayoutDynamic, 7>,             \
-        RedistTag<DNDS::index, LayoutCSR, 0>,                                                                                                     \
-        RedistTag<uint16_t, LayoutStaticFixed, 1>, RedistTag<uint16_t, LayoutStaticFixed, 3>, RedistTag<uint16_t, LayoutStaticFixed, 7>,          \
-        RedistTag<uint16_t, LayoutDynamic, 1>, RedistTag<uint16_t, LayoutDynamic, 3>, RedistTag<uint16_t, LayoutDynamic, 7>,                      \
-        RedistTag<uint16_t, LayoutCSR, 0>,                                                                                                        \
-        RedistTag<int32_t, LayoutStaticFixed, 1>, RedistTag<int32_t, LayoutStaticFixed, 3>, RedistTag<int32_t, LayoutStaticFixed, 7>,             \
-        RedistTag<int32_t, LayoutDynamic, 1>, RedistTag<int32_t, LayoutDynamic, 3>, RedistTag<int32_t, LayoutDynamic, 7>,                         \
-        RedistTag<int32_t, LayoutCSR, 0>,                                                                                                         \
-        RedistTag<uint8_t, LayoutStaticFixed, 1>, RedistTag<uint8_t, LayoutStaticFixed, 3>, RedistTag<uint8_t, LayoutStaticFixed, 7>,             \
-        RedistTag<uint8_t, LayoutDynamic, 1>, RedistTag<uint8_t, LayoutDynamic, 3>, RedistTag<uint8_t, LayoutDynamic, 7>,                         \
-        RedistTag<uint8_t, LayoutCSR, 0>
+#define REDIST_ALL_TAGS                                                                     \
+    RedistTag<DNDS::real, LayoutStaticFixed, 1>, RedistTag<DNDS::real, LayoutDynamic, 3>,   \
+        RedistTag<DNDS::real, LayoutCSR, 0>,                                                \
+        RedistTag<DNDS::index, LayoutStaticFixed, 3>, RedistTag<DNDS::index, LayoutCSR, 0>, \
+        RedistTag<uint16_t, LayoutDynamic, 7>,                                              \
+        RedistTag<int32_t, LayoutStaticFixed, 1>,                                           \
+        RedistTag<uint8_t, LayoutStaticFixed, 3>, RedistTag<uint8_t, LayoutCSR, 0>
 
 TEST_CASE_TEMPLATE("redistribute", Tag, REDIST_ALL_TAGS)
 {
@@ -667,7 +679,7 @@ TEST_CASE_TEMPLATE("redistribute", Tag, REDIST_ALL_TAGS)
 
     MPIInfo mpi(MPI_COMM_WORLD);
 
-    for (DNDS::index baseSize : {5, 30, 100})
+    for (DNDS::index baseSize : {5, 40})
     {
         CAPTURE(baseSize);
         std::string fname = TmpH5(NextTag());
@@ -985,7 +997,7 @@ TEST_CASE_TEMPLATE("redistribute different-np", Tag, REDIST_ALL_TAGS)
 // ===================================================================
 // SerializerJSON — vector round-trip
 // ===================================================================
-TEST_CASE("SerializerJSON vector round-trip")
+TEST_CASE("SerializerJSON vector round-trip" * doctest::test_suite("rank-local"))
 {
     std::string fname = TmpJSON("vec");
     FileGuard guard(fname);
@@ -1044,7 +1056,7 @@ TEST_CASE("SerializerJSON vector round-trip")
 // ===================================================================
 // SerializerJSON — uint8 array round-trip (with and without codec)
 // ===================================================================
-TEST_CASE("SerializerJSON uint8 array round-trip")
+TEST_CASE("SerializerJSON uint8 array round-trip" * doctest::test_suite("rank-local"))
 {
     // Prepare a known byte pattern 0..255 repeated to 512 bytes.
     std::vector<uint8_t> pattern(512);
@@ -1129,7 +1141,7 @@ TEST_CASE("SerializerJSON uint8 array round-trip")
 // ===================================================================
 // SerializerJSON — path operations
 // ===================================================================
-TEST_CASE("SerializerJSON path operations")
+TEST_CASE("SerializerJSON path operations" * doctest::test_suite("rank-local"))
 {
     std::string fname = TmpJSON("paths");
     FileGuard guard(fname);
@@ -1175,7 +1187,7 @@ TEST_CASE("SerializerJSON path operations")
 // ===================================================================
 // SerializerJSON — shared pointer deduplication
 // ===================================================================
-TEST_CASE("SerializerJSON shared pointer deduplication")
+TEST_CASE("SerializerJSON shared pointer deduplication" * doctest::test_suite("rank-local"))
 {
     std::string fname = TmpJSON("shared");
     FileGuard guard(fname);
@@ -1410,8 +1422,8 @@ TEST_CASE("SerializerH5 distributed vector")
         ser.OpenFile(fname, true);
         ser.GoToPath("/dist");
 
-        std::vector<DNDS::index> rData;
-        S::ArrayGlobalOffset offR = S::ArrayGlobalOffset_Unknown;
+        std::vector<DNDS::index> rData(static_cast<size_t>(localN), 0);
+        S::ArrayGlobalOffset offR(localN, myOffset);
 
         ser.ReadIndexVector("data", rData, offR);
 

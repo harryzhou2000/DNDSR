@@ -39,7 +39,7 @@ namespace
     }
 }
 
-TEST_CASE("Element geometry projects analytically known line triangle and warped quad points")
+TEST_CASE("Element geometry projects analytically known line triangle and warped quad points" * doctest::test_suite("rank-local"))
 {
     auto coordinates = MixedCoordinates(0);
     auto read = coordinates.Read();
@@ -90,7 +90,7 @@ TEST_CASE("Element geometry projects analytically known line triangle and warped
     CHECK_FALSE(bounds.Intersects(distant));
 }
 
-TEST_CASE("Surface snapshots freeze shared storage and local maps retain their geometry")
+TEST_CASE("Surface snapshots freeze shared storage and local maps retain their geometry" * doctest::test_suite("rank-local"))
 {
     auto coordinates = MixedCoordinates(0);
     auto surface = G::SurfacePatch::Create(Records(0), coordinates);

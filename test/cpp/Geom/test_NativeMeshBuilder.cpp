@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
@@ -397,12 +396,4 @@ TEST_CASE("Native primary builder includes empty ranks and agrees on invalid inp
             CHECK_THROWS(G::ConstructNativeMesh(input, options));
         }
     }
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const auto result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

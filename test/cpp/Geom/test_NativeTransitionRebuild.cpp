@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Transition/MeshTransition.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
@@ -281,11 +280,4 @@ TEST_CASE("Generated native ID floors agree collectively and never modify retain
     CHECK(retry->NextEntityId(G::EntityKind::Face) == 6);
     CHECK(retry->NextEntityId(G::EntityKind::Edge) == 12);
     CHECK(oldNodes.Valid());
-}
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const auto result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

@@ -1,5 +1,6 @@
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "InverseRefinementFixture.hpp"
@@ -319,4 +320,13 @@ TEST_CASE("Queued inverses preserve independent diagonal and inverse matrix layo
                             CHECK(a.View()(iCell, j) == doctest::Approx(b.View()(iCell, j)).epsilon(2e-11).scale(1));
                 }
             }
+}
+
+int main(int argc, char **argv)
+{
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
+    const int result = doctest::Context(argc, argv).run();
+    DNDS::MPI::Finalize();
+    return result;
 }

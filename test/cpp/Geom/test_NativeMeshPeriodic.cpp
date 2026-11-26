@@ -250,14 +250,14 @@ TEST_CASE("Native periodic primary rejects invalid image metadata collectively a
     CHECK_NOTHROW(G::ConstructNativeMesh(input));
 }
 
-TEST_CASE("Exact periodic frame matching handles repeated IDs whose XOR changes sorted order")
+TEST_CASE("Exact periodic frame matching handles repeated IDs whose XOR changes sorted order" * doctest::test_suite("rank-local"))
 {
     CHECK(G::NativePeriodicFrame({{0, 0}, {0, 1}, {1, 0}, {1, 1}}, {{0, 2}, {0, 3}, {1, 2}, {1, 3}}) == 2);
     CHECK(G::NativePeriodicFrame({{0, 0}, {0, 2}, {1, 0}, {1, 2}}, {{0, 1}, {0, 3}, {1, 1}, {1, 3}}) == 1);
     CHECK_FALSE(G::NativePeriodicFrame({{0, 0}, {0, 1}, {1, 0}}, {{0, 2}, {0, 3}, {1, 4}}));
 }
 
-TEST_CASE("Periodic frame matching agrees with independent full image search")
+TEST_CASE("Periodic frame matching agrees with independent full image search" * doctest::test_suite("rank-local"))
 {
     const auto reference = [](const G::NativePeriodicNodes &input, G::NativePeriodicNodes expected) -> std::optional<uint8_t>
     {
@@ -705,7 +705,7 @@ TEST_CASE("Periodic parent-face flags use the published owner frame across ranks
         CHECK(remoteFaces > 0);
 }
 
-TEST_CASE("NativePeriodicFacialMatch handles repeated canonical vertex IDs across XOR frames")
+TEST_CASE("NativePeriodicFacialMatch handles repeated canonical vertex IDs across XOR frames" * doctest::test_suite("rank-local"))
 {
     // 3D 1-cell-thick periodic probe: canonical vertex 10 repeats with frames 0 and 1.
     // Under mask 3, other={(10,2),(10,3),(20,3),(40,0)} becomes {(10,1),(10,0),(20,0),(40,3)},
@@ -728,8 +728,9 @@ TEST_CASE("NativePeriodicFacialMatch handles repeated canonical vertex IDs acros
 
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
-    const auto result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
+    const int result = doctest::Context(argc, argv).run();
+    DNDS::MPI::Finalize();
     return result;
 }

@@ -696,8 +696,9 @@ TEST_CASE("Partition preserves independent existing Face ownership and exact sou
 
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     const int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return result;
 }

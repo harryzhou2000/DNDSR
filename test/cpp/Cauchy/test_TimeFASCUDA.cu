@@ -1,5 +1,5 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigridOperations.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
@@ -17,7 +17,6 @@ namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 using I = DNDS::index;
 using DNDS::real;
-static DNDS::MPIInfo mpi;
 namespace
 {
     C::EquationDofs MakeState(const A::DofSpace &space, int n, R::Device device)
@@ -45,6 +44,7 @@ namespace
 }
 TEST_CASE("Resident equation checkpoint copies preserve padded layout and distributed row remapping")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     int deviceCount = 0;
     REQUIRE(cudaGetDeviceCount(&deviceCount) == cudaSuccess);
     REQUIRE(deviceCount > 0);
@@ -97,6 +97,7 @@ TEST_CASE("Resident equation checkpoint copies preserve padded layout and distri
 }
 TEST_CASE("Method-owned stage history uses instance-bound algebra on every execution backend")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     const auto communication = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD);
     A::DofSpace space(communication, 17, 0, "time CUDA algebra");
     for (const int n : {5, 6, 7})
@@ -194,6 +195,7 @@ TEST_CASE("Method-owned stage history uses instance-bound algebra on every execu
 }
 TEST_CASE("Selected FAS algebra and cross-space transfer preserve frozen components")
 {
+    const auto mpi = CauchyTest::WorldMPI();
     using State = C::EquationDofs;
     using Operations = C::PolynomialMultigridOperations;
     using Cycle = DNDS::Multigrid::StateFASCycle<State, Operations>;
@@ -246,14 +248,4 @@ TEST_CASE("Selected FAS algebra and cross-space transfer preserve frozen compone
             for (I j = 0; j < 7; ++j)
                 CHECK(read.View()(iRow, j) == doctest::Approx(j == 0 || j == 4 ? 2 - (2 - .4) * .0196 : .4).epsilon(1e-12));
     }
-}
-int main(int argc, char **argv)
-{
-    DNDS::MPI::Init_thread(&argc, &argv);
-    mpi = DNDS::MPIInfo(MPI_COMM_WORLD);
-    doctest::Context context;
-    context.applyCommandLine(argc, argv);
-    const int result = context.run();
-    DNDS::MPI::Finalize();
-    return result;
 }

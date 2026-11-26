@@ -1,6 +1,7 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "CompactStencilFixture.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels.hpp"
@@ -191,7 +192,8 @@ TEST_CASE("CUDA RHS parameter publication rejects species in the perfect-gas pro
 TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and interface incidences")
 {
     const auto device = R::Device::CUDA(0), host = R::Device::Host();
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     using Precision = DNDS::Math::ComputePrecision;
     // Exercise all five reduced-arithmetic combinations per scalar, including
     // the two coupled choices whose launch definitions live in separate TUs.
@@ -640,7 +642,8 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
 
 TEST_CASE("CUDA canonical ghost-left and self-periodic faces preserve owned signs and incidence frames")
 {
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     const auto equation = C::EquationSystem::Resolve(C::EquationSettings{});
     const auto gas = equation.Gas();
     const auto rotate = [](C::FlowState state, bool inverse)
@@ -771,4 +774,13 @@ TEST_CASE("CUDA canonical ghost-left and self-periodic faces preserve owned sign
         for (int j = 0; j < 5; ++j)
             CHECK(values.View()(0, j) == doctest::Approx(expected[j]).epsilon(3e-12).scale(1));
     }
+}
+
+int main(int argc, char **argv)
+{
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
+    const int result = doctest::Context(argc, argv).run();
+    DNDS::MPI::Finalize();
+    return result;
 }

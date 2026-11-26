@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
@@ -186,12 +185,4 @@ TEST_CASE("Native face assertions permit unavailable outer ghost cell faces and 
     CHECK_NOTHROW(periodic->AssertOnFaces());
     CHECK_NOTHROW(periodic->AssertOnN2CB());
     CHECK(periodic->CurrentNativeState()->MeshNamespace() == state->MeshNamespace());
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

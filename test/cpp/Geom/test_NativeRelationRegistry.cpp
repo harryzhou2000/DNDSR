@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
@@ -549,14 +548,4 @@ TEST_CASE("Adjacency scan cache follows alias writes and retains read authority"
         }
         CHECK_NOTHROW(adjacency.Read());
     }
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    doctest::Context context;
-    context.applyCommandLine(argc, argv);
-    const int result = context.run();
-    MPI_Finalize();
-    return result;
 }

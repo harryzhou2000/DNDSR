@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Transition/NativeMeshPartitionGraph.hpp"
 #include "Geom/Unstructured/NativeMeshPreparation.hpp"
@@ -544,12 +543,4 @@ TEST_CASE("Several physical faces of one cell pair contribute their maximum diam
         CHECK(graph.adjacency == std::vector<idx_t>{1, 0, 3, 2, 4, 3});
         CHECK(graph.weights == std::vector<idx_t>{half, half, half, half, cap, cap});
     }
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

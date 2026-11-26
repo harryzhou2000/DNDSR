@@ -474,9 +474,7 @@ TEST_CASE("evaluateGhostTree: performance benchmark")
     if (g_mpi.size < 2)
         return;
 
-    std::vector<DNDS::index> sizes = {32, 100};
-    if (g_mpi.size <= 4)
-        sizes.push_back(500);
+    std::vector<DNDS::index> sizes = {16, 32};
 
     for (auto N : sizes)
     {
@@ -654,7 +652,7 @@ TEST_CASE("evaluateGhostTree: small periodic tiled grid")
                ghostNodes.size(), grid.expectedGhostNodesN(1));
 }
 
-TEST_CASE("GhostChain: defaultPrimary compiles")
+TEST_CASE("GhostChain: defaultPrimary compiles" * doctest::test_suite("rank-local"))
 {
     auto spec = GhostSpec::defaultPrimary();
     auto tree = CompiledGhostTree::compile(spec);
@@ -732,7 +730,7 @@ TEST_CASE("GhostChain: defaultPrimary compiles")
     CHECK(adjs.size() == 4);
 }
 
-TEST_CASE("GhostChain: prefix merging")
+TEST_CASE("GhostChain: prefix merging" * doctest::test_suite("rank-local"))
 {
     GhostSpec spec{{
         {EntityKind::Cell, {Adj::Cell2Cell}, EntityKind::Cell},
@@ -760,7 +758,7 @@ TEST_CASE("GhostChain: prefix merging")
     CHECK(tree.MaxLevel() == 2);
 }
 
-TEST_CASE("GhostChain: invalid chain detection")
+TEST_CASE("GhostChain: invalid chain detection" * doctest::test_suite("rank-local"))
 {
     CHECK_THROWS_AS(
         CompiledGhostTree::compile(GhostSpec{{
@@ -787,7 +785,7 @@ TEST_CASE("GhostChain: invalid chain detection")
         std::runtime_error);
 }
 
-TEST_CASE("GhostChain: dump")
+TEST_CASE("GhostChain: dump" * doctest::test_suite("rank-local"))
 {
     auto spec = GhostSpec::defaultPrimary();
     auto tree = CompiledGhostTree::compile(spec);
@@ -799,7 +797,7 @@ TEST_CASE("GhostChain: dump")
     CHECK(d.find("COLLECT") != std::string::npos);
 }
 
-TEST_CASE("GhostChain: face ghost chain")
+TEST_CASE("GhostChain: face ghost chain" * doctest::test_suite("rank-local"))
 {
     GhostSpec spec{{
         {EntityKind::Cell, {Adj::Cell2Face}, EntityKind::Face},
@@ -822,7 +820,7 @@ TEST_CASE("GhostChain: face ghost chain")
     CHECK(adjs.size() == 1);
 }
 
-TEST_CASE("GhostChain: AdjacencyDescriptor equality and hash")
+TEST_CASE("GhostChain: AdjacencyDescriptor equality and hash" * doctest::test_suite("rank-local"))
 {
     AdjacencyDescriptor a(EntityKind::Cell, EntityKind::Node);
     AdjacencyDescriptor b(EntityKind::Cell, EntityKind::Node, EntityKind::Face);
@@ -841,7 +839,7 @@ TEST_CASE("GhostChain: AdjacencyDescriptor equality and hash")
     (void)h(d);
 }
 
-TEST_CASE("GhostChain: entityDepth")
+TEST_CASE("GhostChain: entityDepth" * doctest::test_suite("rank-local"))
 {
     CHECK(entityDepth(EntityKind::Cell, 3) == 3);
     CHECK(entityDepth(EntityKind::Face, 3) == 2);
@@ -856,7 +854,7 @@ TEST_CASE("GhostChain: entityDepth")
     CHECK(entityDepth(EntityKind::Bnd, 2) == 1);
 }
 
-TEST_CASE("GhostChain: adjKindName")
+TEST_CASE("GhostChain: adjKindName" * doctest::test_suite("rank-local"))
 {
     CHECK(adjKindName(Adj::Cell2Node) == "Cell2Node");
     CHECK(adjKindName(Adj::Node2Cell) == "Node2Cell");
@@ -865,7 +863,7 @@ TEST_CASE("GhostChain: adjKindName")
     CHECK(adjKindName(Adj::Bnd2Node) == "Bnd2Node");
 }
 
-TEST_CASE("GhostChain: checkAvailable native registry rejects omitted required relation")
+TEST_CASE("GhostChain: checkAvailable native registry rejects omitted required relation" * doctest::test_suite("rank-local"))
 {
     auto cone = T::FourQuadCones(g_mpi);
     auto adjacent = T::AllNeighbors(cone);

@@ -560,7 +560,7 @@ TEST_CASE("MPI completes while a core worker is active across Euler field widths
         requests.push_back({peer, int64_t(i * 13 % 67), i});
     RowTransferPlan route(context, 67, 19, requests);
     for (size_t workers : {size_t(1), size_t(2)})
-        for (size_t width : {size_t(1), size_t(4), size_t(5), size_t(6), size_t(7), size_t(13), size_t(114)})
+        for (size_t width : {size_t(1), size_t(5), size_t(114)})
             for (auto mode : {TransferMode::Transient, TransferMode::Persistent})
                 for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})
                 {

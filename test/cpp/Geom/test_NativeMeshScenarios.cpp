@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
@@ -350,11 +349,4 @@ TEST_CASE("Unrelated remote components do not grow rank0 traversal C++ scratch")
         CHECK(peaks[1] == peaks[0]);
         CHECK(peaks[2] == peaks[0]);
     }
-}
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

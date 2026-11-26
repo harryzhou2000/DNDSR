@@ -1,5 +1,5 @@
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeCharacteristicKernels.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
@@ -89,17 +89,19 @@ TEST_CASE("CUDA analytic mean characteristics match CPU inverse and canonical pe
     auto dp = parameters.To(device);
     auto dk = codes.To(device);
     auto df = faceMeanNorm.To(device);
-    const auto cellRead = dc.Read({device, nullptr});
-    const auto routeRead = dr.Read({device, nullptr});
-    const auto parameterRead = dp.Read({device, nullptr});
-    const auto codeRead = dk.Read({device, nullptr});
-    const auto faceRead = df.Read({device, nullptr});
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
+    const auto cellRead = dc.Read(context);
+    const auto routeRead = dr.Read(context);
+    const auto parameterRead = dp.Read(context);
+    const auto codeRead = dk.Read(context);
+    const auto faceRead = df.Read(context);
     C::FiniteVolumeStencilView view;
     view.topology.faceCells = {cellRead.View<R::RowLayout>(), {}};
     view.routing = routeRead.View<R::FixedRows<1>>();
     view.metric.faceMeanNorm = faceRead.View<R::FixedRows<3>>();
     view.metric.periodic = {codeRead.View<R::FixedRows<1>>(), parameterRead.View<R::FixedRows<1>>()};
-    const auto publication = R::MetadataBuffer<C::FiniteVolumeStencilView>({view}).CopyTo(device, {device, nullptr});
+    const auto publication = R::MetadataBuffer<C::FiniteVolumeStencilView>({view}).CopyTo(device, context);
     for (const I width : {I(5), I(6), I(7)})
     {
         auto means = Table<real>(3, width, [&](I iCell, I j)

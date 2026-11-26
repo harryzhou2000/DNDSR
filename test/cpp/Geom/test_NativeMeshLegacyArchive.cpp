@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "NativeMeshOverlapFixture.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
@@ -308,12 +307,4 @@ TEST_CASE("Legacy periodic high-order import rejects explicitly duplicated node 
     CHECK_NOTHROW(G::NativeMeshLegacyArchive::Read(mpi, serializer, "mesh"));
     serializer->CloseFile();
     std::filesystem::remove(file);
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

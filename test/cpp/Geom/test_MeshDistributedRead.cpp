@@ -171,18 +171,14 @@ static std::string meshPath(const std::string &name)
 
 static std::string tmpDir()
 {
-    std::string f(__FILE__);
-    for (int i = 0; i < 4; i++)
+    // Place temporary H5 files in the OS temp directory rather than data/
+    // so the repository's data/ tree stays clean and symlinkable.
+    static const std::string dir = []()
     {
-        auto pos = f.rfind('/');
-        if (pos == std::string::npos)
-            pos = f.rfind('\\');
-        if (pos != std::string::npos)
-            f = f.substr(0, pos);
-    }
-    // Include np in directory name to avoid conflicts when ctest runs
-    // multiple np tests in parallel.
-    return f + "/data/tmp_test_distributed_read_np" + std::to_string(g_mpi.size);
+        auto root = std::filesystem::temp_directory_path();
+        return (root / ("dnds_test_distributed_read_np" + std::to_string(g_mpi.size))).string();
+    }();
+    return dir;
 }
 
 static std::shared_ptr<const NativeMeshState> readReference(const MeshConfig &cfg, const MPIInfo &mpi)
@@ -466,13 +462,12 @@ TEST_CASE("SameNp: face2cell valid"){
 TEST_CASE("SameNp: node2cell non-empty"){
     FOR_EACH_CONFIG({
         auto &mesh = *g_sameNpMesh[ic];
+        auto requirements = MeshReadRequirements::Primary();
+        requirements.inverse = true;
+        auto read = mesh.AcquireRead(requirements);
+        const auto view = read.HostView();
         for (DNDS::index iN = 0; iN < mesh.NumNode(); iN++)
-        {
-            auto requirements = MeshReadRequirements::Primary();
-            requirements.inverse = true;
-            auto read = mesh.AcquireRead(requirements);
-            CHECK(read.HostView().NodeCells(iN).size() > 0);
-        }
+            CHECK(view.NodeCells(iN).size() > 0);
     })}
 
 TEST_CASE("SameNp: cell2cellOrig globally unique"){
@@ -554,13 +549,12 @@ TEST_CASE("CrossNp: cell2cellOrig globally unique"){
 TEST_CASE("CrossNp: node2cell non-empty"){
     FOR_EACH_CROSS_CONFIG({
         auto &mesh = *g_crossNpMesh[ic];
+        auto requirements = MeshReadRequirements::Primary();
+        requirements.inverse = true;
+        auto read = mesh.AcquireRead(requirements);
+        const auto view = read.HostView();
         for (DNDS::index iN = 0; iN < mesh.NumNode(); iN++)
-        {
-            auto requirements = MeshReadRequirements::Primary();
-            requirements.inverse = true;
-            auto read = mesh.AcquireRead(requirements);
-            CHECK(read.HostView().NodeCells(iN).size() > 0);
-        }
+            CHECK(view.NodeCells(iN).size() > 0);
     })}
 
 TEST_CASE("CrossNp: helper path PrepareMesh resolves owned node2cell")

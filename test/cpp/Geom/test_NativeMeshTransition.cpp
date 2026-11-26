@@ -712,10 +712,9 @@ TEST_CASE("PreparedMeshTransition localPermutations reorders companion EntityFie
 
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
-    doctest::Context context;
-    context.applyCommandLine(argc, argv);
-    const int result = context.run();
-    MPI_Finalize();
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
+    const int result = doctest::Context(argc, argv).run();
+    DNDS::MPI::Finalize();
     return result;
 }

@@ -1,6 +1,6 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "CompactStencilFixture.hpp"
 #include "CompactManagedStencilFixture.hpp"
 #include "../CFV/RotatedSectorFixture.hpp"
@@ -82,7 +82,8 @@ namespace
 TEST_CASE("CUDA frozen Jacobians match CPU blocks and actions including ALE periodic projection and RANS stress")
 {
     Geometry geometry;
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     const auto dc = geometry.columns.To(context.device), doff = geometry.offsets.To(context.device);
     const auto dp = geometry.points.To(context.device);
     CauchyTest::CompactStencilFixture hostStencil(geometry.input), deviceStencil(geometry.input, context);
@@ -295,7 +296,8 @@ TEST_CASE("CUDA frozen Jacobians match CPU blocks and actions including ALE peri
 
 TEST_CASE("CUDA diagonal initialization preserves CPU mass and moving-frame block convention")
 {
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     const auto cells = Table<real>(4, 1, [](I i, I)
                                    { return .7 + .3 * i; });
     const auto tau = Table<real>(4, 1, [](I i, I)
@@ -349,7 +351,8 @@ TEST_CASE("CUDA diagonal initialization preserves CPU mass and moving-frame bloc
 TEST_CASE("CUDA centered face diagonal matches CPU wall chains Roe matrices and self periodic contribution")
 {
     using Matrix = Eigen::Matrix<real, 5, 5>;
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     const auto equation = C::EquationSystem::Resolve(C::EquationSettings{});
     const auto gas = equation.Gas();
     const auto flux = C::Riemann::RiemannFlux::Resolve("Roe_M9");
@@ -540,7 +543,8 @@ TEST_CASE("managed frozen Jacobian retains real periodic mesh geometry through q
     DNDS::MPIInfo mpi;
     mpi.setWorld();
     REQUIRE(mpi.size == 1);
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     const auto gas = C::EquationSystem::Resolve(C::EquationSettings{}).Gas();
     constexpr int components = 7;
     std::shared_ptr<C::LinearProblemContext> problem;
@@ -647,16 +651,4 @@ TEST_CASE("managed frozen Jacobian retains real periodic mesh geometry through q
     for (I iCell = 0; iCell < I(expected.size()); ++iCell)
         for (int j = 0; j < components; ++j)
             CHECK(read.View()(iCell, j) == doctest::Approx(expected[iCell][j]).epsilon(5e-12).scale(1));
-}
-
-int main(int argc, char **argv)
-{
-    DNDS::MPI::Init_thread(&argc, &argv);
-    int result = 0;
-    {
-        doctest::Context context(argc, argv);
-        result = context.run();
-    }
-    DNDS::MPI::Finalize();
-    return result;
 }

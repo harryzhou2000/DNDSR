@@ -850,8 +850,9 @@ TEST_CASE("Checkpoint audits collectively reject mixed publication inventory or 
 
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
-    const auto result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
+    const int result = doctest::Context(argc, argv).run();
+    DNDS::MPI::Finalize();
     return result;
 }

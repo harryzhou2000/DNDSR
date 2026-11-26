@@ -11,7 +11,7 @@
 namespace A = DNDS::Algebra;
 namespace R = DNDS::Runtime;
 
-TEST_CASE("Operator input layout caches track queued mutations and storage aliases")
+TEST_CASE("Operator input layout caches track queued mutations and storage aliases" * doctest::test_suite("rank-local"))
 {
     constexpr DNDS::index width = 95;
     for (DNDS::index workers : {0, 2})
@@ -71,7 +71,7 @@ TEST_CASE("Operator input layout caches track queued mutations and storage alias
         }
 }
 
-TEST_CASE("Independent OMP row kernels return deterministic first numerical failure")
+TEST_CASE("Independent OMP row kernels return deterministic first numerical failure" * doctest::test_suite("rank-local"))
 {
     std::array<DNDS::index, 97> values{};
     const auto success = DNDS::OMP::ForRowsStatus(0, DNDS::index(values.size()), [&](DNDS::index iRow) -> DNDS::NumericalStatus
@@ -163,7 +163,7 @@ static void CheckSentinels(const Field &field)
         CHECK(ghost.template View<T>().data[entry] == T(-727));
 }
 
-TEST_CASE("Native DOF algebra operates on logical owned entries for arbitrary table widths")
+TEST_CASE("Native DOF algebra operates on logical owned entries for arbitrary table widths" * doctest::test_suite("rank-local"))
 {
     for (size_t workers : {size_t(0), size_t(2)})
         for (size_t width : {size_t(5), size_t(6), size_t(7), size_t(114)})
@@ -231,7 +231,7 @@ TEST_CASE("Native DOF algebra operates on logical owned entries for arbitrary ta
             }
 }
 
-TEST_CASE("Native DOF fixed widths share handles and numerical copies are explicit")
+TEST_CASE("Native DOF fixed widths share handles and numerical copies are explicit" * doctest::test_suite("rank-local"))
 {
     A::DofSpace space(11, 2);
     A::DofField<double, 5> fixed(space, 5, 8);
@@ -257,7 +257,7 @@ TEST_CASE("Native DOF fixed widths share handles and numerical copies are explic
     CHECK(A::NormLocal(seven) == doctest::Approx(std::sqrt(11 * 7 * 9)));
 }
 
-TEST_CASE("Native DOF algebra validates semantic spaces, immutable shape and overlap")
+TEST_CASE("Native DOF algebra validates semantic spaces, immutable shape and overlap" * doctest::test_suite("rank-local"))
 {
     A::DofSpace space(4), other(4);
     A::DofField<> x(space, 5), unrelated(other, 5), wrongWidth(space, 6);
@@ -286,7 +286,7 @@ TEST_CASE("Native DOF algebra validates semantic spaces, immutable shape and ove
     CHECK_THROWS(A::NormGlobal(unrelated));
 }
 
-TEST_CASE("Fixed DOF component contract survives dynamic Array imports and replacement")
+TEST_CASE("Fixed DOF component contract survives dynamic Array imports and replacement" * doctest::test_suite("rank-local"))
 {
     A::DofSpace space(3, 1);
     R::Array<double> owned(R::RowLayout::Dense(3, 6, 8));
@@ -320,7 +320,7 @@ struct AlgebraGate : R::StreamEvent::State
     }
 };
 
-TEST_CASE("Immediate DOF convenience rejects pending or active access before using an inline lane")
+TEST_CASE("Immediate DOF convenience rejects pending or active access before using an inline lane" * doctest::test_suite("rank-local"))
 {
     R::EagerEngine engine(1);
     const auto stream = engine.CreateCPUStream();
@@ -343,7 +343,7 @@ TEST_CASE("Immediate DOF convenience rejects pending or active access before usi
     CHECK(A::NormLocal(value) == doctest::Approx(7 * std::sqrt(17 * 5)));
 }
 
-TEST_CASE("Native DOF commands retain values and honor explicit cross-stream joins")
+TEST_CASE("Native DOF commands retain values and honor explicit cross-stream joins" * doctest::test_suite("rank-local"))
 {
     R::EagerEngine engine(2);
     auto producer = engine.CreateCPUStream(), consumer = engine.CreateCPUStream();

@@ -1,6 +1,7 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Physics/RANS/Model.hpp"
 #include "Physics/RANS/PointKernels.hpp"
 #include "Cauchy/Physics/RiemannPreparation.hpp"
@@ -347,4 +348,13 @@ TEST_CASE("Perfect-gas CUDA boundaries preserve physical and exterior targets in
             }
         }
     }
+}
+
+int main(int argc, char **argv)
+{
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
+    const int result = doctest::Context(argc, argv).run();
+    DNDS::MPI::Finalize();
+    return result;
 }

@@ -1,6 +1,6 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumePositivityKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.hpp"
 #include "Cauchy/Discretization/CPU/ModalPositivityKernels.hpp"
@@ -65,7 +65,8 @@ namespace
     {
         const I cells = means.RowCount(), components = means.Layout().Width();
         const auto device = R::Device::CUDA(0), host = R::Device::Host();
-        const auto context = R::ExecutionContext::CUDA(0);
+        CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+        const auto context = nonDefaultStream.Context();
         auto faceRows = Table<I>(cells, 0, [](I, I)
                                  { return I(0); });
         auto offsets = Table<I>(cells + 1, 1, [](I i, I)
@@ -224,7 +225,8 @@ TEST_CASE("CUDA physical-dt forecast ignores RANS bounds and reports invalid mea
         expected = result.value;
     }
     const auto device = R::Device::CUDA(0), host = R::Device::Host();
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     auto du = means.To(device), dr = rhs.To(device), dg = geometry.To(device);
     R::Array<real> alpha(R::RowLayout::Dense(3, 1), device);
     R::Array<DNDS::NumericalStatus> status(R::RowLayout::Dense(3, 1), device);
@@ -272,7 +274,8 @@ TEST_CASE("CUDA physical-dt forecast ignores RANS bounds and reports invalid mea
 TEST_CASE("CUDA polynomial positivity matches CPU flow compression and independent RANS repair")
 {
     const auto device = R::Device::CUDA(0), host = R::Device::Host();
-    const auto context = R::ExecutionContext::CUDA(0);
+    CauchyTest::NonDefaultCUDAStream nonDefaultStream;
+    const auto context = nonDefaultStream.Context();
     for (const std::string model : {"none", "SA", "KOmegaSST"})
         for (const auto policy : {C::ReconstructionClippedReferencePolicy::FallbackToBase, C::ReconstructionClippedReferencePolicy::Backtracking})
         {

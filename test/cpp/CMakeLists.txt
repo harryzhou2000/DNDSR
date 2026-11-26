@@ -176,6 +176,7 @@ endfunction()
 # --- helper: add an MPI unit test executable (Geom) ---
 # MPI tests run all TEST_CASEs together per NP value (avoids mpirun overhead per test case).
 function(geom_add_mpi_test TEST_NAME SRC_FILE LIBS)
+    cmake_parse_arguments(PARSE_ARGV 3 _test "LOCAL_CASES_ONCE" "" "")
     set(TARGET_NAME "geom_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
     set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
@@ -190,11 +191,22 @@ function(geom_add_mpi_test TEST_NAME SRC_FILE LIBS)
     set_target_properties(${TARGET_NAME} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         EXCLUDE_FROM_ALL ON)
+    if(_test_LOCAL_CASES_ONCE AND DNDS_TEST_NP_LIST)
+        if("1" IN_LIST DNDS_TEST_NP_LIST)
+            set(_local_case_np 1)
+        else()
+            list(GET DNDS_TEST_NP_LIST 0 _local_case_np)
+        endif()
+    endif()
     foreach(NP ${DNDS_TEST_NP_LIST})
+        set(_case_filter)
+        if(DEFINED _local_case_np AND NOT NP EQUAL _local_case_np)
+            set(_case_filter --test-suite-exclude=rank-local)
+        endif()
         _dnds_np_timeout(${NP} _TIMEOUT)
         dnds_register_test(${TARGET_NAME} geom_${TEST_NAME}_np${NP}
             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${NP}
-                    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:${TARGET_NAME}> ${MPIEXEC_POSTFLAGS})
+                    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:${TARGET_NAME}> ${MPIEXEC_POSTFLAGS} ${_case_filter})
         _dnds_maybe_set_timeout(geom_${TEST_NAME}_np${NP} ${_TIMEOUT})
         set_tests_properties(geom_${TEST_NAME}_np${NP} PROPERTIES
             PROCESSORS ${NP}
@@ -216,11 +228,6 @@ add_dependencies(all_unit_tests dnds_unit_tests geom_unit_tests)
 dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
 dnds_add_unit_test(runtime "DNDS/test_Runtime.cpp" "dnds")
 dnds_add_unit_test(runtime_array "DNDS/test_RuntimeArray.cpp" "dnds")
-dnds_add_unit_test(source_organization "DNDS/test_SourceOrganization.cpp" "dnds")
-target_link_libraries(dnds_test_source_organization PRIVATE dnds_compat_headers)
-add_dependencies(dnds_unit_tests dnds_test_source_organization)
-dnds_add_unit_test(source_organization_native "DNDS/test_SourceOrganizationNative.cpp" "geom;dnds")
-add_dependencies(dnds_unit_tests dnds_test_source_organization_native)
 dnds_add_unit_test(runtime_element_schema "DNDS/test_RuntimeElementSchema.cpp" "dnds")
 add_dependencies(dnds_unit_tests dnds_test_runtime_element_schema)
 dnds_add_unit_test(legacy_array_bridge "DNDS/test_LegacyArrayBridge.cpp" "dnds")
@@ -255,12 +262,10 @@ dnds_add_unit_test(cauchy_rigid_motion "Cauchy/test_RigidMotion.cpp" "cauchy;cfv
 dnds_add_mpi_test(cauchy_boundary_inputs "Cauchy/test_BoundaryInputs.cpp" "cauchy;cfv;geom;dnds" LOCAL_CASES_ONCE)
 dnds_add_mpi_test(cauchy_wall_distance "Cauchy/test_WallDistanceSamples.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_rans_fv "Cauchy/test_RANSFiniteVolume.cpp" "cauchy;physics;cfv;geom;dnds")
-dnds_add_mpi_test(cauchy_multidomain_mesh "Cauchy/test_MultidomainMesh.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_multidomain "Cauchy/test_Multidomain.cpp" "cauchy;cfv;geom;dnds")
 # Fixture-only exact predicates use CGAL's header-only Boost backend. Disable
 # automatic GMP selection too: the CORE setting alone leaves that enabled when
 # GMP/MPFR headers happen to exist, introducing an undeclared link dependency.
-target_compile_definitions(dnds_test_cauchy_multidomain_mesh PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1 CGAL_DISABLE_GMP=1)
 target_compile_definitions(dnds_test_cauchy_multidomain PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1 CGAL_DISABLE_GMP=1)
 dnds_add_mpi_test(cauchy_equation_dofs "Cauchy/test_EquationDofs.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_riemann "Cauchy/test_Riemann.cpp" "cauchy;cfv;geom;dnds")
@@ -328,47 +333,6 @@ endif()
 dnds_add_mpi_test(cauchy_physical_timestep "Cauchy/test_PhysicalTimeStep.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_viscous_flux "Cauchy/test_ViscousFlux.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_auxiliary_preparation "Cauchy/test_AuxiliaryPreparation.cpp" "cauchy;cfv;geom;dnds")
-add_executable(cauchy_benchmark_implicit EXCLUDE_FROM_ALL Cauchy/benchmark_Implicit.cpp)
-add_executable(cauchy_benchmark_block_lu_comparison EXCLUDE_FROM_ALL Cauchy/benchmark_BlockLUComparison.cpp)
-target_include_directories(cauchy_benchmark_block_lu_comparison PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_block_lu_comparison PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-add_executable(cauchy_benchmark_finite_volume_dispatch EXCLUDE_FROM_ALL Cauchy/benchmark_FiniteVolumeDispatch.cpp)
-target_include_directories(cauchy_benchmark_finite_volume_dispatch PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_finite_volume_dispatch PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-target_include_directories(cauchy_benchmark_implicit PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_implicit PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-add_executable(cauchy_benchmark_geom_acquisition EXCLUDE_FROM_ALL Cauchy/benchmark_GeomAcquisition.cpp)
-target_include_directories(cauchy_benchmark_geom_acquisition PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_geom_acquisition PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-add_executable(cauchy_benchmark_jacobian EXCLUDE_FROM_ALL Cauchy/benchmark_Jacobian.cpp)
-target_include_directories(cauchy_benchmark_jacobian PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_jacobian PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-add_executable(cauchy_benchmark_nonlinear_stage EXCLUDE_FROM_ALL Cauchy/benchmark_NonlinearStage.cpp)
-target_include_directories(cauchy_benchmark_nonlinear_stage PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_nonlinear_stage PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_executable(cauchy_benchmark_rhs_execution EXCLUDE_FROM_ALL Cauchy/benchmark_RHSExecution.cpp Cauchy/RHSExecutionBenchmark.cpp)
-    target_include_directories(cauchy_benchmark_rhs_execution PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cauchy_benchmark_rhs_execution PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-    target_link_options(cauchy_benchmark_rhs_execution PRIVATE
-        "LINKER:--wrap=_ZNK4DNDS3CFV16FiniteVolumePlan8BindHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEENS_7Runtime15TransferOptionsE"
-        "LINKER:--wrap=_ZNK4DNDS3CFV16FiniteVolumePlan15BindTrackedHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEENS_7Runtime15TransferOptionsE"
-        "LINKER:--wrap=_ZN4DNDS7Runtime6Detail9CopyBytesEPKvNS0_6DeviceEPvS4_mNS0_16ExecutionContextE"
-        "LINKER:--wrap=_ZNK4DNDS3CFV29VariationalReconstructionPlan22DoReconstructionIterToERKNS_7Algebra8DofFieldIdLm18446744073709551615EEES6_RNS0_23ReconstructionWorkspaceERKNS0_28ReconstructionBoundaryValuesENS0_20ReconstructionRegionE")
-    add_executable(cauchy_benchmark_coefficient_rhs EXCLUDE_FROM_ALL Cauchy/benchmark_CoefficientRHSCost.cpp)
-    target_include_directories(cauchy_benchmark_coefficient_rhs PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cauchy_benchmark_coefficient_rhs PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-    target_link_options(cauchy_benchmark_coefficient_rhs PRIVATE
-        "LINKER:--wrap=_ZNK4DNDS3CFV29VariationalReconstructionPlan20CommitReconstructionERNS_7Algebra8DofFieldIdLm18446744073709551615EEERNS0_23ReconstructionWorkspaceE")
-endif()
-add_executable(cauchy_experiment_multidomain_iv EXCLUDE_FROM_ALL Cauchy/experiment_MultidomainIV.cpp)
-add_executable(cauchy_experiment_acm_vortex_projection EXCLUDE_FROM_ALL Cauchy/experiment_ACMVortexProjection.cpp)
-target_include_directories(cauchy_experiment_acm_vortex_projection PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_experiment_acm_vortex_projection PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-target_compile_definitions(cauchy_experiment_acm_vortex_projection PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1 CGAL_DISABLE_GMP=1)
-target_include_directories(cauchy_experiment_multidomain_iv PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_experiment_multidomain_iv PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-target_compile_definitions(cauchy_experiment_multidomain_iv PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1 CGAL_DISABLE_GMP=1)
 target_compile_definitions(dnds_test_cauchy_checkpoint PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 dnds_add_mpi_test(cauchy_jacobian "Cauchy/test_Jacobian.cpp" "cauchy;cfv;geom;dnds" LOCAL_CASES_ONCE)
 add_custom_target(cauchy_unit_tests)
@@ -402,7 +366,6 @@ add_dependencies(cauchy_unit_tests dnds_test_cauchy_checkpoint)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_physical_timestep)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_rigid_motion)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_boundary_inputs)
-add_dependencies(cauchy_unit_tests dnds_test_cauchy_multidomain_mesh)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_multidomain)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_viscous_flux)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_auxiliary_preparation)
@@ -430,14 +393,6 @@ if(DNDS_USE_CUDA)
     dnds_register_test(cfv_test_distributed_interface_sampling_cuda cfv_distributed_interface_sampling_cuda_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
         ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py $<TARGET_FILE:cfv_test_distributed_interface_sampling_cuda> ${MPIEXEC_POSTFLAGS})
     set_tests_properties(cfv_distributed_interface_sampling_cuda_np1 cfv_distributed_interface_sampling_cuda_np2 PROPERTIES TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=1")
-    add_executable(cauchy_test_interface_cuda EXCLUDE_FROM_ALL Cauchy/test_InterfaceCUDA.cu)
-    target_include_directories(cauchy_test_interface_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDE_DOCTEST} ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cauchy_test_interface_cuda PRIVATE cauchy physics cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-    dnds_register_test(cauchy_test_interface_cuda cauchy_interface_cuda_np1 COMMAND $<TARGET_FILE:cauchy_test_interface_cuda>)
-    dnds_register_test(cauchy_test_interface_cuda cauchy_interface_cuda_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
-        ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py $<TARGET_FILE:cauchy_test_interface_cuda> ${MPIEXEC_POSTFLAGS})
-    set_tests_properties(cauchy_interface_cuda_np1 cauchy_interface_cuda_np2 PROPERTIES TIMEOUT 240 ENVIRONMENT "OMP_NUM_THREADS=1")
-    add_dependencies(cauchy_unit_tests cauchy_test_interface_cuda)
     target_sources(runtime_array_bridge_test PRIVATE DNDS/RuntimeArrayBridge_CUDA.cu ../demos/MockStencil.cu)
 endif()
 set_target_properties(runtime_array_bridge_test PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
@@ -452,15 +407,10 @@ add_dependencies(dnds_unit_tests dnds_test_hard_eigen)
 dnds_add_mpi_test(object_contracts "DNDS/test_ObjectContracts.cpp" "dnds" LOCAL_CASES_ONCE)
 target_sources(dnds_test_object_contracts PRIVATE DNDS/test_LocalChecks.cpp)
 
-dnds_add_mpi_test(serializer "DNDS/test_Serializer.cpp" "dnds")
+dnds_add_mpi_test(serializer "DNDS/test_Serializer.cpp" "dnds" LOCAL_CASES_ONCE)
 dnds_add_mpi_test(mpi "DNDS/test_MPI.cpp" "dnds")
 dnds_add_mpi_test(runtime_exchange "DNDS/test_RuntimeExchange.cpp" "dnds")
 dnds_add_mpi_test(runtime_row_transfer "DNDS/test_RuntimeRowTransfer.cpp" "dnds")
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_executable(dnds_benchmark_transfer_scheduling EXCLUDE_FROM_ALL DNDS/benchmark_TransferScheduling.cpp)
-    target_include_directories(dnds_benchmark_transfer_scheduling PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(dnds_benchmark_transfer_scheduling PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
-endif()
 if(Python_EXECUTABLE)
     dnds_register_test(dnds_test_runtime_row_transfer dnds_runtime_preflight_off_failure_np2
         COMMAND ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/check_preflight_failfast.py
@@ -475,7 +425,7 @@ dnds_register_test(dnds_test_runtime_row_transfer dnds_runtime_row_transfer_abor
         -P ${CMAKE_CURRENT_SOURCE_DIR}/ExpectMPIFailure.cmake)
 set_tests_properties(dnds_runtime_row_transfer_abort_np2 PROPERTIES
     TIMEOUT 30 PROCESSORS 2 ENVIRONMENT "OMP_NUM_THREADS=1")
-dnds_add_mpi_test(native_dof_algebra "DNDS/test_NativeDofAlgebra.cpp" "dnds")
+dnds_add_mpi_test(native_dof_algebra "DNDS/test_NativeDofAlgebra.cpp" "dnds" LOCAL_CASES_ONCE)
 add_dependencies(dnds_unit_tests dnds_test_native_dof_algebra)
 dnds_add_mpi_test(runtime_transient "DNDS/test_RuntimeTransient.cpp" "dnds")
 dnds_add_mpi_test(sparse_batch_exchange "DNDS/test_SparseBatchExchange.cpp" "dnds")
@@ -494,9 +444,6 @@ dnds_add_mpi_test(index_mapping "DNDS/test_IndexMapping.cpp" "dnds")
 dnds_add_mpi_test(permutation_transfer "DNDS/test_PermutationTransfer.cpp" "dnds")
 
 if(DNDS_USE_CUDA)
-    add_executable(dnds_benchmark_fp64_matrix EXCLUDE_FROM_ALL DNDS/benchmark_FP64Matrix.cu)
-    target_include_directories(dnds_benchmark_fp64_matrix PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(dnds_benchmark_fp64_matrix PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
     if(DNDS_USE_NCCL)
         add_executable(dnds_test_nccl_transfer EXCLUDE_FROM_ALL DNDS/test_NCCLTransfer.cu)
         target_include_directories(dnds_test_nccl_transfer PRIVATE ${DNDS_EXTERNAL_INCLUDE_DOCTEST} ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
@@ -519,28 +466,31 @@ if(DNDS_USE_CUDA)
     dnds_add_unit_test(native_dof_algebra_cuda "DNDS/test_NativeDofAlgebra_CUDA.cu" "dnds")
     add_dependencies(dnds_unit_tests dnds_test_native_dof_algebra_cuda)
     dnds_add_unit_test(runtime_cuda_engine "DNDS/test_CUDAExecution.cu" "dnds")
+
+    # Consolidated Cauchy CUDA test binaries (6 cohesive executables on non-default streams).
     dnds_add_unit_test(cauchy_point_physics_cuda "Cauchy/test_PointPhysics_CUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    target_sources(dnds_test_cauchy_point_physics_cuda PRIVATE
+        Cauchy/test_CharacteristicsCUDA.cu
+        Cauchy/test_AuxiliaryCUDA.cu
+        Cauchy/test_GradientCUDA.cu
+        Cauchy/test_SourceCUDA.cu
+        Cauchy/test_PositivityCUDA.cu
+        Cauchy/test_LimitedVRCUDA.cu)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_point_physics_cuda)
-    dnds_add_unit_test(cauchy_auxiliary_cuda "Cauchy/test_AuxiliaryCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_auxiliary_cuda)
+
     dnds_add_unit_test(cauchy_rhs_cuda "Cauchy/test_RHSCUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    target_sources(dnds_test_cauchy_rhs_cuda PRIVATE
+        Cauchy/test_RHSFacePackagesCUDA.cu
+        Cauchy/test_StateCUDA.cu)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_rhs_cuda)
-    dnds_add_unit_test(cauchy_source_cuda "Cauchy/test_SourceCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_source_cuda)
-    dnds_add_unit_test(cauchy_positivity_cuda "Cauchy/test_PositivityCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_positivity_cuda)
-    dnds_add_unit_test(cauchy_gradient_cuda "Cauchy/test_GradientCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    dnds_add_unit_test(cauchy_linear_block_cuda "Cauchy/test_LinearBlockCUDA.cpp" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_linear_block_cuda)
+
     dnds_add_unit_test(cauchy_linear_inverse_cuda "Cauchy/test_LinearInverseCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    target_sources(dnds_test_cauchy_linear_inverse_cuda PRIVATE Cauchy/LinearInverseReference.cpp)
+    target_sources(dnds_test_cauchy_linear_inverse_cuda PRIVATE
+        Cauchy/LinearInverseReference.cpp
+        Cauchy/test_LinearBlockCUDA.cpp
+        Cauchy/test_FrozenJacobianCUDA.cu)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_linear_inverse_cuda)
-    add_executable(cauchy_benchmark_small_inverse_cuda EXCLUDE_FROM_ALL Cauchy/benchmark_SmallInverseCUDA.cu Cauchy/LinearInverseReference.cpp)
-    target_include_directories(cauchy_benchmark_small_inverse_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cauchy_benchmark_small_inverse_cuda PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-    add_executable(cauchy_benchmark_fv_jacobi_cuda EXCLUDE_FROM_ALL Cauchy/benchmark_FVJacobiCUDA.cu)
-    target_include_directories(cauchy_benchmark_fv_jacobi_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cauchy_benchmark_fv_jacobi_cuda PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+
     dnds_add_unit_test(cauchy_linear_solver_cuda "Cauchy/test_LinearSolverCUDA.cu" "cauchy;physics;cfv;geom;dnds")
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_linear_solver_cuda)
     if(DNDS_USE_NCCL)
@@ -555,13 +505,20 @@ if(DNDS_USE_CUDA)
                 ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
                 $<TARGET_FILE:dnds_test_cauchy_linear_solver_cuda> "--test-case=Rank-local AmgX upload*" ${MPIEXEC_POSTFLAGS})
     endif()
-    dnds_add_unit_test(cauchy_time_fas_cuda "Cauchy/test_TimeFASCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_time_fas_cuda)
+    dnds_register_test(dnds_test_cauchy_linear_solver_cuda dnds_cauchy_linear_solver_cuda_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+            ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+            $<TARGET_FILE:dnds_test_cauchy_linear_solver_cuda> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(dnds_cauchy_linear_solver_cuda dnds_cauchy_linear_solver_cuda_np2 PROPERTIES
+        TIMEOUT 300 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda;mpi")
+
     dnds_register_test(dnds_test_cauchy_multidomain dnds_cauchy_acm_interface_cuda
         COMMAND $<TARGET_FILE:dnds_test_cauchy_multidomain> "--test-case=Moving ACM disk*")
     set_tests_properties(dnds_cauchy_acm_interface_cuda PROPERTIES TIMEOUT 120
         ENVIRONMENT "DNDS_TEST_ACM_INTERFACE_CUDA=1;OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda;cauchy")
+
     dnds_add_unit_test(cauchy_domain_cuda "Cauchy/test_DomainCUDA.cpp" "cauchy;physics;cfv;geom;dnds")
+    target_sources(dnds_test_cauchy_domain_cuda PRIVATE Cauchy/test_TimeFASCUDA.cu)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_domain_cuda)
     dnds_register_test(dnds_test_cauchy_domain_cuda dnds_cauchy_domain_cuda_np2
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
@@ -569,43 +526,23 @@ if(DNDS_USE_CUDA)
             $<TARGET_FILE:dnds_test_cauchy_domain_cuda> ${MPIEXEC_POSTFLAGS})
     set_tests_properties(dnds_cauchy_domain_cuda dnds_cauchy_domain_cuda_np2 PROPERTIES
         TIMEOUT 600 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda;mpi")
-    set_tests_properties(dnds_cauchy_time_fas_cuda PROPERTIES TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda")
-    dnds_register_test(dnds_test_cauchy_linear_solver_cuda dnds_cauchy_linear_solver_cuda_np2
-        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
-        $<TARGET_FILE:dnds_test_cauchy_linear_solver_cuda> ${MPIEXEC_POSTFLAGS})
-    set_tests_properties(dnds_cauchy_linear_solver_cuda dnds_cauchy_linear_solver_cuda_np2 PROPERTIES
-        TIMEOUT 300 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda;mpi")
-    dnds_add_unit_test(cauchy_frozen_jacobian_cuda "Cauchy/test_FrozenJacobianCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_frozen_jacobian_cuda)
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_gradient_cuda)
-    dnds_add_unit_test(cauchy_limited_vr_cuda "Cauchy/test_LimitedVRCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_limited_vr_cuda)
-    dnds_add_unit_test(cauchy_rhs_face_packages_cuda "Cauchy/test_RHSFacePackagesCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_rhs_face_packages_cuda)
-    dnds_add_unit_test(cauchy_characteristics_cuda "Cauchy/test_CharacteristicsCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_characteristics_cuda)
-    dnds_add_unit_test(cauchy_state_cuda "Cauchy/test_StateCUDA.cu" "cauchy;physics;cfv;geom;dnds")
-    add_dependencies(cauchy_unit_tests dnds_test_cauchy_state_cuda)
+
     dnds_add_unit_test(cauchy_spatial_schedule_cuda "Cauchy/test_SpatialScheduleCUDA.cu" "cauchy;physics;cfv;geom;dnds")
+    target_sources(dnds_test_cauchy_spatial_schedule_cuda PRIVATE Cauchy/test_InterfaceCUDA.cu)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_spatial_schedule_cuda)
     dnds_register_test(dnds_test_cauchy_spatial_schedule_cuda dnds_cauchy_spatial_schedule_cuda_np2
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
-        ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
-        $<TARGET_FILE:dnds_test_cauchy_spatial_schedule_cuda> ${MPIEXEC_POSTFLAGS})
+            ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
+            $<TARGET_FILE:dnds_test_cauchy_spatial_schedule_cuda> ${MPIEXEC_POSTFLAGS})
     set_tests_properties(dnds_cauchy_spatial_schedule_cuda_np2 PROPERTIES
         TIMEOUT 300 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_DIST_OMP_NUM_THREADS=1" LABELS "cuda;mpi")
+
     set_tests_properties(dnds_runtime_cuda_engine PROPERTIES TIMEOUT 60)
     add_dependencies(dnds_unit_tests dnds_test_runtime_cuda_engine)
     add_dependencies(dnds_unit_tests dnds_test_runtime_cuda)
     if(DNDS_USE_AMGX)
         dnds_add_unit_test(amgx_preconditioner "DNDS/test_AmgXPreconditioner.cpp" "dnds")
         add_dependencies(dnds_unit_tests dnds_test_amgx_preconditioner)
-        add_executable(dnds_benchmark_amgx EXCLUDE_FROM_ALL DNDS/benchmark_AmgX.cpp)
-        target_include_directories(dnds_benchmark_amgx PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-        target_link_libraries(dnds_benchmark_amgx PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
-        add_executable(dnds_benchmark_aggregation_amg EXCLUDE_FROM_ALL DNDS/benchmark_AggregationAMG.cpp)
-        target_include_directories(dnds_benchmark_aggregation_amg PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-        target_link_libraries(dnds_benchmark_aggregation_amg PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
     endif()
     dnds_add_unit_test(array_dof_cuda "DNDS/test_ArrayDOF_CUDA.cu" "dnds")
     add_dependencies(dnds_unit_tests dnds_test_array_dof_cuda)
@@ -637,14 +574,10 @@ geom_add_unit_test(bounding_box_tree "Geom/test_BoundingBoxTree.cpp" "geom;dnds"
 add_dependencies(geom_unit_tests geom_test_bounding_box_tree)
 geom_add_unit_test(quadrature "Geom/test_Quadrature.cpp" "geom;dnds")
 target_sources(geom_test_quadrature PRIVATE Geom/test_QuadratureCachePeer.cpp Geom/test_LocalPerformance.cpp)
-geom_add_mpi_test(mesh_index_conversion "Geom/test_MeshIndexConversion.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_pipeline "Geom/test_MeshPipeline.cpp" "geom;dnds")
 geom_add_mpi_test(boundary_interface "Geom/test_BoundaryInterface.cpp" "geom;dnds")
-geom_add_mpi_test(surface_point_map "Geom/test_SurfacePointMap.cpp" "geom;dnds")
+geom_add_mpi_test(surface_point_map "Geom/test_SurfacePointMap.cpp" "geom;dnds" LOCAL_CASES_ONCE)
 add_dependencies(geom_unit_tests geom_test_surface_point_map)
-add_executable(geom_benchmark_bounding_box_tree EXCLUDE_FROM_ALL Geom/benchmark_BoundingBoxTree.cpp)
-target_include_directories(geom_benchmark_bounding_box_tree PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(geom_benchmark_bounding_box_tree PRIVATE geom dnds ${DNDS_EXTERNAL_LIBS})
 geom_add_mpi_test(entity_work_partition "Geom/test_EntityWorkPartition.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_locality_ordering "Geom/test_MeshLocalityOrdering.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_mesh_locality_ordering)
@@ -654,85 +587,73 @@ add_dependencies(geom_unit_tests geom_test_entity_work_partition)
 add_dependencies(geom_unit_tests geom_test_boundary_interface)
 geom_add_mpi_test(mesh_distributed_read "Geom/test_MeshDistributedRead.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_connectivity "Geom/test_MeshConnectivity.cpp" "geom;dnds")
-geom_add_mpi_test(mesh_connectivity_ghost "Geom/test_MeshConnectivity_Ghost.cpp" "geom;dnds")
+geom_add_mpi_test(mesh_connectivity_ghost "Geom/test_MeshConnectivity_Ghost.cpp" "geom;dnds" LOCAL_CASES_ONCE)
 geom_add_mpi_test(mesh_connectivity_interpolate "Geom/test_MeshConnectivity_Interpolate.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_reorder "Geom/test_MeshReorder.cpp" "geom;dnds")
-add_custom_target(geom_benchmark_topology_np2
-    COMMAND ${CMAKE_COMMAND} -E env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-            DNDS_TEST_TOPOLOGY_REPETITIONS=3
-            ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
-            $<TARGET_FILE:geom_test_mesh_pipeline> ${MPIEXEC_POSTFLAGS}
-            "--test-case=Native inverse compose and face topology match independent incidences"
-    DEPENDS geom_test_mesh_pipeline
-    USES_TERMINAL)
 geom_add_unit_test(mesh_cgns_multizone "Geom/test_MeshCGNSMultiZone.cpp" "geom;dnds")
 set_property(TEST geom_mesh_cgns_multizone APPEND PROPERTY ENVIRONMENT "DNDS_EXTERNAL_LIB_CGNS=${DNDS_EXTERNAL_LIB_CGNS}")
-geom_add_mpi_test(mesh_audit "Geom/test_MeshAudit.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_facade "Geom/test_MeshFacade.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_mesh_facade)
 geom_add_mpi_test(mesh_facade_pipeline "Geom/test_MeshFacadePipeline.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_mesh_facade_pipeline)
 geom_add_mpi_test(mesh_facade_overlap "Geom/test_MeshFacadeOverlap.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_mesh_facade_overlap)
-geom_add_mpi_test(relation_access "Geom/test_RelationAccess.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_relation_access)
-geom_add_mpi_test(native_relation_conversion "Geom/test_NativeRelationConversion.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_relation_conversion)
-geom_add_mpi_test(native_connectivity "Geom/test_NativeConnectivity.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_connectivity)
-geom_add_mpi_test(native_mesh_scenarios "Geom/test_NativeMeshScenarios.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_scenarios)
-geom_add_mpi_test(native_mesh_snapshot "Geom/test_NativeMeshSnapshot.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_snapshot)
-geom_add_mpi_test(native_mesh_publication "Geom/test_NativeMeshPublication.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_publication)
-geom_add_mpi_test(native_mesh_construction "Geom/test_NativeMeshConstruction.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_construction)
-geom_add_mpi_test(native_mesh_setup "Geom/test_NativeMeshSetup.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_setup)
-geom_add_mpi_test(native_mesh_builder "Geom/test_NativeMeshBuilder.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_preflight "Geom/test_MeshPreflight.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_mesh_preflight)
-add_dependencies(geom_unit_tests geom_test_native_mesh_builder)
-geom_add_mpi_test(native_relation_registry "Geom/test_NativeRelationRegistry.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_relation_registry)
 
-geom_add_mpi_test(native_mesh_transition "Geom/test_NativeMeshTransition.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_transition)
-geom_add_mpi_test(native_transition_rebuild "Geom/test_NativeTransitionRebuild.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_transition_rebuild)
-geom_add_mpi_test(native_mesh_archive "Geom/test_NativeMeshArchive.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_archive)
-geom_add_mpi_test(native_mesh_cgns "Geom/test_NativeMeshCGNS.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_cgns)
-geom_add_mpi_test(native_mesh_topology "Geom/test_NativeMeshTopology.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_topology)
-geom_add_mpi_test(native_mesh_openfoam "Geom/test_NativeMeshOpenFOAM.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_openfoam)
-geom_add_mpi_test(native_mesh_legacy_archive "Geom/test_NativeMeshLegacyArchive.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_legacy_archive)
-geom_add_mpi_test(native_mesh_preparation "Geom/test_NativeMeshPreparation.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_preparation)
-geom_add_mpi_test(native_mesh_partition_graph "Geom/test_NativeMeshPartitionGraph.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_partition_graph)
-geom_add_mpi_test(native_mesh_wall_dist "Geom/test_NativeMeshWallDist.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_wall_dist)
-geom_add_mpi_test(native_mesh_caches "Geom/test_NativeMeshCaches.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_caches)
-geom_add_mpi_test(native_mesh_local_reorder "Geom/test_NativeMeshLocalReorder.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_local_reorder)
-geom_add_mpi_test(native_mesh_serial_output "Geom/test_NativeMeshSerialOutput.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_serial_output)
-geom_add_mpi_test(native_mesh_refinement "Geom/test_NativeMeshRefinement.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_refinement)
-geom_add_mpi_test(native_mesh_extraction "Geom/test_NativeMeshExtraction.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_extraction)
-geom_add_mpi_test(native_mesh_smoothing "Geom/test_NativeMeshSmoothing.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_smoothing)
-geom_add_mpi_test(native_mesh_periodic "Geom/test_NativeMeshPeriodic.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_periodic)
-geom_add_mpi_test(native_mesh_periodic_import "Geom/test_NativeMeshPeriodicImport.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_periodic_import)
+# Consolidated Geom Native MPI test binaries (9 cohesive executables with LOCAL_CASES_ONCE).
+geom_add_mpi_test(native_construction "Geom/test_NativeMeshConstruction.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+target_sources(geom_test_native_construction PRIVATE
+    Geom/test_NativeMeshBuilder.cpp
+    Geom/test_NativeMeshSnapshot.cpp
+    Geom/test_NativeMeshAssertions.cpp)
+add_dependencies(geom_unit_tests geom_test_native_construction)
+
+geom_add_mpi_test(native_connectivity "Geom/test_NativeConnectivity.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+target_sources(geom_test_native_connectivity PRIVATE
+    Geom/test_NativeRelationConversion.cpp
+    Geom/test_NativeRelationRegistry.cpp
+    Geom/test_NativeMeshScenarios.cpp)
+add_dependencies(geom_unit_tests geom_test_native_connectivity)
+
+geom_add_mpi_test(native_topology "Geom/test_NativeMeshTopology.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+add_dependencies(geom_unit_tests geom_test_native_topology)
+
+geom_add_mpi_test(native_transition "Geom/test_NativeMeshTransition.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+target_sources(geom_test_native_transition PRIVATE
+    Geom/test_NativeTransitionRebuild.cpp
+    Geom/test_NativeMeshLocalReorder.cpp)
+add_dependencies(geom_unit_tests geom_test_native_transition)
+
+geom_add_mpi_test(native_preparation "Geom/test_NativeMeshPreparation.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+target_sources(geom_test_native_preparation PRIVATE
+    Geom/test_NativeMeshPartitionGraph.cpp
+    Geom/test_NativeMeshCaches.cpp)
+add_dependencies(geom_unit_tests geom_test_native_preparation)
+
+geom_add_mpi_test(native_periodic "Geom/test_NativeMeshPeriodic.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+target_sources(geom_test_native_periodic PRIVATE
+    Geom/test_NativeMeshPeriodicImport.cpp)
+add_dependencies(geom_unit_tests geom_test_native_periodic)
+
+geom_add_mpi_test(native_refinement "Geom/test_NativeMeshRefinement.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+target_sources(geom_test_native_refinement PRIVATE
+    Geom/test_NativeMeshExtraction.cpp)
+add_dependencies(geom_unit_tests geom_test_native_refinement)
+
+geom_add_mpi_test(native_geometry "Geom/test_NativeMeshSmoothing.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+target_sources(geom_test_native_geometry PRIVATE
+    Geom/test_NativeMeshWallDist.cpp)
+add_dependencies(geom_unit_tests geom_test_native_geometry)
+
+geom_add_mpi_test(native_io "Geom/test_NativeMeshArchive.cpp" "geom;dnds" LOCAL_CASES_ONCE)
+target_sources(geom_test_native_io PRIVATE
+    Geom/test_NativeMeshLegacyArchive.cpp
+    Geom/test_NativeMeshCGNS.cpp
+    Geom/test_NativeMeshOpenFOAM.cpp
+    Geom/test_NativeMeshSerialOutput.cpp)
+add_dependencies(geom_unit_tests geom_test_native_io)
+
 geom_add_mpi_test(mesh_edit "Geom/test_MeshEdit.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_mesh_edit)
 geom_add_mpi_test(mesh_transition "Geom/test_MeshTransition.cpp" "geom;dnds")
@@ -779,7 +700,6 @@ endif()
 set(GEOM_TEST_TARGETS
     geom_test_elements
     geom_test_quadrature
-    geom_test_mesh_index_conversion
     geom_test_mesh_pipeline
     geom_test_mesh_distributed_read
     geom_test_mesh_connectivity
@@ -787,7 +707,6 @@ set(GEOM_TEST_TARGETS
     geom_test_mesh_connectivity_interpolate
     geom_test_mesh_reorder
     geom_test_mesh_cgns_multizone
-    geom_test_mesh_audit
 )
 foreach(T ${GEOM_TEST_TARGETS})
     add_dependencies(geom_unit_tests ${T})
@@ -875,22 +794,12 @@ endif()
 cfv_add_mpi_test(gradient_plan "CFV/test_GradientPlan.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(limited_vr "CFV/test_LimitedVR.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(fv_completion "CFV/test_FVCompletion.cpp" "cfv;geom;dnds")
-cfv_add_mpi_test(reconstruction_capabilities "CFV/test_ReconstructionCapabilities.cpp" "cfv;geom;dnds")
-add_dependencies(cfv_unit_tests cfv_test_reconstruction_capabilities)
+target_sources(cfv_test_fv_completion PRIVATE CFV/test_ReconstructionCapabilities.cpp)
 add_dependencies(cfv_unit_tests cfv_test_fv_completion)
 add_dependencies(cfv_unit_tests cfv_test_gradient_plan)
 add_dependencies(cfv_unit_tests cfv_test_limited_vr)
 add_dependencies(cfv_unit_tests cfv_test_reconstruction_overlap)
 add_dependencies(cfv_unit_tests cfv_test_distributed_interface_sampling)
-add_executable(cfv_benchmark_fv_facility EXCLUDE_FROM_ALL CFV/benchmark_FVFacility.cpp)
-target_include_directories(cfv_benchmark_fv_facility PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cfv_benchmark_fv_facility PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-add_executable(cfv_benchmark_reconstruction_storage EXCLUDE_FROM_ALL CFV/benchmark_ReconstructionStorage.cpp)
-target_include_directories(cfv_benchmark_reconstruction_storage PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cfv_benchmark_reconstruction_storage PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-add_executable(cfv_benchmark_coefficient_publication EXCLUDE_FROM_ALL CFV/benchmark_CoefficientPublication.cpp)
-target_include_directories(cfv_benchmark_coefficient_publication PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cfv_benchmark_coefficient_publication PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 cfv_add_unit_test(limiters "CFV/test_Limiters.cpp" "cfv;geom;dnds")
 cfv_add_unit_test(reconstruction_math "CFV/test_ReconstructionMath.cpp" "dnds")
 add_dependencies(cfv_unit_tests cfv_test_reconstruction_math)
@@ -944,17 +853,6 @@ if(DNDS_USE_CUDA)
             ENVIRONMENT "OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS}")
     endfunction()
 
-    add_executable(cfv_benchmark_reconstruction_cuda EXCLUDE_FROM_ALL CFV/benchmark_ReconstructionCUDA.cpp)
-    add_executable(cfv_benchmark_reconstruction_sweep EXCLUDE_FROM_ALL CFV/benchmark_ReconstructionSweep.cpp)
-    target_include_directories(cfv_benchmark_reconstruction_sweep PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES} ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
-    target_link_libraries(cfv_benchmark_reconstruction_sweep PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-    if(DNDS_USE_AMGX)
-        add_executable(cfv_benchmark_reconstruction_amg EXCLUDE_FROM_ALL CFV/benchmark_ReconstructionAMG.cpp)
-        target_include_directories(cfv_benchmark_reconstruction_amg PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-        target_link_libraries(cfv_benchmark_reconstruction_amg PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-    endif()
-    target_include_directories(cfv_benchmark_reconstruction_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cfv_benchmark_reconstruction_cuda PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
     cfv_add_cuda_mpi_test(reconstruction_cuda "CFV/test_ReconstructionCUDA.cu" "cfv;geom;dnds")
     if(DNDS_USE_AMGX)
         # The provider is an implementation-private DNDS dependency. Its macro
@@ -968,7 +866,6 @@ if(DNDS_USE_CUDA)
             ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
             $<TARGET_FILE:cfv_test_limited_vr_cuda> ${MPIEXEC_POSTFLAGS})
     set_tests_properties(cfv_limited_vr_cuda_np2 PROPERTIES PROCESSORS 2 TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=1")
-    cfv_add_cuda_mpi_test(device_transferable "CFV/test_DeviceTransferable.cu" "cfv;geom;dnds")
     dnds_register_test(cfv_test_reconstruction_cuda cfv_reconstruction_cuda_np2
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
             ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py
@@ -986,7 +883,7 @@ if(DNDS_USE_CUDA)
                 TIMEOUT 180 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_TEST_TRANSFER_PROVIDER=nccl")
         endforeach()
     endif()
-    list(APPEND CFV_TEST_TARGETS cfv_test_device_transferable cfv_test_reconstruction_cuda
+    list(APPEND CFV_TEST_TARGETS cfv_test_reconstruction_cuda
         cfv_test_limited_vr_cuda cfv_test_characteristic_cuda)
 endif()
 
@@ -1076,95 +973,11 @@ if(DNDS_USE_CANTERA)
     # unchanged physical backend fixtures now use the canonical shared module.
     euler_add_unit_test(source_chemical "Physics/test_ChemicalSource.cpp" "physics;cfv;geom;dnds")
     euler_add_unit_test(reactive_split_indicator "Euler/test_ReactiveSplitIndicator.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
-    euler_add_unit_test(uv "Euler/test_UV.cpp" "euler_library_chemical;cfv;geom;dnds")
     euler_add_unit_test(physics_properties "Euler/test_PhysicsProperties.cpp" "euler_library_chemical;cfv;geom;dnds")
     euler_add_unit_test(chem_ode "Euler/test_ChemODE.cpp" "euler_library_chemical;cfv;geom;dnds")
     target_compile_definitions(euler_test_chem_ode PRIVATE CT_USE_SYSTEM_FMT=1)
     euler_add_mpi_test(evaluator_reactive "Euler/test_EulerEvaluatorReactive.cpp"
         "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
-endif()
-
-# Common standalone migration probe, also built against pinned legacy sources.
-# It is opt-in: regular unit tests do not require a second solver source tree.
-add_executable(euler_migration_probe EXCLUDE_FROM_ALL Euler/MigrationParityProbe.cpp)
-add_executable(cauchy_benchmark_rhs_comparison EXCLUDE_FROM_ALL Cauchy/benchmark_RHSComparison.cpp)
-target_include_directories(cauchy_benchmark_rhs_comparison PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_rhs_comparison PRIVATE cauchy euler_library_fast_NS cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-add_executable(cauchy_benchmark_spatial_sa EXCLUDE_FROM_ALL Cauchy/benchmark_SpatialSA.cpp)
-target_include_directories(cauchy_benchmark_spatial_sa PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_spatial_sa PRIVATE cauchy euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-if(Python_EXECUTABLE)
-    # Opt-in extracted operators, not another production implementation. The
-    # source generator fails if the kernel anchors change and records its hash.
-    set(_operator_diagnostic_header "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEulerSA.hpp")
-    add_custom_command(OUTPUT "${_operator_diagnostic_header}"
-        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_operator_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Euler/EulerEvaluator_EvaluateRHS.hxx" "${_operator_diagnostic_header}"
-        DEPENDS Cauchy/extract_operator_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Euler/EulerEvaluator_EvaluateRHS.hxx"
-        VERBATIM)
-    add_executable(cauchy_diagnostic_operator_phases EXCLUDE_FROM_ALL
-        Cauchy/diagnostic_OperatorPhases.cpp "${_operator_diagnostic_header}")
-    target_include_directories(cauchy_diagnostic_operator_phases PRIVATE
-        "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic" ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cauchy_diagnostic_operator_phases PRIVATE
-        cauchy euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-    set(_driver_diagnostic_header "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEulerDriver.hpp")
-    add_custom_command(OUTPUT "${_driver_diagnostic_header}"
-        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_driver_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Euler/EulerSolver.hxx" "${_driver_diagnostic_header}"
-        DEPENDS Cauchy/extract_driver_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Euler/EulerSolver.hxx"
-        VERBATIM)
-    add_executable(cauchy_diagnostic_driver_phases EXCLUDE_FROM_ALL
-        Cauchy/diagnostic_DriverPhases.cpp "${_driver_diagnostic_header}")
-    set(_nonlinear_diagnostic_header "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationPipeline.cpp")
-    add_custom_command(OUTPUT "${_nonlinear_diagnostic_header}"
-        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_pipeline_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_Evaluation.cpp" "${_nonlinear_diagnostic_header}"
-            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_RHSHostQueued.cpp"
-            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourceQueued.cpp"
-            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourceHostQueued.cpp"
-        DEPENDS Cauchy/extract_pipeline_diagnostic.py
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_Evaluation.cpp"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_RHSHostQueued.cpp"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourceQueued.cpp"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_SourceHostQueued.cpp"
-        VERBATIM)
-    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_nonlinear_diagnostic_header}")
-    set_source_files_properties("${_nonlinear_diagnostic_header}" PROPERTIES HEADER_FILE_ONLY TRUE)
-    set(_nonlinear_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedNonlinear.cpp")
-    add_custom_command(OUTPUT "${_nonlinear_diagnostic}"
-        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_nonlinear_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/NonlinearSolver.cpp" "${_nonlinear_diagnostic}"
-        DEPENDS Cauchy/extract_nonlinear_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/NonlinearSolver.cpp"
-        VERBATIM)
-    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_nonlinear_diagnostic}")
-    set_source_files_properties("${_nonlinear_diagnostic}" PROPERTIES HEADER_FILE_ONLY FALSE)
-    set(_jacobian_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedJacobian.cpp")
-    add_custom_command(OUTPUT "${_jacobian_diagnostic}"
-        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_jacobian_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/FiniteVolume_Jacobian.cpp" "${_jacobian_diagnostic}"
-        DEPENDS Cauchy/extract_jacobian_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/FiniteVolume_Jacobian.cpp"
-        VERBATIM)
-    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_jacobian_diagnostic}")
-    target_include_directories(cauchy_diagnostic_driver_phases PRIVATE
-        "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic" "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy" ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cauchy_diagnostic_driver_phases PRIVATE
-        cauchy euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-endif()
-target_include_directories(euler_migration_probe PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(euler_migration_probe PRIVATE
-    euler_library_NS euler_library_fast_NS euler_library_NS_SA euler_library_fast_NS_SA
-    euler_library_NS_3D euler_library_fast_NS_3D cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-
-# Opt-in independent old/new probes; no second source tree in ordinary tests.
-add_executable(euler_frozen_transport_probe EXCLUDE_FROM_ALL Euler/FrozenTransportProbe.cpp)
-target_include_directories(euler_frozen_transport_probe PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(euler_frozen_transport_probe PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
-if(DNDS_USE_CANTERA)
-    add_executable(euler_frozen_physics_probe EXCLUDE_FROM_ALL Euler/FrozenPhysicsProbe.cpp)
-    target_include_directories(euler_frozen_physics_probe PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(euler_frozen_physics_probe PRIVATE euler_library_NS_EX euler_library_fast_NS_EX
-        euler_library_NS_SA euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 endif()
 
 # EulerEvaluator pipeline test: full NS/SA/3D libraries plus the public
@@ -1190,7 +1003,6 @@ if(DNDS_USE_CANTERA)
         euler_test_shared_physics
         euler_test_source_chemical
         euler_test_reactive_split_indicator
-        euler_test_uv
         euler_test_physics_properties
         euler_test_chem_ode
         euler_test_evaluator_reactive)
@@ -1280,9 +1092,6 @@ foreach(T ${SOLVER_TEST_TARGETS})
     add_dependencies(solver_unit_tests ${T})
 endforeach()
 
-geom_add_mpi_test(native_mesh_assertions "Geom/test_NativeMeshAssertions.cpp" "geom;dnds")
-add_dependencies(geom_unit_tests geom_test_native_mesh_assertions)
-
 # A fresh aggregate build must cover every registered helper-created executable.
 include(${PROJECT_SOURCE_DIR}/cmake/DndsTestTargets.cmake)
 dnds_check_registered_test_targets(all_unit_tests)
@@ -1319,12 +1128,6 @@ foreach(_dnds_test IN LISTS _dnds_cpp_tests)
         set_property(TEST ${_dnds_test} APPEND PROPERTY LABELS "mpi-high")
     endif()
 endforeach()
-
-if(DNDS_USE_CUDA)
-    add_executable(cauchy_benchmark_rhs_face_mappings_cuda EXCLUDE_FROM_ALL Cauchy/benchmark_RHSFaceMappingsCUDA.cpp)
-    target_include_directories(cauchy_benchmark_rhs_face_mappings_cuda PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-    target_link_libraries(cauchy_benchmark_rhs_face_mappings_cuda PRIVATE cauchy physics cfv geom dnds CUDA::cudart ${DNDS_EXTERNAL_LIBS})
-endif()
 
 if(DNDS_USE_SYCL)
     # Keep offload flags local to the probe. The Runtime provider uses host

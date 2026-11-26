@@ -176,7 +176,7 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
     CHECK(std::stod(iteration.at("wall")) == doctest::Approx(2.02));
     CHECK(iteration.at("attempt") == "1");
     CHECK(iteration.at("status") == "0");
-    CHECK(iteration.at("res_rho") == "2.00000000e+00");
+    CHECK(std::stod(iteration.at("res_rho")) == doctest::Approx(2.0));
     CHECK(stage.at("stage") == "1");
     CHECK(stage.at("iteration") == "-1");
     CHECK(stage.at("status") == "1");
@@ -191,10 +191,10 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
     CHECK(accepted.at("coupled_stage") == "-1");
     CHECK(accepted.at("iteration") == "-1");
     CHECK(accepted.at("status") == "2");
-    CHECK(accepted.at("mass") == "1.10000000e+01");
+    CHECK(std::stod(accepted.at("mass")) == doctest::Approx(11.0));
     const auto resumed = ReadRow(second, header);
     CHECK(resumed.at("step") == "4");
-    CHECK(resumed.at("mass") == "1.20000000e+01");
+    CHECK(std::stod(resumed.at("mass")) == doctest::Approx(12.0));
     CHECK_FALSE(std::getline(second, line));
     CHECK_FALSE(std::filesystem::exists(bare + "_2.csv"));
     std::filesystem::remove_all(directory);

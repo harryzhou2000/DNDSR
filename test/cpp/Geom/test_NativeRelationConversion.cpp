@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
 #include "NativePeriodicFixtures.hpp"
@@ -310,12 +309,4 @@ TEST_CASE("Periodic conversion keeps repeated canonical IDs ordered frames and d
     CheckTorus(rebuilt, mpi);
     CHECK(state->MeshNamespace() == rebuilt->MeshNamespace());
     CHECK(state->IdHighWater() == rebuilt->IdHighWater());
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const auto result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

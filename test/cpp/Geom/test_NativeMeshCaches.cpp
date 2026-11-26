@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "LegacyMeshFixtureCodec.hpp"
 #include "Geom/Unstructured/NativeMeshBuilder.hpp"
@@ -228,12 +227,4 @@ TEST_CASE("Native direct setup keeps empty cell owners in RCM collectives")
         CHECK(structure.localFillOrderingNew2Old == reference.localFillOrderingNew2Old);
         CHECK(mesh->LocalCellNeighbors() == expected);
     }
-}
-
-int main(int argc, char **argv)
-{
-    MPI_Init(&argc, &argv);
-    const int result = doctest::Context(argc, argv).run();
-    MPI_Finalize();
-    return result;
 }

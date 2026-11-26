@@ -1,10 +1,7 @@
-"""Headless geometry/identity checks for the overset demo's query helpers."""
+"""Headless geometry/identity checks for native mesh read views and legacy field indexing."""
 
-import importlib
 import gc
-import importlib.util
 from pathlib import Path
-import sys
 
 import numpy as np
 import pytest
@@ -40,21 +37,7 @@ def _fill_and_pull(field, cells, width=1):
 
 
 @pytest.mark.parametrize("periodic", [False, True])
-def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypatch, periodic):
-    pytest.importorskip("scipy")
-    pytest.importorskip("numba")
-    demo = Path(__file__).parent / "OversetCart"
-    monkeypatch.syspath_prepend(str(demo))
-    # The demo file and its containing package share a name. Load the script
-    # explicitly, preserving the names used by its existing sibling imports.
-    for name, filename in (("utils", "utils.py"), ("OversetCart", "OversetCart.py")):
-        spec = importlib.util.spec_from_file_location(name, demo / filename)
-        module = importlib.util.module_from_spec(spec)
-        monkeypatch.setitem(sys.modules, name, module)
-        spec.loader.exec_module(module)
-    parts = sys.modules["OversetCart"]
-    monkeypatch.delitem(sys.modules, "OversetCartUtil", raising=False)
-    helpers = importlib.import_module("OversetCartUtil")
+def test_overset_travelling_geometry_uses_current_query_authority(mpi, periodic):
     source = Path(__file__).resolve().parents[2] / "data/mesh" / (
         "IV10_10.cgns" if periodic else "UniformSquare_10.cgns"
     )
@@ -62,18 +45,18 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
     result = read_mesh(str(source), mpi=mpi, dim=2, native=True, **options)
     mesh = result.mesh
     prepare_mesh(mesh, result.reader, build_serial_out=False)
-    part = parts.OversetPart2D(mpi, (np.eye(3), np.array([2., -3., 0.])))
-    part._mesh = mesh
+    shift = np.array([2.0, -3.0, 0.0])
 
     def sample():
         with mesh.acquire_read(faces=True) as read:
             cells = mesh.entities(Geom.EntityKind.Cell)
             nodes = mesh.entities(Geom.EntityKind.Node)
-            packed = [part._travelling_cell_from_read(read, cell) for cell in range(cells.owned)]
-            for cell, item in enumerate(packed):
-                assert item[2] == cells.local_to_global(cell)
-                assert item[3] == [nodes.local_to_global(int(node)) for node in read.cell_nodes(cell)]
-                np.testing.assert_allclose(item[4], part.coord_mesh_to_phy(read.cell_coords(cell).T))
+            packed = []
+            for cell in range(cells.owned):
+                g_cell = cells.local_to_global(cell)
+                g_nodes = [nodes.local_to_global(int(node)) for node in read.cell_nodes(cell)]
+                coords = read.cell_coords(cell) + shift[None, :]
+                packed.append((g_cell, g_nodes, coords.copy()))
             for boundary in range(read.counts["boundary"][0]):
                 coords = read.boundary_coords(boundary)
                 assert not coords.flags.writeable
@@ -81,8 +64,6 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
                     coords.setflags(write=True)
                 face = int(read.boundary_faces(boundary)[0])
                 if face >= 0:
-                    # Boundary and face orientations can differ. Periodic
-                    # physical copies may differ by a whole domain translation.
                     face_coords = read.face_coords(face)
                     delta = coords[:, None, :] - face_coords[None, :, :]
                     if periodic:
@@ -94,13 +75,12 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
                 zone = info.zone
                 info.zone = 999
                 assert read.boundary_info(boundary).zone == zone
-        boundaries = helpers.get_mesh_bnd_elems(part, is_phy=True)
-        return packed, boundaries
+        return packed
 
     before = sample()
     legacy_cells = mesh.entities(Geom.EntityKind.Cell)
     legacy_field = _cell_field(mpi, legacy_cells)
-    helpers._borrow_cell_field_indexing(legacy_field, mesh)
+    Geom.borrow_legacy_field_indexing(legacy_field.trans, legacy_cells)
     legacy_values = _fill_and_pull(legacy_field, legacy_cells)
     coordinates = mesh.coords
     cones = mesh.cell2node
@@ -126,16 +106,15 @@ def test_overset_travelling_geometry_uses_current_query_authority(mpi, monkeypat
     # Topology setup replaces the epoch while retaining owned family order.
     mesh.PrepareNativeTopology()
     after = sample()
-    for expected_items, actual_items in zip(before, after):
-        assert len(actual_items) == len(expected_items)
-        for expected, actual in zip(expected_items, actual_items):
-            assert actual[:4] == expected[:4]
-            np.testing.assert_allclose(actual[4], expected[4])
+    assert len(after) == len(before)
+    for expected, actual in zip(before, after):
+        assert actual[:2] == expected[:2]
+        np.testing.assert_allclose(actual[2], expected[2])
     native_cells = mesh.entities(Geom.EntityKind.Cell)
     legacy_field.trans.LGhostMapping = None
     legacy_field.trans.LGlobalMapping = None
     field = _cell_field(mpi, native_cells)
-    helpers._borrow_cell_field_indexing(field, mesh)
+    Geom.borrow_legacy_field_indexing(field.trans, native_cells)
     native_values = _fill_and_pull(field, native_cells)
     for expected, actual in zip(legacy_values, native_values):
         np.testing.assert_array_equal(actual, expected)

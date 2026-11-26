@@ -1,5 +1,5 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "CUDATestStream.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "Cauchy/Discretization/FiniteVolumeReconstructionStateInternal.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
@@ -7,11 +7,12 @@
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
-static DNDS::MPIInfo mpi;
 
 TEST_CASE("Resident interface refresh reuses routes in colocated and dislocated placement")
 {
-    const R::ExecutionContext placement{R::Device::CUDA(0), nullptr};
+    const auto mpi = CauchyTest::WorldMPI();
+    CauchyTest::NonDefaultCUDAStream nonDefaultPlacementStream;
+    const auto placement = nonDefaultPlacementStream.Context();
     for (const bool split : {false, true})
     {
         if (split && mpi.size < 2)
@@ -105,17 +106,4 @@ TEST_CASE("Resident interface refresh reuses routes in colocated and dislocated 
             if (comm != MPI_COMM_NULL)
                 MPI_Comm_free(&comm);
     }
-}
-
-int main(int argc, char **argv)
-{
-    DNDS::MPI::Init_thread(&argc, &argv);
-    mpi.setWorld();
-    int result;
-    {
-        doctest::Context context(argc, argv);
-        result = context.run();
-    }
-    DNDS::MPI::Finalize();
-    return result;
 }

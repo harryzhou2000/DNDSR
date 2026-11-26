@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/Refinement/NativeMeshExtraction.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
@@ -391,14 +390,4 @@ TEST_CASE("Boundary facade rejects absent native authority collectively before m
     }
     native->ConstructBndMesh(destination);
     CheckExtracted(*destination.CurrentNativeState(), native->CurrentNativeState()->MeshNamespace(), 2, false);
-}
-
-int main(int argc, char **argv)
-{
-    // Native row kernels may create OMP/CPU workers even with controller MPI.
-    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
-        return 1;
-    const auto result = doctest::Context(argc, argv).run();
-    DNDS::MPI::Finalize();
-    return result;
 }

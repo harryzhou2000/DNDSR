@@ -1,4 +1,3 @@
-#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Geom/IO/CGNS.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
@@ -305,14 +304,4 @@ TEST_CASE("Native CGNS import errors agree collectively and permit valid retry")
         CHECK_THROWS(G::ReadNativeCGNS(mpi, fixture.path, mpi.rank == 0 ? 3 : 2, BoundaryIds(), reader));
     }
     CheckState(G::ReadNativeCGNS(mpi, fixture.path, 2, BoundaryIds(), reader, {1, true}), mpi, Expected(false));
-}
-
-int main(int argc, char **argv)
-{
-    // Native row kernels may create OMP/CPU workers even with controller MPI.
-    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
-        return 1;
-    const int result = doctest::Context(argc, argv).run();
-    DNDS::MPI::Finalize();
-    return result;
 }
