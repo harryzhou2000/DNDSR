@@ -5,14 +5,25 @@
 
 namespace DNDS::Cauchy
 {
-    CUDAKernelDeviceProfile ClassifyCUDAKernelDevice(std::string_view name, int major, int minor)
+    CUDAKernelDeviceProfile ClassifyCUDAKernelDevice(std::string_view name)
     {
-        if (major == 8 && minor == 0)
+        constexpr std::string_view separators = " \t-_()";
+        bool afterRTX = false;
+        for (auto start = name.find_first_not_of(separators); start != std::string_view::npos;
+             start = name.find_first_not_of(separators))
         {
-            if (name.find("A100") != std::string_view::npos)
+            name.remove_prefix(start);
+            const auto product = name.substr(0, name.find_first_of(separators));
+            if (product == "A100" || product == "A800" || product == "H100" || product == "H200" ||
+                product == "H20" || product == "B200" || product == "B300")
                 return CUDAKernelDeviceProfile::A100;
-            if (name.find("A800") != std::string_view::npos)
-                return CUDAKernelDeviceProfile::A800;
+            // The x000 names belong to workstation lines, distinct from GeForce xx50–xx90 models.
+            if (afterRTX && product.size() == 4 && product[0] >= '3' && product[0] <= '5' &&
+                product[1] == '0' && product.substr(2) != "00" &&
+                product.find_first_not_of("0123456789") == std::string_view::npos)
+                return CUDAKernelDeviceProfile::A100;
+            afterRTX = product == "RTX";
+            name.remove_prefix(product.size());
         }
         return CUDAKernelDeviceProfile::Other;
     }
@@ -24,13 +35,13 @@ namespace DNDS::Cauchy
         cudaDeviceProp properties{};
         const auto status = cudaGetDeviceProperties(&properties, device.ordinal);
         DNDS_check_throw_info(status == cudaSuccess, "cannot resolve CUDA kernel defaults for selected device");
-        return ClassifyCUDAKernelDevice(properties.name, properties.major, properties.minor);
+        return ClassifyCUDAKernelDevice(properties.name);
 #else
         DNDS_check_throw_info(false, "CUDA kernel defaults require a CUDA build");
         return CUDAKernelDeviceProfile::Other;
 #endif
     }
-    bool IsA100Device(Runtime::Device device)
+    bool UsesA100KernelDefaults(Runtime::Device device)
     {
         return GetCUDAKernelDeviceProfile(device) == CUDAKernelDeviceProfile::A100;
     }
@@ -61,9 +72,7 @@ namespace DNDS::Cauchy
             kernels.rhsReduction = "serial";
         if (execution.reconstructionKernel == "auto")
         {
-            const bool v2Polynomial = coupledAoSPolynomial &&
-                                      (profile == CUDAKernelDeviceProfile::A100 || profile == CUDAKernelDeviceProfile::A800);
-            execution.reconstructionKernel = v2Polynomial && !numerics.reconstructionSolver.UsesAMG() ? "fp64V2" : "fp64";
+            execution.reconstructionKernel = a100Polynomial && !numerics.reconstructionSolver.UsesAMG() ? "fp64V2" : "fp64";
         }
         if (!kernels.polynomialPPThreads)
             kernels.polynomialPPThreads = measuredFlow5 ? 512 : 128;
@@ -74,6 +83,6 @@ namespace DNDS::Cauchy
             return selection;
         // Guarded LU uses the existing condition guard and filtered SVD
         // fallback. It is an implementation choice, not a new inverse policy.
-        return IsA100Device(device) ? "guardedLU" : "batchedSVD";
+        return UsesA100KernelDefaults(device) ? "guardedLU" : "batchedSVD";
     }
 }

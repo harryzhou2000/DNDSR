@@ -1,4 +1,5 @@
 #include "Cauchy/Config/CUDARHSKernelSelector.hpp"
+#include "Cauchy/Config/CUDAKernelDefaults.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #ifdef DNDS_USE_CUDA
 #    include <cuda_runtime_api.h>
@@ -15,8 +16,6 @@ namespace DNDS::Cauchy
             static const auto registry = nlohmann::json::parse(R"preset(
 {
   "schemaVersion": 1,
-  "devices": [{
-    "namePattern": "NVIDIA A100 80GB PCIe",
     "presets": [
       {"profile": {"equation": "none", "boundary": "periodic", "C": 5, "M": 2, "D": 2, "Q": 1, "points": 1}, "kernels": {"rhsMapping": "thread", "rhsHoistFaceRows": false, "rhsBlockSize": 128, "rhsGridBlocks": 0}},
       {"profile": {"equation": "none", "boundary": "periodic", "C": 5, "M": 2, "D": 2, "Q": 3, "points": 2}, "kernels": {"rhsMapping": "thread", "rhsHoistFaceRows": false, "rhsBlockSize": 128, "rhsGridBlocks": 0}},
@@ -76,7 +75,6 @@ namespace DNDS::Cauchy
       {"profile": {"equation": "none", "boundary": "extrapolation", "C": 5, "M": 9, "D": 2, "Q": 3, "points": 2}, "kernels": {"rhsMapping": "thread", "rhsHoistFaceRows": false, "rhsBlockSize": 128, "rhsGridBlocks": 0}},
       {"profile": {"equation": "none", "boundary": "extrapolation", "C": 5, "M": 9, "D": 2, "Q": 5, "points": 3}, "kernels": {"rhsMapping": "thread", "rhsHoistFaceRows": false, "rhsBlockSize": 128, "rhsGridBlocks": 0}}
     ]
-  }]
 }
 )preset");
             return registry;
@@ -91,18 +89,14 @@ namespace DNDS::Cauchy
 
     nlohmann::json FindRHSKernelPreset(std::string_view deviceName, const RHSKernelProfile &profile)
     {
+        if (ClassifyCUDAKernelDevice(deviceName) != CUDAKernelDeviceProfile::A100)
+            return nullptr;
         const auto &registry = Registry();
         DNDS_check_throw_info(registry.at("schemaVersion") == 1, "unknown RHS kernel preset schema");
         const nlohmann::json pattern{{"equation", profile.equation}, {"boundary", profile.boundary}, {"C", profile.components}, {"M", profile.modes}, {"D", profile.dimension}, {"Q", profile.order}, {"points", profile.points}};
-        for (const auto &device : registry.at("devices"))
-        {
-            const auto &name = device.at("namePattern").get_ref<const std::string &>();
-            if (deviceName.find(name) == std::string_view::npos)
-                continue;
-            for (const auto &preset : device.at("presets"))
-                if (preset.at("profile") == pattern)
-                    return preset.at("kernels");
-        }
+        for (const auto &preset : registry.at("presets"))
+            if (preset.at("profile") == pattern)
+                return preset.at("kernels");
         return nullptr;
     }
 

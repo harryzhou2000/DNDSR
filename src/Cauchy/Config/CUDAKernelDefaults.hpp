@@ -9,18 +9,18 @@ namespace DNDS::Cauchy
     enum class CUDAKernelDeviceProfile
     {
         Other,
-        A100,
-        A800
+        A100
     };
-    CUDAKernelDeviceProfile ClassifyCUDAKernelDevice(std::string_view name, int major, int minor);
+    /// Select a shared launch preset by product name. Device arithmetic has separate capability checks.
+    CUDAKernelDeviceProfile ClassifyCUDAKernelDevice(std::string_view name);
 
     /// @brief Query the selected device during setup, never inside a queued kernel.
     CUDAKernelDeviceProfile GetCUDAKernelDeviceProfile(Runtime::Device device);
-    bool IsA100Device(Runtime::Device device);
+    bool UsesA100KernelDefaults(Runtime::Device device);
 
     /** @brief Resolve automatic policies before constructing resident operators.
-     * @details A100 and A800 share the compact FP64 V2 VR sweep preset.
-     * The measured A100 P3 flow5 profile uses warp-per-cell PP with 512 threads.
+     * @details RTX 30/40/50-series, A100/A800, H100/H200/H20, and B200/B300
+     * share the A100 preset. Its P3 flow5 policy uses warp-per-cell PP with 512 threads.
      * Perfect-gas RHS selection is resolved separately when its workset is bound.
      * ACM retains its degree- and quadrature-dependent mapping.
      * The device profile is separate so policy tests need no CUDA device.

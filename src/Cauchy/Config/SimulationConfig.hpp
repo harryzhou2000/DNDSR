@@ -98,7 +98,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(acmSSTScalarJacobian, "Reuse the unchanged interior transport speed in the two CUDA ACM/SST scalar derivative columns; false evaluates every full flux perturbation");
             DNDS_FIELD(rhsDoubleBuffer, "Experimental two-bank FP64 CTA staging");
             config.field_optional(&T::rhsHoistFaceRows, "rhsHoistFaceRows", "FP64 modal face-thread row binding; null selects automatically");
-            DNDS_FIELD(polynomialPPThreads, "CUDA polynomial PP block size: 0 selects the device/shape default (512 for measured A100 P3 flow5, otherwise 128); explicit 128/256/512 or the existing environment override is preserved");
+            DNDS_FIELD(polynomialPPThreads, "CUDA polynomial PP block size: 0 selects the device/shape default (512 for P3 flow5 with the A100 preset, otherwise 128); explicit 128/256/512 or the existing environment override is preserved");
         }
         bool Default() const
         {
@@ -144,7 +144,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(transferPreflight, "MPI launch validation: collective (default) or abortOnFailure (local checks, fatal MPI abort, no per-launch global agreement); setup remains collective");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(communicationExecution, "MPI payload execution: caller (default) or worker (CPU Direct/HostPacked, requires MPI_THREAD_MULTIPLE)");
-            DNDS_FIELD(reconstructionKernel, "auto uses fp64V2 on A100 and A800 combined AoS variational relaxation. fp64V2SIMT and fp64V2MMA require a supported compact shape. fp64 uses general FP64 arithmetic. Historical pipeline and comparison selectors require DNDS_CFV_CUDA_ENABLE_V1_KERNELS. Launch dimensions use numerics.cfv.cudaSweep.");
+            DNDS_FIELD(reconstructionKernel, "auto uses fp64V2 for coupled AoS variational relaxation on GPUs sharing the A100 preset (RTX 30/40/50 series, A100/A800, H100/H200/H20, B200/B300). fp64V2SIMT and fp64V2MMA require a supported compact shape. fp64 uses general FP64 arithmetic. Historical pipeline and comparison selectors require DNDS_CFV_CUDA_ENABLE_V1_KERNELS. Launch dimensions use numerics.cfv.cudaSweep.");
             config.field_section(&T::kernels, "kernels", "Operator-local CUDA input layout and compute arithmetic policies");
             DNDS_FIELD(checkAccess, "Validate declared scheduled accesses at submission");
             config.field_optional(&T::coreFirstCellOrdering, "coreFirstCellOrdering", "Place all node-star core cells before dependent cells within the rank during mesh setup; defaults to overlap");
@@ -458,7 +458,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(amgxAggregateSize, "Flow AMG target aggregate size: 0 selects 4 in 2D or 8 in 3D. Explicit choices are 2, 4 and 8.");
             DNDS_FIELD(jacobiLocalSweeps, "One or two local Jacobi sweeps per iteration; two freezes remote iterate values between sweeps, with one input exchange");
             DNDS_FIELD(diagonalInverseRefinement, "Optional guarded block-inverse corrections: 0 (default) preserves the existing inversion, 1..3 refines within retained SVD subspaces without changing the cutoff. Requires block-diagonal SGS/Jacobi; unavailable for ILU/AmgX.");
-            DNDS_FIELD(cudaDiagonalInverse, "auto selects guardedLU on A100 and batchedSVD elsewhere; explicit providers are preserved. Guarded 5/6/7 LU retains the CPU condition guard and filtered SVD fallback. CPU inversion is unchanged");
+            DNDS_FIELD(cudaDiagonalInverse, "auto selects guardedLU with the A100 preset and batchedSVD elsewhere; explicit providers are preserved. Guarded 5/6/7 LU retains the CPU condition guard and filtered SVD fallback. CPU inversion is unchanged");
             DNDS_FIELD(cudaJacobiMapping, "CUDA assembled Jacobi mapping: thread (reference/default) or componentGroup (experimental eight lanes per cell); CPU row arithmetic is unchanged");
             config.field_section(&T::matrixStorage, "matrixStorage", "Independent matrix-table and native sparse-index formats; no hot-path format conversion");
             DNDS_FIELD(preconditioner, "Fixed sgs, zero-started jacobi, rank-local ilu/amg or single-device amgx for GMRES; amgx requires assembled CUDA storage; unused by stationary methods");

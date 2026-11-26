@@ -68,24 +68,37 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     CHECK(base.execution.reconstructionKernel == "fp64V2");
 }
 
-TEST_CASE("A800 shares the A100 CUDA VR preset and preserves other defaults")
+TEST_CASE("Supported GPU names select the same VR and RHS presets as the A100")
 {
-    const auto profile = C::ClassifyCUDAKernelDevice("NVIDIA A800-SXM4-80GB", 8, 0);
-    REQUIRE(profile == CUDAProfile::A800);
-    CHECK(C::ClassifyCUDAKernelDevice("NVIDIA A800 80GB PCIe", 8, 9) == CUDAProfile::Other);
-    CHECK(C::ClassifyCUDAKernelDevice("NVIDIA A100 80GB PCIe", 8, 0) == CUDAProfile::A100);
-    CHECK(C::ClassifyCUDAKernelDevice("NVIDIA H100 80GB HBM3", 9, 0) == CUDAProfile::Other);
-    C::DomainSettings settings;
-    settings.mesh.dimension = 3;
-    settings.numerics.reconstruction = "variational";
-    settings.numerics.cfv.maxOrder = 3;
-    settings.numerics.cfv.intOrder = 5;
-    C::ResolveAutomaticCUDAKernels(settings, profile, true);
-    CHECK(settings.execution.reconstructionKernel == "fp64V2");
-    CHECK(settings.execution.kernels.polynomialPPThreads == 128);
-    settings.execution.reconstructionKernel = "fp64";
-    C::ResolveAutomaticCUDAKernels(settings, profile, true);
-    CHECK(settings.execution.reconstructionKernel == "fp64");
+    const C::RHSKernelProfile rhs{"none", "periodic", 5, 19, 3, 1, 1};
+    const auto reference = C::FindRHSKernelPreset("NVIDIA A100 80GB PCIe", rhs);
+    REQUIRE(reference.is_object());
+    for (const auto *name : {
+             "NVIDIA GeForce RTX 3060 Laptop GPU", "NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 5090",
+             "NVIDIA A100-PCIE-40GB", "NVIDIA A100 40GB PCIe", "NVIDIA A800-SXM4-80GB",
+             "NVIDIA H100 80GB HBM3", "NVIDIA H200", "NVIDIA H20",
+             "NVIDIA B200", "NVIDIA B300"})
+    {
+        CAPTURE(name);
+        const auto profile = C::ClassifyCUDAKernelDevice(name);
+        CHECK(profile == CUDAProfile::A100);
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 5;
+        C::ResolveAutomaticCUDAKernels(settings, profile, true);
+        CHECK(settings.execution.reconstructionKernel == "fp64V2");
+        CHECK(settings.execution.kernels.polynomialPPThreads == 512);
+        CHECK(C::FindRHSKernelPreset(name, rhs) == reference);
+    }
+    for (const auto *name : {"", "NVIDIA RTX A5000", "NVIDIA RTX 5000 Ada Generation",
+                             "NVIDIA A1000", "NVIDIA H2000", "NVIDIA GeForce RTX 30900", "NVIDIA Tesla V100"})
+    {
+        CAPTURE(name);
+        CHECK(C::ClassifyCUDAKernelDevice(name) == CUDAProfile::Other);
+        CHECK(C::FindRHSKernelPreset(name, rhs).is_null());
+    }
 }
 
 TEST_CASE("CUDA RHS launch selection respects measured profiles and explicit values")

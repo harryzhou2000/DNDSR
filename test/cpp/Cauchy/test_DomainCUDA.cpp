@@ -317,7 +317,7 @@ TEST_CASE("Automatic A100 kernels advance raw P3 flow with frozen explicit refer
         }
         C::Domain domain("fluid", mesh, selected, time);
         const auto &resolved = domain.Discretization().Settings().execution;
-        if (automatic && C::IsA100Device(R::Device::CUDA(0)))
+        if (automatic && C::UsesA100KernelDefaults(R::Device::CUDA(0)))
         {
             CHECK(resolved.reconstructionKernel == "fp64V2");
             CHECK(resolved.kernels.rhsMapping == "auto");

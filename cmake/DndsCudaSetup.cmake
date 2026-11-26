@@ -30,19 +30,21 @@ set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} -Xcompiler=-O3")
 # C++ compiler (used for .cpp files that #include thrust headers via
 # DNDS_USE_CUDA guards) does not know about it.  Add the path so that
 # #include <thrust/...> works from both .cu and .cpp translation units.
-if(CUDAToolkit_INCLUDE_DIRS AND EXISTS "${CUDAToolkit_INCLUDE_DIRS}/cccl")
-    set(DNDS_CUDA_CCCL_INCLUDE_DIR "${CUDAToolkit_INCLUDE_DIRS}/cccl")
-    message(STATUS "Found CCCL include directory: ${DNDS_CUDA_CCCL_INCLUDE_DIR}")
-endif()
+foreach(_cuda_include IN LISTS CUDAToolkit_INCLUDE_DIRS)
+    if(IS_DIRECTORY "${_cuda_include}/cccl")
+        set(DNDS_CUDA_CCCL_INCLUDE_DIR "${_cuda_include}/cccl")
+        message(STATUS "Found CCCL include directory: ${DNDS_CUDA_CCCL_INCLUDE_DIR}")
+        break()
+    endif()
+endforeach()
 
 # nvcc implicitly knows its own toolkit include path, so CMake omits it
 # from the .cu compile commands.  Tools that process compile_commands.json
 # (compdb, clangd) then see header entries without -I<cuda>/include and
 # cannot resolve <cuda_runtime.h>.  Force the path into .cu compile lines
 # via CMAKE_CUDA_FLAGS so CMake cannot strip it as an "implicit" include.
-if(CUDAToolkit_INCLUDE_DIRS)
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -I${CUDAToolkit_INCLUDE_DIRS}")
-    if(DNDS_CUDA_CCCL_INCLUDE_DIR)
-        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -I${DNDS_CUDA_CCCL_INCLUDE_DIR}")
-    endif()
-endif()
+set(_cuda_explicit_includes ${CUDAToolkit_INCLUDE_DIRS} ${DNDS_CUDA_CCCL_INCLUDE_DIR})
+list(REMOVE_DUPLICATES _cuda_explicit_includes)
+foreach(_cuda_include IN LISTS _cuda_explicit_includes)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -I\"${_cuda_include}\"")
+endforeach()
