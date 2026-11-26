@@ -29,7 +29,8 @@ namespace DNDS::Cauchy::CUDA
     {
         FiniteVolumeStencilView stencil;
         Runtime::ArrayView<const index, false, Runtime::FixedRows<1>> faceOffsets;
-        Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> cellCent;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> cellBary;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> quadrature;
         CFV::ReconstructionPointBasisView basis;
         Runtime::ArrayView<const PerfectGasBoundaryParameters, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> conditions;

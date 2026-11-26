@@ -128,8 +128,20 @@ namespace DNDS::CFV
             for (auto iCell : data->workPartition->HaloDependent())
                 data->coreFirstPosition[iCell] = position++;
             DNDS_check_throw_info(position == nCell, "reconstruction work partition does not cover owned cells");
-            auto cellRead = geometry->cell.Read();
-            const auto cell = cellRead.View<R::FixedRows<8>>();
+            auto centRead = geometry->cellCent.Read();
+            auto baryRead = geometry->cellBary.Read();
+            auto scaleRead = geometry->cellScale.Read();
+            auto maxLenRead = geometry->cellMaxLenScale.Read();
+            auto faceCentRead = geometry->faceCent.Read();
+            auto faceNormRead = geometry->faceMeanNorm.Read();
+            auto faceAreaRead = geometry->faceArea.Read();
+            const auto cellCent = centRead.View<R::FixedRows<3>>();
+            const auto cellBary = baryRead.View<R::FixedRows<3>>();
+            const auto cellScale = scaleRead.View<R::FixedRows<1>>();
+            const auto cellMaxLen = maxLenRead.View<R::FixedRows<1>>();
+            const auto faceCent = faceCentRead.View<R::FixedRows<3>>();
+            const auto faceMeanNorm = faceNormRead.View<R::FixedRows<3>>();
+            const auto faceArea = faceAreaRead.View<R::FixedRows<1>>();
             auto faceOffsetRead = geometry->faceOffsets.Read();
             const auto faceOffset = faceOffsetRead.View<R::FixedRows<1>>();
             auto pointRead = geometry->faceQuadrature.Read();
@@ -300,17 +312,17 @@ namespace DNDS::CFV
                 tSmallCoords coords;
                 std::fill(moment[iCell].begin(), moment[iCell].end(), 0.);
                 mesh.GetCoordsOnCell(iCell, coords);
-                const tPoint bary{cell(iCell, 4), cell(iCell, 5), cell(iCell, 6)};
+                const tPoint bary{cellBary(iCell, 0), cellBary(iCell, 1), cellBary(iCell, 2)};
                 if (needHalfBoxes)
                     Eigen::Map<tPoint>(halfBoxes[iCell].data()) = (coords.colwise() - bary).array().abs().rowwise().maxCoeff();
                 const auto element = mesh.GetCellElement(iCell);
                 const Quadrature q(element, INT_ORDER_MAX);
-                const tPoint center{cell(iCell, 1), cell(iCell, 2), cell(iCell, 3)};
+                const tPoint center{cellCent(iCell, 0), cellCent(iCell, 1), cellCent(iCell, 2)};
                 for (int iG = 0; iG < q.GetNumPoints(); ++iG)
                 {
                     const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, INT_ORDER_MAX, iG);
                     const tPoint p = PPhysicsCoordD01Nj(coords, shape);
-                    polynomial.Derivatives(full, p, center, cell(iCell, 7));
+                    polynomial.Derivatives(full, p, center, cellScale(iCell, 0));
                     const real weight = CellJacobianDet(dim, coords, shape) * q.GetWeight(iG) * (geometry->axisymmetric ? p[1] : 1.);
                     for (int j = 0; j <= n; ++j) moment(iCell, j) += full(0, j) * weight;
                 }
@@ -322,7 +334,7 @@ namespace DNDS::CFV
             const auto system = systemWrite.values;
             auto basis = [&](index iCell, const tPoint &p, SmallMatrix &out)
             {
-                polynomial.Reconstruction(out, p, {cell(iCell, 1), cell(iCell, 2), cell(iCell, 3)}, cell(iCell, 7), moment[iCell], degree);
+                polynomial.Reconstruction(out, p, {cellCent(iCell, 0), cellCent(iCell, 1), cellCent(iCell, 2)}, cellScale(iCell, 0), moment[iCell], degree);
             };
             {
             auto setupStage = progress.Stage("VR/face-systems");
@@ -337,22 +349,20 @@ namespace DNDS::CFV
                 const index iL = parents[0], iR = parents[1];
                 DNDS_check_throw_info(iL >= 0 && iL < mesh.NumCellProc() &&
                                           (iR == UnInitIndex || (iR >= 0 && iR < mesh.NumCellProc())), "VR stencil lacks face parent closure");
-                mesh.GetCoordsOnFace(iFace, coords);
-                const tPoint midpoint = PPhysicsCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(mesh.GetFaceElement(iFace).type, 1, 0));
-                const auto jac = ShapeJacobianCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(mesh.GetFaceElement(iFace).type, 1, 0));
-                tPoint normal = dim == 2 ? FacialJacobianToNormVec<2>(jac) : FacialJacobianToNormVec<3>(jac);
-                normal.normalize();
-                const tPoint baryL{cell(iL, 4), cell(iL, 5), cell(iL, 6)};
+                // Align curved boundary face normal with legacy faceMeanNorm (area-integrated normal).
+                const tPoint midpoint{faceCent(iFace, 0), faceCent(iFace, 1), faceCent(iFace, 2)};
+                const tPoint normal{faceMeanNorm(iFace, 0), faceMeanNorm(iFace, 1), faceMeanNorm(iFace, 2)};
+                const tPoint baryL{cellBary(iL, 0), cellBary(iL, 1), cellBary(iL, 2)};
                 const real distance = iR == UnInitIndex ? std::abs(2 * (midpoint - baryL).dot(normal))
-                    : (Detail::OtherPointInCell(mesh, iFace, 0, {cell(iR, 4), cell(iR, 5), cell(iR, 6)}) - baryL).norm();
+                    : (Detail::OtherPointInCell(mesh, iFace, 0, {cellBary(iR, 0), cellBary(iR, 1), cellBary(iR, 2)}) - baryL).norm();
                 DNDS_check_throw_info(distance > 0 && std::isfinite(distance), "VR face has zero barycenter distance");
-                real area = 0;
-                for (index iQ = faceOffset(iFace, 0); iQ < faceOffset(iFace + 1, 0); ++iQ) area += point(iQ, 6);
-                if (geometry->axisymmetric)
+                // Align axisymmetric VR face area with legacy radius-weighted faceArea
+                // (using physical vs radius-weighted area is an optional weight choice;
+                // fall back to unweighted geometric length only on zero-radius axis faces).
+                real area = faceArea(iFace, 0);
+                if (geometry->axisymmetric && area <= 0)
                 {
-                    // Weight policies use physical face length, not r*length.
-                    // In particular an axis face has zero radial measure but
-                    // nonzero geometric length; no division by radius occurs.
+                    mesh.GetCoordsOnFace(iFace, coords);
                     area = 0;
                     const auto element = mesh.GetFaceElement(iFace);
                     const Quadrature quadrature(element, geometry->intOrder);
@@ -374,6 +384,7 @@ namespace DNDS::CFV
                 tPoint faceSpan = tPoint::Zero();
                 if (dim == 3 && degree == 3 && functional.dirWeightScheme == ReconstructionFunctionalSettings::DirectionalWeight::TEST_OPT)
                 {
+                    mesh.GetCoordsOnFace(iFace, coords);
                     faceSpan = Geom::Elem::GetElemNodeMajorSpan(coords);
                 }
                 auto weights = Math::ReconstructionOrderWeights(functional, dim, degree, area, distance, faceSpan);
@@ -393,7 +404,7 @@ namespace DNDS::CFV
                     length = std::sqrt(box.head(dim).squaredNorm() / dim);
                 }
                 if (functional.scaleType == ReconstructionFunctionalSettings::LengthScale::CellMax)
-                    length = iR == UnInitIndex ? cell(iL, 7) : std::max(cell(iL, 7), cell(iR, 7));
+                    length = 0.5 * (iR == UnInitIndex ? cellMaxLen(iL, 0) : std::max(cellMaxLen(iL, 0), cellMaxLen(iR, 0)));
                 Math::FunctionalWeights(diagonal, dim, degree, length * functional.scaleMultiplier, weights.data(), functional.dirWeightCombPowV);
                 const tGPoint rightToLeft = Detail::OtherFrameInCell(mesh, iFace, 0);
                 const bool rotated = !rightToLeft.isApprox(tGPoint::Identity(), 1e-14);
@@ -442,7 +453,7 @@ namespace DNDS::CFV
                     publishB(iFace, bLR);
                 if (capabilities.wbap && iR != UnInitIndex)
                 {
-                    const tPoint centerL{cell(iL, 1), cell(iL, 2), cell(iL, 3)}, centerR{cell(iR, 1), cell(iR, 2), cell(iR, 3)};
+                    const tPoint centerL{cellCent(iL, 0), cellCent(iL, 1), cellCent(iL, 2)}, centerR{cellCent(iR, 0), cellCent(iR, 1), cellCent(iR, 2)};
                     basis(iR, Detail::OtherPointInCell(mesh, iFace, 1, centerL), right);
                     if (rotated) polynomial.Pullback(right, rightToLeft.transpose());
                     basis(iL, Detail::OtherPointInCell(mesh, iFace, 0, centerR), left);
@@ -455,8 +466,8 @@ namespace DNDS::CFV
                     {
                         const auto &alpha = polynomial.MultiIndex(mode);
                         const real factorial = Geom::Base::factorials[alpha[0]] * Geom::Base::factorials[alpha[1]] * Geom::Base::factorials[alpha[2]];
-                        secondaryL.row(mode - 1) *= std::pow(cell(iL, 7), polynomial.Degree(mode)) / factorial;
-                        secondaryR.row(mode - 1) *= std::pow(cell(iR, 7), polynomial.Degree(mode)) / factorial;
+                        secondaryL.row(mode - 1) *= std::pow(cellScale(iL, 0), polynomial.Degree(mode)) / factorial;
+                        secondaryR.row(mode - 1) *= std::pow(cellScale(iR, 0), polynomial.Degree(mode)) / factorial;
                     }
                     Eigen::Map<Matrix>(system[iFace].data() + faceSystem.secondary, n, n) = secondaryL;
                     Eigen::Map<Matrix>(system[iFace].data() + faceSystem.secondary + n * n, n, n) = secondaryR;

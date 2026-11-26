@@ -22,7 +22,7 @@ namespace DNDS::CFV::CUDA
                     if constexpr (Gradient)
                         for (int d = 0; d < request.dimension; ++d)
                             value += request.gradients(iCell, j * request.dimension + d) *
-                                     (request.points(iQuery, d) - request.geometry(iCell, d + 1));
+                                     (request.points(iQuery, d) - request.cellBary(iCell, d));
                     request.output(iQuery, j) = value;
                 }
             }
@@ -39,7 +39,7 @@ namespace DNDS::CFV::CUDA
             DNDS_check_throw_info(request.dimension >= 1 && request.dimension <= 3 && request.points.Width() == 3 &&
                                       request.points.RowCount() == request.output.RowCount() && request.gradients.RowCount() == request.means.RowCount() &&
                                       request.gradients.Width() == request.dimension * request.means.Width() &&
-                                      request.geometry.RowCount() >= request.means.RowCount() && request.gradients.kind == Runtime::RowLayoutKind::Table,
+                                      request.cellBary.RowCount() >= request.means.RowCount() && request.gradients.kind == Runtime::RowLayoutKind::Table,
                                   "CUDA gradient donor sampling shape differs");
         Runtime::CheckKernelArgumentBudget<Detail::DirectDonorSamplingView>();
         if (!request.output.RowCount())

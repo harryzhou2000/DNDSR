@@ -258,7 +258,7 @@ TEST_CASE("Queued polynomial sampling covers cached and direct derivatives on ow
                 ids.View()(iCell, 0) = iCell;
                 const auto center = geometry.GetCellCent(iCell);
                 for (int d = 0; d < 3; ++d)
-                    position.View()(iCell, d) = center[d] + (d < profile.dimension ? .13 * (d + 1) * geometry.cells(iCell, 7) : 0);
+                    position.View()(iCell, d) = center[d] + (d < profile.dimension ? .13 * (d + 1) * geometry.GetCellScale(iCell) : 0);
             }
         }
         auto mean = metrics.BuildField(profile.components), coefficients = metrics.BuildField(profile.components * modes);
@@ -505,9 +505,11 @@ TEST_CASE("Resident face basis supports direct and partial caches without unrela
         {
             CHECK(buffer.name != "faceQuadrature");
             CHECK(buffer.name != "radialMoment");
-            CHECK(buffer.name != "faceMean");
+            CHECK(buffer.name != "faceCent");
+            CHECK(buffer.name != "faceMeanNorm");
+            CHECK(buffer.name != "faceArea");
             moments |= buffer.name == "quadrature/cellMoments";
-            cellGeometry |= buffer.name == "quadrature/cellGeometry";
+            cellGeometry |= buffer.name == "quadrature/cellCent" || buffer.name == "quadrature/cellScale";
         }
         CHECK(moments == (cacheOrder < 1));
         CHECK(cellGeometry == (cacheOrder < 1));

@@ -33,8 +33,8 @@ TEST_CASE("Queued owner-side interface sampling agrees on inline worker and CUDA
                 u.View()(iCell, j) = 3 * j + 10 * mpi.rank + (j + 1) * center[0] - .5 * center[1];
                 g.View()(iCell, 2 * j) = j + 1;
                 g.View()(iCell, 2 * j + 1) = -.5;
-                r.View()(iCell, 2 * j) = (j + 1) * cells.cells(iCell, 7);
-                r.View()(iCell, 2 * j + 1) = -.5 * cells.cells(iCell, 7);
+                r.View()(iCell, 2 * j) = (j + 1) * cells.GetCellScale(iCell);
+                r.View()(iCell, 2 * j + 1) = -.5 * cells.GetCellScale(iCell);
             }
     }
     std::vector<I> boundaries(size_t(fixture.mesh->Entities(G::EntityKind::Bnd).NumOwned()));

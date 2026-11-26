@@ -13,6 +13,20 @@ namespace DNDS::Cauchy::CUDA::Detail
         // from a previous auxiliary calculation.
         point.Load(iCell, fields.mean, fields.mean, 0, false);
     }
+    template <int Components, class Fields>
+    DNDS_DEVICE_CALLABLE void MeanValuesOnly(const Fields &fields, index iCell, PerfectGasKernelPoint<Components> &point) noexcept
+    {
+        const auto row = fields.mean[iCell];
+        for (int j = 0; j < Components; ++j)
+            point.values[j] = row[j];
+    }
+    template <int Components>
+    DNDS_DEVICE_CALLABLE void RotateValuesOnly(std::array<real, Components> &values, const std::array<real, 9> &rotation, int vectorFirst) noexcept
+    {
+        const real v0 = values[vectorFirst], v1 = values[vectorFirst + 1], v2 = values[vectorFirst + 2];
+        for (int j = 0; j < 3; ++j)
+            values[vectorFirst + j] = rotation[j + 0] * v0 + rotation[j + 3] * v1 + rotation[j + 6] * v2;
+    }
     /// The sample's other center is already a periodic coordinate image in
     /// the anchor frame. Undo only the vector map, then add the native center.
     DNDS_DEVICE_CALLABLE inline Vector3 ParentPoint(const RHSGeometry &geometry, const FiniteVolumeDetail::SampleRecord &sample, bool other) noexcept
@@ -29,7 +43,7 @@ namespace DNDS::Cauchy::CUDA::Detail
                     result[d] += sample.rotation[k + 3 * d] * delta[k];
             else
                 result[d] = delta[d];
-            result[d] += geometry.cells(sample.other, 1 + d);
+            result[d] += geometry.cellCent(sample.other, d);
         }
         return result;
     }
@@ -37,18 +51,27 @@ namespace DNDS::Cauchy::CUDA::Detail
     DNDS_DEVICE_CALLABLE void ReconstructPoint(const RHSGeometry &geometry, const Params &parameters,
                                                const RHSKernelControls &controls, const Fields &fields,
                                                const FiniteVolumeDetail::SampleRecord &sample, bool other,
-                                               Point &point, index &fallbacks) noexcept
+                                               Point &point, index &fallbacks,
+                                               std::array<real, Components> *viscousValues = nullptr) noexcept
     {
         const index iCell = other ? sample.other : sample.cell;
         point.Load(iCell, fields.mean, fields.mean, 0, false);
+        const bool separateViscousValues = viscousValues && controls.viscous && controls.distinctViscous && !controls.primitiveGradient;
+        if (separateViscousValues)
+            *viscousValues = point.values;
         const int dimension = Fields::static_dimension ? Fields::static_dimension : controls.dimension;
         if (!controls.firstOrder && (!controls.direct || controls.linear))
         {
             using S = PolynomialScalar;
             std::array<S, Components> values{};
+            std::array<S, Components> visValues{};
             std::array<std::array<S, 3>, Components> gradients{};
             for (int j = 0; j < Components; ++j)
+            {
                 values[j] = DNDS::Math::ScalarCast<S>(point.values[j]);
+                if (separateViscousValues)
+                    visValues[j] = values[j];
+            }
             const auto position = ParentPoint(geometry, sample, other);
             const int modes = Fields::separate_roles || Fields::static_modes ? Fields::static_modes : controls.modes;
             const bool direct = Fields::separate_roles ? Fields::static_modes == 0 : controls.direct;
@@ -84,8 +107,10 @@ namespace DNDS::Cauchy::CUDA::Detail
                 for (int j = 0; j < Components; ++j)
                     for (int d = 0; d < dimension; ++d)
                     {
-                        values[j] += DNDS::Math::ScalarCast<S>(coefficient(j * dimension + d)) *
-                                     (DNDS::Math::ScalarCast<S>(position[d]) - DNDS::Math::ScalarCast<S>(geometry.cells(iCell, 4 + d)));
+                        const S dx = DNDS::Math::ScalarCast<S>(position[d]) - DNDS::Math::ScalarCast<S>(geometry.cellBary(iCell, d));
+                        values[j] += DNDS::Math::ScalarCast<S>(coefficient(j * dimension + d)) * dx;
+                        if (separateViscousValues)
+                            visValues[j] += DNDS::Math::ScalarCast<S>(viscous(j * dimension + d)) * dx;
                         if (controls.viscous && !controls.primitiveGradient)
                             gradients[j][d] = DNDS::Math::ScalarCast<S>(viscous(j * dimension + d));
                     }
@@ -107,6 +132,8 @@ namespace DNDS::Cauchy::CUDA::Detail
                     for (int j = 0; j < Components; ++j)
                     {
                         values[j] += DNDS::Math::ScalarCast<S>(coefficient(j * modes + mode)) * basis[0];
+                        if (separateViscousValues)
+                            visValues[j] += DNDS::Math::ScalarCast<S>(viscous(j * modes + mode)) * basis[0];
                         for (int d = 1; d < derivatives; ++d)
                             gradients[j][d - 1] += DNDS::Math::ScalarCast<S>(viscous(j * modes + mode)) * basis[d];
                     }
@@ -115,6 +142,8 @@ namespace DNDS::Cauchy::CUDA::Detail
             for (int j = 0; j < Components; ++j)
             {
                 point.values[j] = DNDS::Math::ScalarCast<real>(values[j]);
+                if (separateViscousValues)
+                    (*viscousValues)[j] = DNDS::Math::ScalarCast<real>(visValues[j]);
                 for (int d = 0; d < dimension; ++d)
                     point.gradients[j][d] = DNDS::Math::ScalarCast<real>(gradients[j][d]);
             }
@@ -151,11 +180,15 @@ namespace DNDS::Cauchy::CUDA::Detail
                 !(controls.positivity ? parameters.thermal.ClippedReferenceAdmissible(point.values) : parameters.thermal.Admissible(point.values)))
             {
                 ++fallbacks;
-                MeanPoint(fields, iCell, point);
+                MeanValuesOnly(fields, iCell, point);
             }
         }
         if (other && sample.changesFrame)
+        {
             point.Rotate(sample.rotation);
+            if (separateViscousValues)
+                RotateValuesOnly<Components>(*viscousValues, sample.rotation, std::is_same_v<Point, ACM::KernelPoint<Components>> ? 0 : 1);
+        }
     }
     DNDS_DEVICE_CALLABLE inline NumericalResult<Riemann::AcousticState> Acoustic(const PerfectGas &gas, const FlowState &flow) noexcept
     {
@@ -174,12 +207,12 @@ namespace DNDS::Cauchy::CUDA::Detail
         if (!result && (controls.positivity || controls.faceFallback) && Physics::AllowsMeanFallback(result.status))
         {
             ++fallbacks;
-            MeanPoint(fields, other ? sample.other : sample.cell, point);
+            MeanValuesOnly(fields, other ? sample.other : sample.cell, point);
             // The fallback mean lives in its own cell axes; restore the same
             // anchor frame as the successful reconstructed point, even for a
             // periodic self-neighbor with an identical local cell index.
             if (other && sample.changesFrame)
-                point.Rotate(sample.rotation);
+                RotateValuesOnly<Components>(point.values, sample.rotation, 1);
             result = Acoustic(parameters.physics.gas, point.Flow());
         }
         return result;

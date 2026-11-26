@@ -168,7 +168,7 @@ namespace DNDS::Cauchy::CUDA
                 r.status(iCell, 0) = Process<Op>(r, fields, iCell);
         }
         template <int Components>
-        __global__ void PhysicalStep(PPInput mean, PPInput rhs, R::ArrayView<const real, false, R::FixedRows<8>> cells,
+        __global__ void PhysicalStep(PPInput mean, PPInput rhs, R::ArrayView<const real, false, R::FixedRows<1>> cells,
                                      ThermalView thermal, real dt, real relax, real scale, int power, PPScalarOutput alpha, PPStatus status)
         {
             for (index iCell = index(blockIdx.x) * blockDim.x + threadIdx.x; iCell < mean.RowCount(); iCell += index(gridDim.x) * blockDim.x)
@@ -347,7 +347,7 @@ namespace DNDS::Cauchy::CUDA
         Launch<Operation::Verify>(c, r, f);
     }
     void LimitPhysicalStepRows(R::ExecutionContext context, PPInput means, PPInput rhs,
-                               R::ArrayView<const real, false, R::FixedRows<8>> cells, ThermalView thermal,
+                               R::ArrayView<const real, false, R::FixedRows<1>> cells, ThermalView thermal,
                                real dt, real relax, real scale, int power, PPScalarOutput alpha, PPStatus status)
     {
         DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA physical-dt forecast requires a CUDA context");

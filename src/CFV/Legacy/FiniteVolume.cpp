@@ -45,14 +45,15 @@ namespace DNDS::CFV
         for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
             auto eCell = mesh->GetCellElement(iCell);
-            auto qCellMax = Quadrature{eCell, INT_ORDER_MAX};
+            const int geomOrder = settings.geometryOrder > 0 ? settings.geometryOrder : INT_ORDER_MAX;
+            auto qCellGeom = Quadrature{eCell, geomOrder};
             tSmallCoords coordsCell;
             mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get Int Point Det and Vol
             real v{0};
-            { // using more accurate sum volume
+            { // using configured geometry integration order (default INT_ORDER_MAX)
                 real v1{0};
-                qCellMax.Integration(
+                qCellGeom.Integration(
                     v1,
                     [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                     {
@@ -212,27 +213,25 @@ namespace DNDS::CFV
         for (index iCell = 0; iCell < mesh->NumCellProc(); iCell++)
         {
             auto eCell = mesh->GetCellElement(iCell);
-            auto qCell = Quadrature{eCell, GetCellAtr(iCell).intOrder};
-            auto qCellMax = Quadrature{eCell, INT_ORDER_MAX};
+            // Match ConstructCellVolume's geometry integration order (default INT_ORDER_MAX).
+            const int geomOrder = settings.geometryOrder > 0 ? settings.geometryOrder : INT_ORDER_MAX;
+            auto qCellGeom = Quadrature{eCell, geomOrder};
 
             tSmallCoords coordsCell;
             mesh->GetCoordsOnCell(iCell, coordsCell);
             //****** Get Bary
-            real v{0};
             tPoint b{0, 0, 0};
-            qCell.Integration(
+            qCellGeom.Integration(
                 b,
                 [&](auto &vInc, int iG, const tPoint &pParam, const Elem::tD01Nj &DiNj)
                 {
                     tPoint pPhy = Elem::PPhysicsCoordD01Nj(coordsCell, DiNj);
                     real JDet = CellJacobianDet(getDim(), coordsCell, DiNj);
-                    // JDet = std::abs(JDet); // use this to pass check even with bad mesh
                     if (axisSymmetric)
                         JDet *= std::max(verySmallReal, pPhy(1));
                     vInc = pPhy * JDet;
-                    v += JDet * qCell.GetWeight(iG);
                 });
-            v = GetCellVol(iCell); //! FIX: is this good choice?
+            real v = GetCellVol(iCell);
             cellBary[iCell] = b / v;
         }
         EndMetricsStage(CellBarycenter);

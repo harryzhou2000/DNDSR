@@ -11,7 +11,7 @@ namespace DNDS::Cauchy::CUDA
 {
     using TimeStageInput = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::TableRows>;
     using TimeStageOutput = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows>;
-    using TimeStageCells = Runtime::ArrayView<const real, false, Runtime::FixedRows<8>>;
+    using TimeStageCells = Runtime::ArrayView<const real, false, Runtime::FixedRows<1>>;
     /// Bounded deterministic reduction; status invalidates the blend values.
     struct TimeStageSummary
     {

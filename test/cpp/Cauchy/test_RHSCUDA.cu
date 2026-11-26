@@ -548,7 +548,8 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                         K::RHSGeometry geometry;
                         geometry.stencil = deviceStencil.View();
                         geometry.faceOffsets = geometry.stencil.metric.faceOffsets;
-                        geometry.cells = geometry.stencil.metric.cells;
+                        geometry.cellCent = geometry.stencil.metric.cellCent;
+                        geometry.cellBary = geometry.stencil.metric.cellBary;
                         geometry.quadrature = geometry.stencil.metric.quadrature;
                         geometry.conditions = conditions.View<R::FixedRows<1>>();
                         geometry.wallMean = wm.View<R::FixedRows<1>>();
@@ -557,7 +558,8 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                         geometry.hasBasis = reconstruction >= 2;
                         geometry.basis.cached = cached.View<R::TableRows, false>();
                         geometry.basis.moments = mom.View<R::TableRows, false>();
-                        geometry.basis.cells = geometry.cells;
+                        geometry.basis.cellCent = geometry.stencil.metric.cellCent;
+                        geometry.basis.cellScale = geometry.stencil.metric.cellScale;
                         geometry.basis.polynomial = polynomial;
                         geometry.basis.cachedDerivatives = reconstruction == 2 ? dimension + 1 : 0;
                         geometry.basis.availableDerivatives = dimension + 1;
@@ -716,7 +718,8 @@ TEST_CASE("CUDA canonical ghost-left and self-periodic faces preserve owned sign
         const auto policyRead = policy.Read(context);
         K::RHSGeometry numerical;
         numerical.stencil = geometry.View();
-        numerical.cells = numerical.stencil.metric.cells;
+        numerical.cellCent = numerical.stencil.metric.cellCent;
+        numerical.cellBary = numerical.stencil.metric.cellBary;
         numerical.faceOffsets = numerical.stencil.metric.faceOffsets;
         numerical.quadrature = numerical.stencil.metric.quadrature;
         numerical.conditions = conditionRead.View<R::FixedRows<1>>();

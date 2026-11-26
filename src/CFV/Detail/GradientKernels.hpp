@@ -11,7 +11,7 @@ namespace DNDS::CFV::Detail
     using GradientField = Runtime::PairReadView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using GradientInput = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using GradientOutput = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
-    using GradientCellGeometry = Runtime::ArrayView<const real, false, Runtime::FixedRows<8>>;
+    using GradientCellGeometry = Runtime::ArrayView<const real, false, Runtime::FixedRows<1>>;
 
     /// Prepared incidence weights for GG/LS/GGMP. Boundary IDs index physical
     /// face-center targets. A weight has three directions; the unused third

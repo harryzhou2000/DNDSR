@@ -106,7 +106,7 @@ namespace DNDS::CFV
             validateInput(*input->reconstructed);
             R::SubmitArrays(engine, stream, [launch, geometry, dimension](R::ExecutionContext context, auto cells, auto mean, auto points, auto gradient, auto output)
                             {
-                Detail::DirectDonorSamplingView request{cells, mean, points, gradient, geometry->View().cells, output, dimension, true};
+                Detail::DirectDonorSamplingView request{cells, mean, points, gradient, geometry->View().cellBary, output, dimension, true};
                 launch(context, request); }, R::ReadAs<R::FixedRows<1>>(_data->cells), R::ReadAs<R::UniformTableRows>(input->mean.Owned()), R::ReadAs<R::UniformTableRows>(_data->points), R::ReadAs<R::UniformTableRows>(input->reconstructed->Owned()), R::WriteAs<R::UniformTableRows>(workspace.donorValues));
         }
         else

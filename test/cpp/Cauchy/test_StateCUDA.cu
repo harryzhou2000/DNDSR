@@ -723,7 +723,7 @@ TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty p
         const auto bounds = policy.View();
         for (const I rows : {I(0), I(1), I(1025), I(32769)})
         {
-            R::Array<real> mean(R::RowLayout::Dense(rows, width)), sums(R::RowLayout::Dense(rows, 1)), cells(R::RowLayout::Dense(rows + 3, 8));
+            R::Array<real> mean(R::RowLayout::Dense(rows, width)), sums(R::RowLayout::Dense(rows, 1)), cells(R::RowLayout::Dense(rows + 3, 1));
             {
                 auto u = mean.Write(), s = sums.Write(), m = cells.Write();
                 for (I iCell = 0; iCell < rows; ++iCell)
@@ -754,14 +754,14 @@ TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty p
                     const DNDS::Algebra::DofComponentLayout<const real> components(std::move(columns), rows, 0);
                     expectedValid = C::CPU::AdmissibleMeans(components.View(), bounds);
                     DNDS::CFV::FiniteVolumeHostView metric;
-                    metric.cells = m.View<R::FixedRows<8>, false>();
+                    metric.cellVolume = m.View<R::FixedRows<1>, false>();
                     expectedStep = C::CPU::MinimumStableStep(s.View<R::UniformTableRows>(), metric, 3.5);
                 }
                 R::SubmitArrays(engine, stream, [bounds](R::ExecutionContext c, auto u, auto result)
                                 { K::AdmissibleMeans(c, u, bounds, result); }, R::ReadAs<R::TableRows>(dm), R::WriteAs<R::FixedRows<1>>(valid));
                 // Independent CFL atomic reduction on the same stream, no host wait.
                 R::SubmitArrays(engine, stream, [](R::ExecutionContext c, auto s, auto m, auto seed, auto result)
-                                { K::MinimumStableStep(c, s, m, 3.5, seed, result); }, R::ReadAs<R::TableRows>(ds), R::ReadAs<R::FixedRows<8>>(dc), R::ReadAs<R::FixedRows<1>>(identity), R::WriteAs<R::FixedRows<1>>(step));
+                                { K::MinimumStableStep(c, s, m, 3.5, seed, result); }, R::ReadAs<R::TableRows>(ds), R::ReadAs<R::FixedRows<1>>(dc), R::ReadAs<R::FixedRows<1>>(identity), R::WriteAs<R::FixedRows<1>>(step));
                 engine.Synchronize();
                 const auto hv = valid.To(R::Device::Host()), hs = step.To(R::Device::Host());
                 const auto v = hv.Read(), s = hs.Read();
@@ -811,7 +811,7 @@ TEST_CASE("CUDA analytic error uses the CPU oracle quadrature and fixed-tree ran
                                                                     view.GetCellElement(iCell), DNDS::Geom::Elem::INT_ORDER_MAX)
                                                                     .GetNumPoints();
         R::Array<I> offsets(R::RowLayout::Dense(rows + 1, 1));
-        R::Array<real> points(R::RowLayout::Dense(starts.back(), 4)), cells(R::RowLayout::Dense(rows, 8));
+        R::Array<real> points(R::RowLayout::Dense(starts.back(), 4)), cells(R::RowLayout::Dense(rows, 1));
         {
             auto o = offsets.Write();
             auto p = points.Write(), c = cells.Write();
@@ -819,8 +819,7 @@ TEST_CASE("CUDA analytic error uses the CPU oracle quadrature and fixed-tree ran
                 o.View()(iRow, 0) = starts[size_t(iRow)];
             for (I iCell = 0; iCell < rows; ++iCell)
             {
-                for (int j = 0; j < 8; ++j)
-                    c.View()(iCell, j) = metric.cells(iCell, j);
+                c.View()(iCell, 0) = metric.GetCellVol(iCell);
                 DNDS::Geom::tSmallCoords coords;
                 view.GetCoordsOnCell(iCell, coords);
                 const auto element = view.GetCellElement(iCell);
@@ -887,7 +886,7 @@ TEST_CASE("CUDA analytic error uses the CPU oracle quadrature and fixed-tree ran
             const auto submit = [&](R::Array<K::FlowErrorReduction> &result)
             {
                 R::SubmitArrays(engine, stream, [parameters = C::PrepareFlowProfile(profile), primitive, gas, frame = frame.KernelParameters(), time](R::ExecutionContext context, auto offsets, auto points, auto cells, auto means, auto scratch, auto output, auto counter)
-                                { K::MeasureFlowError(context, {offsets, points, cells}, means, parameters, primitive, gas, frame, time, scratch, output, counter); }, R::ReadAs<R::FixedRows<1>>(doffsets), R::ReadAs<R::FixedRows<4>>(dpoints), R::ReadAs<R::FixedRows<8>>(dcells), R::ReadAs<R::TableRows>(dmeans), R::WriteAs<R::FixedRows<1>>(scratch), R::WriteAs<R::FixedRows<1>>(result), R::WriteAs<R::FixedRows<1>>(completed));
+                                { K::MeasureFlowError(context, {offsets, points, cells}, means, parameters, primitive, gas, frame, time, scratch, output, counter); }, R::ReadAs<R::FixedRows<1>>(doffsets), R::ReadAs<R::FixedRows<4>>(dpoints), R::ReadAs<R::FixedRows<1>>(dcells), R::ReadAs<R::TableRows>(dmeans), R::WriteAs<R::FixedRows<1>>(scratch), R::WriteAs<R::FixedRows<1>>(result), R::WriteAs<R::FixedRows<1>>(completed));
             };
             submit(output);
             submit(repeat); // no host visibility or scratch reallocation between submissions

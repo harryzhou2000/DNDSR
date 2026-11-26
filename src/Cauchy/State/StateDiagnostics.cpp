@@ -50,22 +50,24 @@ namespace DNDS::Cauchy
                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, std::optional<NumericalReductions> reductions)
         : _data(std::make_shared<Data>(std::move(geometry), std::move(equation), context, std::move(workers)))
     {
-        if (reductions) _data->reductions = *reductions;
+        if (reductions)
+            _data->reductions = *reductions;
     }
 
     void StateDiagnostics::PrepareBounds() const
     {
 #ifdef DNDS_USE_CUDA
-        if (_data->context.device == R::Device::Host()) return;
+        if (_data->context.device == R::Device::Host())
+            return;
         const index width = 2 * index(_data->equation.Schema().LogicalComponents().size());
-            if (!_data->boundsPartial)
-            {
-                _data->boundsPartial.emplace(R::RowLayout::Dense(CUDA::StateDiagnosticScratchRows(_data->metrics.NumCell()), width), _data->context.device);
-                _data->boundsResult.emplace(R::RowLayout::Dense(1, width), _data->context.device);
-                _data->boundsMaximum = _data->reductions.Bind(*_data->boundsResult, *_data->boundsResult, R::Reduction::Max);
-                _data->boundsPartial->SetName("diagnostics/stateBoundsPartials", DNDS_ALLOCATION_SITE());
-                _data->boundsResult->SetName("diagnostics/stateBoundsResult", DNDS_ALLOCATION_SITE());
-            }
+        if (!_data->boundsPartial)
+        {
+            _data->boundsPartial.emplace(R::RowLayout::Dense(CUDA::StateDiagnosticScratchRows(_data->metrics.NumCell()), width), _data->context.device);
+            _data->boundsResult.emplace(R::RowLayout::Dense(1, width), _data->context.device);
+            _data->boundsMaximum = _data->reductions.Bind(*_data->boundsResult, *_data->boundsResult, R::Reduction::Max);
+            _data->boundsPartial->SetName("diagnostics/stateBoundsPartials", DNDS_ALLOCATION_SITE());
+            _data->boundsResult->SetName("diagnostics/stateBoundsResult", DNDS_ALLOCATION_SITE());
+        }
 #endif
     }
     std::vector<real> StateDiagnostics::MeasureBounds(R::EagerEngine &engine, const R::ExecutionStream &stream,
@@ -165,7 +167,7 @@ namespace DNDS::Cauchy
         residual.CoupledField();
         R::SubmitArrayBatch(engine, stream, [retained, geometry, means, rhs](auto context, auto input, auto, auto partial, auto result, auto completed)
                             { CUDA::AccumulateStateDiagnostics(context, Table(input[means.firstSlot]), Table(input[rhs.firstSlot]),
-                                                               geometry->View().cells, retained->equation.IsACM() ? std::nullopt : std::optional{retained->equation.Gas()}, partial, result, completed); }, std::move(inputs), Outputs{}, std::make_tuple(R::WriteAs<R::FixedRows<1>>(retained->partial), R::WriteAs<R::FixedRows<1>>(retained->result), R::WriteAs<R::FixedRows<1>>(retained->completed)));
+                                                               geometry->View().cellVolume, retained->equation.IsACM() ? std::nullopt : std::optional{retained->equation.Gas()}, partial, result, completed); }, std::move(inputs), Outputs{}, std::make_tuple(R::WriteAs<R::FixedRows<1>>(retained->partial), R::WriteAs<R::FixedRows<1>>(retained->result), R::WriteAs<R::FixedRows<1>>(retained->completed)));
         engine.Synchronize();
         const auto host = retained->result.To(R::Device::Host(), stream.Context());
         const auto read = host.Read();

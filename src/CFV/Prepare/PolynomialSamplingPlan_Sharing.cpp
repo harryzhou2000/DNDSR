@@ -55,13 +55,14 @@ namespace DNDS::CFV
         DNDS_check_throw_info(derivatives - 1 <= _maximumDerivative, "sampling derivative restriction cannot widen the original contract");
         auto result = *this;
         result._maximumDerivative = derivatives - 1;
-        if (_cachedDerivatives >= derivatives && (_points.RowCount() || _moments.RowCount() || _cellGeometry.RowCount()))
+        if (_cachedDerivatives >= derivatives && (_points.RowCount() || _moments.RowCount() || _cellCent.RowCount() || _cellScale.RowCount()))
         {
             // These are metadata-only empty arrays on the same backend. Basis
             // and maps retain their original allocations; no payload is copied.
             result._points = R::Array<real>(R::RowLayout::Dense(0, 3), Device());
             result._moments = R::Array<real>(R::RowLayout::Dense(0, 0), Device());
-            result._cellGeometry = R::Array<real>(R::RowLayout::Dense(0, 8), Device());
+            result._cellCent = R::Array<real>(R::RowLayout::Dense(0, 3), Device());
+            result._cellScale = R::Array<real>(R::RowLayout::Dense(0, 1), Device());
         }
         result.NameOwnedBuffers();
         result.FreezeBasis();

@@ -93,7 +93,7 @@ namespace DNDS::CFV
         Geom::EntitySpace _cellSpace;
         Algebra::DofSpace _space;
         Runtime::Array<index> _cells, _basisRows, _outputRows;
-        Runtime::Array<real> _points, _basis, _moments, _cellGeometry, _empty;
+        Runtime::Array<real> _points, _basis, _moments, _cellCent, _cellScale, _empty;
         int _dimension = 0, _degree = 0, _modes = 0, _cachedDerivatives = 0;
         bool _needsGhost = false;
         bool _ownsBasis = true, _basisFrozen = false;
@@ -112,7 +112,7 @@ namespace DNDS::CFV
                 return version == array.Version() && shapeVersion == array.ShapeVersion() && mutationEpoch == array.MutationEpoch();
             }
         };
-        FrozenArrayState _basisState, _momentsState, _cellGeometryState;
+        FrozenArrayState _basisState, _momentsState, _cellCentState, _cellScaleState;
         index _outputSize = -1;
         std::string _name = "CFV/quadrature/arbitrary";
         struct SharedBasisInput
@@ -182,7 +182,8 @@ namespace DNDS::CFV
         /// Read operands for consumers aggregating cell-major quadrature on site.
         /// The caller retains ordered leases and checks plan provenance with Validate().
         const Runtime::Array<real> &MomentStorage() const { return _moments; }
-        const Runtime::Array<real> &CellGeometryStorage() const { return _cellGeometry; }
+        const Runtime::Array<real> &CellCenterStorage() const { return _cellCent; }
+        const Runtime::Array<real> &CellScaleStorage() const { return _cellScale; }
         Math::TaylorBasisParameters BasisParameters() const { return Math::TaylorBasis(_dimension, _degree).KernelParameters(); }
         int CachedDerivativeNumber() const { return _cachedDerivatives; }
         /// Checks geometry/order generations and frozen basis/normalization provenance before

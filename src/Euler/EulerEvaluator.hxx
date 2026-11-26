@@ -1489,7 +1489,7 @@ namespace DNDS::Euler
                     state(Isp + k) *= scale;
                 speciesClipped = true;
             }
-            if (speciesClipped)
+            if (speciesClipped && !reactiveSpeciesOnly)
             {
                 real rhoEBaseAfterClip = phys_.mixtureBaseInternalRhoERaw(state);
                 state(I4) += rhoEBaseAfterClip - rhoEBaseBeforeClip;
@@ -2111,9 +2111,10 @@ namespace DNDS::Euler
                 real heatRelease = 0;
                 for (int k = 0; k < Ns; ++k)
                 {
-                    real massRate = omega[static_cast<size_t>(k)] * chem.molecularWeights()[static_cast<size_t>(k)];
+                    real massRate = omega[static_cast<size_t>(k)] * chem.molecularWeights()[static_cast<size_t>(k)] * settings.reactiveSourceScale;
+                    real internalEnergy = enthalpy[static_cast<size_t>(k)] - chem.speciesGasConstants()[static_cast<size_t>(k)] * T;
                     speciesRateSquared += sqr(massRate / rhoPhysical);
-                    heatRelease -= massRate * enthalpy[static_cast<size_t>(k)];
+                    heatRelease -= massRate * internalEnergy;
                 }
                 real cv = chem.mixtureCv(T, Y, p);
                 real temperatureRateScale = std::abs(heatRelease) /

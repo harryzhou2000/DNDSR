@@ -11,7 +11,7 @@
 namespace DNDS::Cauchy::CUDA
 {
     using JacobianStatus = Runtime::ArrayView<NumericalStatus, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>>;
-    using JacobianCellMetrics = Runtime::ArrayView<const real, false, Runtime::FixedRows<8>>;
+    using JacobianCellMetrics = Runtime::ArrayView<const real, false, Runtime::FixedRows<1>>;
 
     /** @brief Freeze owned/ghost means and their conservative pressure rows.
      * @details Combined AoS perfect gas, widths 5/6/7. No repair or clipping is

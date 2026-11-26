@@ -68,7 +68,7 @@ namespace DNDS::Cauchy
         if (ransFirst >= 0)
         {
             wallRead.emplace(owner->wallDistance->AcquireRead());
-            lengthRead.emplace(owner->ransCellLength.Read());
+            lengthRead.emplace(owner->metrics.CellMaxLenScale().Read());
         }
         const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
         const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>() : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
@@ -172,7 +172,8 @@ namespace DNDS::Cauchy
                 return basisReads.back().View<R::UniformTableRows>();
             };
             request.basis = {bind(sourceSampling->PointStorage()), bind(sourceSampling->BasisStorage()),
-                             bind(sourceSampling->MomentStorage()), bind(sourceSampling->CellGeometryStorage()),
+                             bind(sourceSampling->MomentStorage()), bind(sourceSampling->CellCenterStorage()),
+                             bind(sourceSampling->CellScaleStorage()),
                              sourceSampling->BasisParameters(), sourceSampling->CachedDerivativeNumber()};
             request.coefficients = {coefficientViews.data(), index(coefficientViews.size())};
         }
@@ -184,7 +185,7 @@ namespace DNDS::Cauchy
         const auto weights = weightRead.View<R::FixedRows<1>>();
         std::optional<R::Array<real>::ReadLease> lengthRead;
         if (ransFirst >= 0)
-            lengthRead.emplace(owner->ransCellLength.Read());
+            lengthRead.emplace(owner->metrics.CellMaxLenScale().Read());
         const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>() : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
         std::optional<EquationDofs::WriteScope> output;
         if (result)

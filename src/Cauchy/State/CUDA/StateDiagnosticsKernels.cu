@@ -11,7 +11,7 @@ namespace DNDS::Cauchy::CUDA
     namespace
     {
         constexpr int Threads = 128;
-        using Cells = R::ArrayView<const real, false, R::FixedRows<8>>;
+        using Cells = R::ArrayView<const real, false, R::FixedRows<1>>;
         template <int Components>
         struct StateBounds
         {

@@ -9,7 +9,7 @@ namespace DNDS::Cauchy::CUDA
     namespace R = Runtime;
     void RHSGeometry::ValidateDevice(R::Device device) const
     {
-        R::ValidateViewDevices(device, stencil, faceOffsets, cells, quadrature);
+        R::ValidateViewDevices(device, stencil, faceOffsets, cellCent, cellBary, quadrature);
         if (acm.RowCount())
             R::ValidateViewDevices(device, acm, acmBC);
         else
@@ -34,7 +34,8 @@ namespace DNDS::Cauchy::CUDA
             multiprocessors = properties.multiProcessorCount;
 #endif
             DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA && host.stencil.jacobianOffsets.RowCount() > 0 &&
-                                      host.stencil.jacobianOffsets.RowCount() - 1 <= host.cells.RowCount(),
+                                      host.stencil.jacobianOffsets.RowCount() - 1 <= host.cellCent.RowCount() &&
+                                      host.cellBary.RowCount() == host.cellCent.RowCount(),
                                   "invalid CUDA RHS geometry publication");
             R::Array<RHSGeometry> staging(R::RowLayout::Dense(1, 1));
             {

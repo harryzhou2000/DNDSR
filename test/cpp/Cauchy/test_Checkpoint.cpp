@@ -571,7 +571,16 @@ TEST_CASE("Mixture BDF2 restart restores species history and warm reconstruction
 }
 TEST_CASE("Physical Strang source composes with transport and preserves retry and restart history semantics")
 {
-    for (const std::string method : {"ssprk3", "esdirk2", "bdf2"})
+    {
+        auto bdf2Settings = MixtureSettings();
+        bdf2Settings.equation.source = "chemical";
+        C::TimeSettings bdf2Time;
+        bdf2Time.method = "bdf2";
+        bdf2Time.sourceSplitting = "strang";
+        const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+        CHECK_THROWS(C::Domain("mixture", mesh, bdf2Settings, bdf2Time));
+    }
+    for (const std::string method : {"ssprk3", "esdirk2", "bdf1"})
     {
         CAPTURE(method);
         auto settings = MixtureSettings();
@@ -591,10 +600,6 @@ TEST_CASE("Physical Strang source composes with transport and preserves retry an
         transportSettings.equation.source = "none";
         auto transportTime = time;
         transportTime.sourceSplitting = "coupled";
-        // Euler resets BDF history around each source jump: its BDF2
-        // transport takes the startup BDF1 equation on every split step.
-        if (method == "bdf2")
-            transportTime.method = "bdf1";
         C::Domain reference("mixture", mesh, transportSettings, transportTime);
         InitializeMixtureWave(reference);
         auto firstStep = source.Dofs().Clone();

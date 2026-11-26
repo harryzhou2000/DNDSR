@@ -71,7 +71,7 @@ namespace DNDS::Cauchy::CUDA
      * acceptance/retry remains a separate controller operation.
      */
     void LimitPhysicalStepRows(Runtime::ExecutionContext, PPInput means, PPInput rhs,
-                               Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells,
+                               Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cells,
                                ThermalView thermal, real dt, real relax, real scale, int compressionPower,
                                PPScalarOutput alpha, PPStatus status);
 }

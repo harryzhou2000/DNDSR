@@ -14,8 +14,9 @@ namespace DNDS::Cauchy::EquationFVDetail
     struct PointScratch
     {
         std::vector<real> values;
+        std::vector<real> viscousValues;
         Eigen::Matrix<real, Eigen::Dynamic, 3, Eigen::RowMajor> gradient;
-        explicit PointScratch(index width) : values(size_t(width)), gradient(width, 3) { gradient.setZero(); }
+        explicit PointScratch(index width) : values(size_t(width)), viscousValues(size_t(width)), gradient(width, 3) { gradient.setZero(); }
         FlowState Flow(index first) const
         {
             FlowState result{};
@@ -91,18 +92,27 @@ namespace DNDS::Cauchy::EquationFVDetail
         if (clearGradient)
             point.gradient.setZero();
     }
-    inline void RotatePoint(PointScratch &point, const Geom::tGPoint &rotation, SpanView<const index> vectorStarts)
+    inline void RotatePoint(PointScratch &point, const Geom::tGPoint &rotation, SpanView<const index> vectorStarts, bool rotateViscous = false, bool rotateGradient = true)
     {
         // Scalar gradients rotate once, vector gradients on both indices.
-        for (index j = 0; j < index(point.values.size()); ++j)
-            point.gradient.row(j) = (point.gradient.row(j) * rotation.transpose()).eval();
+        if (rotateGradient)
+            for (index j = 0; j < index(point.values.size()); ++j)
+                point.gradient.row(j) = (point.gradient.row(j) * rotation.transpose()).eval();
         for (const auto first : vectorStarts)
         {
             const Geom::tPoint value{point.values[first], point.values[first + 1], point.values[first + 2]};
             const Geom::tPoint rotated = rotation * value;
             for (int d = 0; d < 3; ++d)
                 point.values[first + d] = rotated[d];
-            point.gradient.middleRows(first, 3) = (rotation * point.gradient.middleRows(first, 3)).eval();
+            if (rotateViscous)
+            {
+                const Geom::tPoint vValue{point.viscousValues[first], point.viscousValues[first + 1], point.viscousValues[first + 2]};
+                const Geom::tPoint vRotated = rotation * vValue;
+                for (int d = 0; d < 3; ++d)
+                    point.viscousValues[first + d] = vRotated[d];
+            }
+            if (rotateGradient)
+                point.gradient.middleRows(first, 3) = (rotation * point.gradient.middleRows(first, 3)).eval();
         }
     }
     /// cellLength is explicit: source consumers require the prepared mesh

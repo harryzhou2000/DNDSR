@@ -879,7 +879,9 @@ namespace DNDS::Euler::Gas
                 q = 1;
             return q;
         };
-        real pS = 0.5 * (rp.pLm + rp.pRm) - 0.5 * (veloLm0 - veloRm0) * rp.rhoRoe * rp.aRoe;
+        real veloL0 = (veloL - vg).dot(n);
+        real veloR0 = (veloR - vg).dot(n);
+        real pS = 0.5 * (rp.pLm + rp.pRm) + 0.5 * (veloLm0 - veloRm0) * rp.rhoRoe * rp.aRoe;
         pS = std::max(0.0, pS);
         real SL = veloLm0 - std::sqrt(rp.asqrLm) * HLLCq(gammaEqLmUse, rp.pLm, pS);
         real SR = veloRm0 + std::sqrt(rp.asqrRm) * HLLCq(gammaEqRmUse, rp.pRm, pS);
@@ -902,17 +904,16 @@ namespace DNDS::Euler::Gas
             return;
         }
         real SS = 0;
-        real div = (UL(0) * (SL - veloLm0) - UR(0) * (SR - veloRm0));
+        real div = (UL(0) * (SL - veloL0) - UR(0) * (SR - veloR0));
         if (std::abs(div) > verySmallReal)
             SS = (pR - pL +
-                  (UL(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)).dot(n) - vgN * UL(0)) * (SL - veloLm0) -
-                  (UR(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)).dot(n) - vgN * UR(0)) * (SR - veloRm0)) /
+                  UL(0) * veloL0 * (SL - veloL0) -
+                  UR(0) * veloR0 * (SR - veloR0)) /
                  div;
-        //! is this right for moving mesh?
         Eigen::Vector<real, dim + 2> DS;
         DS.setZero();
         DS(Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>)) = n;
-        DS(dim + 1) = SS;
+        DS(dim + 1) = SS + vgN;
         // SS += sign(SS) * std::exp(-std::abs(SS) / dLambda) * dLambda;
         if (SS >= 0)
         {
@@ -922,7 +923,7 @@ namespace DNDS::Euler::Gas
             else
                 F(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) =
                     ((UL(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) * SL - FL) * SS +
-                     DS * ((pL + UL(0) * (SL - veloLm0) * (SS - veloLm0)) * SL)) /
+                     DS * ((pL + UL(0) * (SL - veloL0) * (SS - veloL0)) * SL)) /
                     div;
         }
         else
@@ -933,7 +934,7 @@ namespace DNDS::Euler::Gas
             else
                 F(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) =
                     ((UR(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim + 1>)) * SR - FR) * SS +
-                     DS * ((pR + UR(0) * (SR - veloRm0) * (SS - veloRm0)) * SR)) /
+                     DS * ((pR + UR(0) * (SR - veloR0) * (SS - veloR0)) * SR)) /
                     div;
         }
     }

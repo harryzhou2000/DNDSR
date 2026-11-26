@@ -107,7 +107,7 @@ namespace DNDS::Cauchy
         };
 #ifdef DNDS_USE_CUDA
         auto device = [geometry = !onHost ? std::move(geometry) : std::shared_ptr<CFV::FiniteVolumeRead>{}, u, r, b, y, selection, accumulation, inverseDt, rhsScale, normOrder, measureNorm](auto context, auto input, auto output, auto scratch, auto summary)
-        { CUDA::AssembleDefect(context, geometry->View().cells, Table(input[u.firstSlot]), Table(input[r.firstSlot]), Table(input[b.firstSlot]),
+        { CUDA::AssembleDefect(context, geometry->View().cellVolume, Table(input[u.firstSlot]), Table(input[r.firstSlot]), Table(input[b.firstSlot]),
                                Table(output[y.firstSlot]), DeviceSelection(selection), inverseDt, rhsScale, normOrder, measureNorm, scratch, summary,
                                accumulation); };
 #else
@@ -141,7 +141,7 @@ namespace DNDS::Cauchy
         };
 #ifdef DNDS_USE_CUDA
         auto device = [geometry = !onHost ? std::move(geometry) : std::shared_ptr<CFV::FiniteVolumeRead>{}, pressure](auto context, auto input, auto, auto scratch, auto summary)
-        { CUDA::PressureGaugeSum(context, geometry->View().cells, Table(input[pressure.firstSlot]), scratch, summary); };
+        { CUDA::PressureGaugeSum(context, geometry->View().cellVolume, Table(input[pressure.firstSlot]), scratch, summary); };
 #else
         Unavailable device;
 #endif
@@ -200,7 +200,7 @@ namespace DNDS::Cauchy
         };
 #ifdef DNDS_USE_CUDA
         auto device = [geometry = !onHost ? std::move(geometry) : std::shared_ptr<CFV::FiniteVolumeRead>{}, u](auto context, auto input, auto, auto scratch, auto summary)
-        { CUDA::MeasureMeanState(context, geometry->View().cells, Table(input[u.firstSlot]), scratch, summary); };
+        { CUDA::MeasureMeanState(context, geometry->View().cellVolume, Table(input[u.firstSlot]), scratch, summary); };
 #else
         Unavailable device;
 #endif
@@ -248,7 +248,7 @@ namespace DNDS::Cauchy
         };
 #ifdef DNDS_USE_CUDA
         auto device = [geometry = !onHost ? std::move(geometry) : std::shared_ptr<CFV::FiniteVolumeRead>{}, u, ref, raw, normOrder](auto context, auto input, auto, auto scratch, auto summary)
-        { CUDA::MeasureRateNorm(context, geometry->View().cells, Table(input[u.firstSlot]),
+        { CUDA::MeasureRateNorm(context, geometry->View().cellVolume, Table(input[u.firstSlot]),
                                 ref ? Table(input[ref->firstSlot]) : CUDA::LinearReadRows{}, normOrder, scratch, summary,
                                 raw ? Table(input[raw->firstSlot]) : CUDA::LinearReadRows{}); };
 #else
@@ -279,7 +279,7 @@ namespace DNDS::Cauchy
             else
             {
 #ifdef DNDS_USE_CUDA
-                CUDA::ScaleRateByVolume(context, geometry->View().cells, Table(input[x.firstSlot]), Table(output[y.firstSlot]), multiply);
+                CUDA::ScaleRateByVolume(context, geometry->View().cellVolume, Table(input[x.firstSlot]), Table(output[y.firstSlot]), multiply);
 #else
                 Unavailable{}();
 #endif
@@ -327,7 +327,7 @@ namespace DNDS::Cauchy
             else
             {
 #ifdef DNDS_USE_CUDA
-                CUDA::AssembleEquation(context, geometry->View().cells, Table(input[u.firstSlot]), Table(input[r.firstSlot]),
+                CUDA::AssembleEquation(context, geometry->View().cellVolume, Table(input[u.firstSlot]), Table(input[r.firstSlot]),
                     Table(output[y.firstSlot]), rateBinding ? Table(output[rateBinding->firstSlot]) : CUDA::LinearWriteRows{}, inverseDt, rhsScale,
                     accumulation);
 #else

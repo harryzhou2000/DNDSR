@@ -20,7 +20,8 @@ namespace DNDS::CFV
           _cellSpace(metrics.Cells()), _space(metrics.Space()),
           _basisRows(R::RowLayout::Dense(0, 1)), _outputRows(R::RowLayout::Dense(0, 1)),
           _points(R::RowLayout::Dense(0, 3)), _basis(R::RowLayout::Dense(0, 0)),
-          _moments(R::RowLayout::Dense(0, 0)), _cellGeometry(R::RowLayout::Dense(0, 8)), _empty(R::RowLayout::Dense(0, 0)),
+          _moments(R::RowLayout::Dense(0, 0)), _cellCent(R::RowLayout::Dense(0, 3)),
+          _cellScale(R::RowLayout::Dense(0, 1)), _empty(R::RowLayout::Dense(0, 0)),
           _dimension(metrics.Dimension()), _degree(reconstruction.Settings().maxOrder),
           _modes(reconstruction.NRecDOF()), _maximumDerivative(cacheDerivatives ? _modes : 0)
     {
@@ -31,7 +32,8 @@ namespace DNDS::CFV
         auto geometry = metrics.AcquireRead(metrics.Device() == R::Device::Host() ? R::ExecutionContext::Host() : sourceContext);
         const auto &sourceMoments = reconstruction.SamplingMoments();
         const auto hostMoments = sourceMoments.GetDevice() == R::Device::Host() ? sourceMoments : sourceMoments.To(R::Device::Host(), sourceContext);
-        const auto hostCells = metrics.Device() == R::Device::Host() ? metrics._data->cell : metrics._data->cell.To(R::Device::Host(), sourceContext);
+        const auto hostCent = metrics.Device() == R::Device::Host() ? metrics._data->cellCent : metrics._data->cellCent.To(R::Device::Host(), sourceContext);
+        const auto hostScale = metrics.Device() == R::Device::Host() ? metrics._data->cellScale : metrics._data->cellScale.To(R::Device::Host(), sourceContext);
         Validate();
         DNDS_check_throw_info(cells.GetDevice() == R::Device::Host() && points.GetDevice() == R::Device::Host() &&
                                   cells.Layout().Kind() == R::RowLayoutKind::Table && cells.Layout().Width() == 1 &&
@@ -81,7 +83,8 @@ namespace DNDS::CFV
         {
             _points = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), 3));
             _moments = hostMoments;
-            _cellGeometry = hostCells;
+            _cellCent = hostCent;
+            _cellScale = hostScale;
         }
         const auto cellRead = cells.Read();
         const auto pointRead = points.Read();
@@ -102,9 +105,11 @@ namespace DNDS::CFV
             const auto cached = basisWrite ? basisWrite->View<R::TableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::TableRows>{};
             const auto momentRead = hostMoments.Read();
             const auto moments = momentRead.View<R::TableRows>();
-            const auto cellReadGeometry = hostCells.Read();
+            const auto centReadGeometry = hostCent.Read();
+            const auto scaleReadGeometry = hostScale.Read();
             FiniteVolumeHostView geom;
-            geom.cells = cellReadGeometry.View<R::FixedRows<8>, false>();
+            geom.cellCent = centReadGeometry.View<R::FixedRows<3>, false>();
+            geom.cellScale = scaleReadGeometry.View<R::FixedRows<1>, false>();
             OMP::ForSetupRows(0, ids.RowCount(), [&](index iPoint)
                               {
             const index iCell = ids(iPoint, 0);
@@ -119,7 +124,7 @@ namespace DNDS::CFV
             if (_cachedDerivatives && _ownsBasis)
             {
                 Math::SmallMatrix full;
-                polynomial.Reconstruction(full, point, geom.GetCellCent(iCell), geom.cells(iCell, 7), moments[iCell], cacheOrder);
+                polynomial.Reconstruction(full, point, geom.GetCellCent(iCell), geom.GetCellScale(iCell), moments[iCell], cacheOrder);
                 Eigen::Map<Eigen::MatrixXd>(cached[iPoint].data(), _cachedDerivatives, _modes) = full;
             } });
         }
@@ -132,14 +137,15 @@ namespace DNDS::CFV
         _cellSpace.Validate();
         if (_basisFrozen)
             DNDS_check_throw_info(_basisState.Matches(_basis) && _momentsState.Matches(_moments) &&
-                                      _cellGeometryState.Matches(_cellGeometry),
+                                      _cellCentState.Matches(_cellCent) && _cellScaleState.Matches(_cellScale),
                                   "immutable sampling basis or normalization was mutated through an alias; rebuild the publication");
     }
     void PolynomialSamplingPlan::FreezeBasis()
     {
         _basisState.Capture(_basis);
         _momentsState.Capture(_moments);
-        _cellGeometryState.Capture(_cellGeometry);
+        _cellCentState.Capture(_cellCent);
+        _cellScaleState.Capture(_cellScale);
         _basisFrozen = true;
     }
     void PolynomialSamplingPlan::ValidateField(const FVField &field, index width) const
@@ -164,7 +170,8 @@ namespace DNDS::CFV
         result._points = memo.Place(_points);
         result._basis = memo.Place(_basis);
         result._moments = memo.Place(_moments);
-        result._cellGeometry = memo.Place(_cellGeometry);
+        result._cellCent = memo.Place(_cellCent);
+        result._cellScale = memo.Place(_cellScale);
         result._empty = memo.Place(_empty);
         result.NameOwnedBuffers();
         result.FreezeBasis();

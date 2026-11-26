@@ -28,11 +28,12 @@ namespace DNDS::Cauchy::CPU
         index localFallbacks = 0;
         const auto metric = request.metric;
         const bool acm = Model == EquationPhysicsProfile::Generic ? equation.IsACM() : IsACMProfile(Model);
-        const auto gatherMean = [&](index iCell, PointScratch &point)
+        const auto gatherMean = [&](index iCell, PointScratch &point, bool clearGradient = true)
         {
             for (index j = 0; j < owned.ComponentNumber(); ++j)
                 point.values[j] = iCell < owned.RowCount() ? owned(iCell, j) : remote(iCell - owned.RowCount(), j);
-            point.gradient.setZero();
+            if (clearGradient)
+                point.gradient.setZero();
         };
         const int modes = M < 0 ? request.modes : M;
         const int dim = D < 0 ? request.dimension : D;
@@ -49,7 +50,7 @@ namespace DNDS::Cauchy::CPU
         const bool preparedPressureMinimum = request.preparedPressureMinimum;
         if ((useWaveJump && !preparedWaveJump) || (usePressureBounds && !preparedPressureMinimum) ||
             (fluxPolicy.UsesDESDissipation() && (request.centerViscosity.values.Width() != 2 ||
-                                                 request.centerViscosity.values.RowCount() != request.metric.cells.RowCount())))
+                                                 request.centerViscosity.values.RowCount() != request.metric.NumCellProc())))
             return NumericalStatus{NumericalError::InvalidInput};
         const int species = request.species;
         const int independent = std::max(0, species - 1);
@@ -88,6 +89,12 @@ namespace DNDS::Cauchy::CPU
                 FluxTable<fieldWidth>(field.owned), FluxTable<fieldWidth>(field.ghost)};
         };
         const auto coefficients = bindCoefficients(false), viscousCoefficients = bindCoefficients(true);
+        const bool distinctViscous = viscous && !request.primitiveGradient &&
+                                     (Form == ReconstructionForm::DirectGradient
+                                          ? !request.directViscousViews.empty()
+                                      : Form == ReconstructionForm::Modal
+                                          ? !request.viscousRecBlocks.empty()
+                                          : (request.direct ? !request.directViscousViews.empty() : !request.viscousRecBlocks.empty()));
         const auto primitiveGradients = [&]
         {
             if constexpr (C > 0)
@@ -99,6 +106,8 @@ namespace DNDS::Cauchy::CPU
         const auto reconstruct = [&](index iCell, const FiniteVolumeDetail::SampleValue &sample, int side, PointScratch &point)
         {
             gatherMean(iCell, point);
+            if (distinctViscous)
+                point.viscousValues = point.values;
             // P0 uses mean states and only the normal face jump for
             // viscosity. This does not suppress volume-source gradients:
             // RANS/chemistry sampling retains the configured derivatives.
@@ -110,6 +119,8 @@ namespace DNDS::Cauchy::CPU
                     for (int d = 0; d < D; ++d)
                     {
                         point.values[j] += gradient[j * D + d] * dx[d];
+                        if (distinctViscous)
+                            point.viscousValues[j] += viscousGradient[j * D + d] * dx[d];
                         if (viscous)
                             point.gradient(j, d) = viscousGradient[j * D + d];
                     }
@@ -122,6 +133,8 @@ namespace DNDS::Cauchy::CPU
                     for (int mode = 0; mode < M; ++mode)
                     {
                         point.values[j] += modes[j * M + mode] * basis(0, mode);
+                        if (distinctViscous)
+                            point.viscousValues[j] += viscousModes[j * M + mode] * basis(0, mode);
                         if (viscous)
                             for (int d = 0; d < D; ++d)
                                 point.gradient(j, d) += viscousModes[j * M + mode] * basis(1 + d, mode);
@@ -142,9 +155,12 @@ namespace DNDS::Cauchy::CPU
                                 for (int d = 0; d < dim; ++d)
                                 {
                                     const real value = row[(location.firstComponent + j) * dim + d];
-                                    point.values[request.logicalFirst[iBlock] + j] += value * displacement[d];
+                                    const index logical = request.logicalFirst[iBlock] + j;
+                                    point.values[logical] += value * displacement[d];
+                                    if (distinctViscous)
+                                        point.viscousValues[logical] += viscousRow[(location.firstComponent + j) * dim + d] * displacement[d];
                                     if (viscous)
-                                        point.gradient(request.logicalFirst[iBlock] + j, d) = viscousRow[(location.firstComponent + j) * dim + d];
+                                        point.gradient(logical, d) = viscousRow[(location.firstComponent + j) * dim + d];
                                 }
                         }
                     }
@@ -161,6 +177,8 @@ namespace DNDS::Cauchy::CPU
                                     const real value = row[j * modes + mode];
                                     const index logical = request.logicalFirst[iBlock] + j;
                                     point.values[logical] += value * basis(0, mode);
+                                    if (distinctViscous)
+                                        point.viscousValues[logical] += viscousRow[j * modes + mode] * basis(0, mode);
                                     if (viscous)
                                         for (int d = 0; d < dim; ++d)
                                             point.gradient(logical, d) += viscousRow[j * modes + mode] * basis(1 + d, mode);
@@ -198,7 +216,7 @@ namespace DNDS::Cauchy::CPU
             if ((request.faceFallback || request.positivity) && !pointAdmissible)
             {
                 ++localFallbacks;
-                gatherMean(iCell, point);
+                gatherMean(iCell, point, false);
             }
         };
         const bool allowPointFallback = request.faceFallback ||
@@ -222,14 +240,14 @@ namespace DNDS::Cauchy::CPU
                 // Only an explicit thermodynamic status enables this fallback;
                 // invalid requests/resource/backend failures are propagated.
                 ++localFallbacks;
-                gatherMean(iCell, point);
+                gatherMean(iCell, point, false);
                 // The mean is stored in its cell frame, whereas the flux
                 // consumes both states in the anchor face frame. Restore the
                 // same vector-component transform used by reconstruction.
                 // Use the explicit side flag: periodic self-neighbors can
                 // have the same local cell index on both sides.
                 if (neighborFrame && sample.changesFrame)
-                    RotatePoint(point, sample.rotation, request.vectorStarts);
+                    RotatePoint(point, sample.rotation, request.vectorStarts, false, false);
                 flow = point.Flow(request.flowFirst);
                 status = evaluate();
             }
@@ -261,7 +279,7 @@ namespace DNDS::Cauchy::CPU
                 {
                     reconstruct(sample.other, sample, 1 - sample.side, right);
                     if (sample.changesFrame)
-                        RotatePoint(right, sample.rotation, request.vectorStarts);
+                        RotatePoint(right, sample.rotation, request.vectorStarts, distinctViscous);
                 }
                 else
                 {
@@ -285,6 +303,8 @@ namespace DNDS::Cauchy::CPU
                             !status)
                             return status;
                     }
+                    if (distinctViscous)
+                        right.viscousValues = right.values;
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
                     if (!acm && ransModel && ransModel->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
                     {
@@ -292,8 +312,10 @@ namespace DNDS::Cauchy::CPU
                         // Compressible Euler retains ULxyUnlim before its BC zeros the
                         // convective SA pair. Preserve that interior value
                         // for the viscous jump without mutating cell means.
-                        wallSAViscousInterior = left.values[request.ransFirst];
+                        wallSAViscousInterior = distinctViscous ? left.viscousValues[request.ransFirst] : left.values[request.ransFirst];
                         left.values[request.ransFirst] = right.values[request.ransFirst] = 0;
+                        if (distinctViscous)
+                            left.viscousValues[request.ransFirst] = right.viscousValues[request.ransFirst] = 0;
                     }
 #endif
                 }
@@ -307,12 +329,14 @@ namespace DNDS::Cauchy::CPU
                     // interior gradient would otherwise leak shear and RANS diffusion.
                     if (viscous && boundaryKind != BoundaryKind::SlipWall)
                     {
+                        const auto &vLeft = distinctViscous ? left.viscousValues : left.values;
+                        const auto &vRight = distinctViscous ? right.viscousValues : right.values;
                         for (int j = 0; j < width; ++j)
                         {
                             face.values[j] = .5 * (left.values[j] + right.values[j]);
                             for (int d = 0; d < 3; ++d)
                                 face.gradient(j, d) = .5 * (left.gradient(j, d) + right.gradient(j, d)) +
-                                                      sample.normal[d] * (right.values[j] - left.values[j]) / sample.viscousDistance;
+                                                      sample.normal[d] * (vRight[j] - vLeft[j]) / sample.viscousDistance;
                         }
                         real mu = params.kinematicViscosity;
                         if (ransModel)
@@ -489,7 +513,8 @@ namespace DNDS::Cauchy::CPU
                 }
                 // Cauchy omits the former isotropic 2*rho*k/3 momentum flux and energy work.
                 const bool wall = !internal && boundaryKind == BoundaryKind::NoSlipWall;
-                if (viscous && (internal || wall))
+                const bool interfaceFace = !internal && boundaryKind == BoundaryKind::Interface;
+                if (viscous && (internal || wall || interfaceFace))
                 {
                     if (request.primitiveGradient)
                     {
@@ -574,12 +599,14 @@ namespace DNDS::Cauchy::CPU
                     else
                     {
                         const real inverseDistance = wall && noGRPOnWall ? 0 : 1 / sample.viscousDistance;
+                        const auto &vLeft = distinctViscous ? left.viscousValues : left.values;
+                        const auto &vRight = distinctViscous ? right.viscousValues : right.values;
                         for (index j = 0; j < width; ++j)
                         {
                             face.values[j] = .5 * (left.values[j] + right.values[j]);
                             for (int d = 0; d < 3; ++d)
                                 face.gradient(j, d) = .5 * (left.gradient(j, d) + right.gradient(j, d)) +
-                                                      normal[d] * (right.values[j] - left.values[j]) * inverseDistance;
+                                                      normal[d] * (vRight[j] - vLeft[j]) * inverseDistance;
                         }
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
                         if (wallSAViscousInterior != 0)

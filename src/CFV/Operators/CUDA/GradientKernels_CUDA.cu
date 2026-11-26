@@ -102,7 +102,7 @@ namespace DNDS::CFV::Detail
                                   values.input.owned.kind == R::RowLayoutKind::Table && values.input.ghost.kind == R::RowLayoutKind::Table,
                               "CUDA gradient limiter layout/shape mismatch");
         const index components = output.Width() / plan.dimension;
-        DNDS_check_throw_info(components >= 5 && components <= 7 && values.first >= 0 && values.first <= components &&
+        DNDS_check_throw_info(components >= 4 && components <= 7 && values.first >= 0 && values.first <= components &&
                                   values.count >= 0 && values.count <= components - values.first &&
                                   std::isfinite(values.threshold) && std::isfinite(values.centerWeight) && values.centerWeight > 0,
                               "CUDA gradient limiter controls/profile mismatch");
@@ -121,6 +121,9 @@ namespace DNDS::CFV::Detail
             ValidateGradientIndicator<<<unsigned(std::min<index>(256, (values.indicator.RowCount() + 127) / 128)), 128, 0, stream>>>(values.indicator, status);
         switch (components)
         {
+        case 4:
+            LimitRows<4><<<blocks, 128, 0, stream>>>(plan, selection, vectors, values, output, status);
+            break;
         case 5:
             LimitRows<5><<<blocks, 128, 0, stream>>>(plan, selection, vectors, values, output, status);
             break;

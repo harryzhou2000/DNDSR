@@ -91,7 +91,7 @@ namespace DNDS::Cauchy
                         if (prepared.cachedDerivatives)
                         {
                             polynomial.Reconstruction(value, point, metric.GetCellCent(iCell),
-                                                      metric.cells(iCell, 7), moments[iCell], 0);
+                                                      metric.GetCellScale(iCell), moments[iCell], 0);
                             for (int mode = 0; mode < modes; ++mode)
                                 basis(iPoint, mode) = value(0, mode);
                         }

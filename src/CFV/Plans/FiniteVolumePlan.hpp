@@ -50,7 +50,7 @@ namespace DNDS::CFV
         real jacobiRelax = 1., WBAP_nStd = 10.;
         bool SORInstead = false, HQMWeights = false;
         bool coreFirst = false;
-        bool cacheDiffBase = true;
+        bool cacheDiffBase = false;
         int cacheDiffBaseOrder = 1;
         ReconstructionFunctionalSettings functional;
         ReconstructionStorageSettings storage;
@@ -117,30 +117,38 @@ namespace DNDS::CFV
     /// The historical HostView type name is retained for source compatibility.
     struct FiniteVolumeHostView
     {
-        Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cellVolume;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> cellCent;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> cellBary;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cellScale;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cellMaxLenScale;
         Runtime::ArrayView<const index, false, Runtime::FixedRows<1>> faceOffsets;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> quadrature;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> radialMoment;
-        Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> faceMean;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> faceCent;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> faceMeanNorm;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> faceArea;
         FacePeriodicView periodic{};
-        /// Neighbor reference centers represented in parent zero/one frames.
-        Runtime::ArrayView<const real, false, Runtime::FixedRows<6>> neighborCenters{};
         /// Host launcher validation, once before the numerical loop/launch.
         void ValidateDevice(Runtime::Device device) const
         {
-            Runtime::ValidateViewDevices(device, cells, faceOffsets, quadrature, radialMoment, faceMean);
+            Runtime::ValidateViewDevices(device, cellVolume, cellCent, cellBary, cellScale, cellMaxLenScale,
+                                         faceOffsets, quadrature, radialMoment, faceCent, faceMeanNorm, faceArea);
             if (periodic.parameters.RowCount())
-                Runtime::ValidateViewDevices(device, periodic, neighborCenters);
+                Runtime::ValidateViewDevices(device, periodic);
         }
-        DNDS_DEVICE_CALLABLE real GetCellVol(index iCell) const { return cells(iCell, 0); }
+        DNDS_DEVICE_CALLABLE index NumCellProc() const { return cellVolume.RowCount(); }
+        DNDS_DEVICE_CALLABLE real GetCellVol(index iCell) const { return cellVolume(iCell, 0); }
         DNDS_DEVICE_CALLABLE Geom::tPoint GetCellCent(index iCell) const
         {
-            return {cells(iCell, 1), cells(iCell, 2), cells(iCell, 3)};
+            return {cellCent(iCell, 0), cellCent(iCell, 1), cellCent(iCell, 2)};
         }
         DNDS_DEVICE_CALLABLE Geom::tPoint GetCellBary(index iCell) const
         {
-            return {cells(iCell, 4), cells(iCell, 5), cells(iCell, 6)};
+            return {cellBary(iCell, 0), cellBary(iCell, 1), cellBary(iCell, 2)};
         }
+        DNDS_DEVICE_CALLABLE real GetCellScale(index iCell) const { return cellScale(iCell, 0); }
+        DNDS_DEVICE_CALLABLE real GetCellMaxLenScale(index iCell) const { return cellMaxLenScale(iCell, 0); }
         DNDS_DEVICE_CALLABLE index FaceQuadratureBegin(index iFace) const { return faceOffsets(iFace, 0); }
         DNDS_DEVICE_CALLABLE index FaceQuadratureEnd(index iFace) const { return faceOffsets(iFace + 1, 0); }
         DNDS_DEVICE_CALLABLE Geom::tPoint GetFacePoint(index iPoint) const
@@ -155,13 +163,9 @@ namespace DNDS::CFV
         /// Reference-center position, normalized integral(n dS), scalar area.
         /// Geometry is integrated at setup; approximate face operators use one
         /// record regardless of reconstruction/RHS integration degree.
-        DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceCent(index iFace) const { return {faceMean(iFace, 0), faceMean(iFace, 1), faceMean(iFace, 2)}; }
-        DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceMeanNorm(index iFace) const { return {faceMean(iFace, 3), faceMean(iFace, 4), faceMean(iFace, 5)}; }
-        DNDS_DEVICE_CALLABLE real GetFaceArea(index iFace) const { return faceMean(iFace, 6); }
-        DNDS_DEVICE_CALLABLE Geom::tPoint GetNeighborCent(index iFace, int side) const
-        {
-            return {neighborCenters(iFace, 3 * side), neighborCenters(iFace, 3 * side + 1), neighborCenters(iFace, 3 * side + 2)};
-        }
+        DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceCent(index iFace) const { return {faceCent(iFace, 0), faceCent(iFace, 1), faceCent(iFace, 2)}; }
+        DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceMeanNorm(index iFace) const { return {faceMeanNorm(iFace, 0), faceMeanNorm(iFace, 1), faceMeanNorm(iFace, 2)}; }
+        DNDS_DEVICE_CALLABLE real GetFaceArea(index iFace) const { return faceArea(iFace, 0); }
     };
     /** @brief Retain canonical topology without acquiring unrelated metric data.
      * @details Device topology is prepared once during placement. Acquisition
@@ -184,8 +188,8 @@ namespace DNDS::CFV
     {
         std::shared_ptr<const Detail::FiniteVolumeData> _data;
         std::shared_ptr<Geom::MeshReadAccess> _meshRead;
-        Runtime::Array<real>::ReadLease _cells, _quadrature, _radialMoment, _faceMean;
-        Runtime::Array<real>::ReadLease _neighborCenters;
+        Runtime::Array<real>::ReadLease _cellVolume, _cellCent, _cellBary, _cellScale, _cellMaxLenScale;
+        Runtime::Array<real>::ReadLease _quadrature, _radialMoment, _faceCent, _faceMeanNorm, _faceArea;
         Runtime::Array<uint8_t>::ReadLease _periodicCodes;
         Runtime::Array<FacePeriodicParameters>::ReadLease _periodicParameters;
         Runtime::Array<index>::ReadLease _offsets;
@@ -201,13 +205,15 @@ namespace DNDS::CFV
 
     /// Setup-only metric options; frozen into the resulting publication.
     /// Face order zero follows integrationOrder, one uses reference centers and
-    /// integrated mean normals/areas. Axisymmetry weights by radius=y (no 2*pi).
+    /// integrated mean normals/areas. geometryOrder zero uses INT_ORDER_MAX.
+    /// Axisymmetry weights by radius=y (no 2*pi).
     /// collectivePreflight is the caller-resolved optional validation policy;
     /// it never removes routing/numerical protocols or local access checks.
     struct FiniteVolumeMetricOptions
     {
         int integrationOrder = 5;
         int faceIntegrationOrder = 0;
+        int geometryOrder = 0;
         bool axisymmetric = false;
         bool collectivePreflight = true;
         Diagnostics::SetupProgress progress;
@@ -250,16 +256,21 @@ namespace DNDS::CFV
         /// Immutable metric operands for queued execution. Declare the required
         /// arrays with Runtime::ReadAs; keep a mesh-generation guard through
         /// operation completion. A returned handle is not an access grant.
-        const Runtime::Array<real> &CellMetrics() const;
+        const Runtime::Array<real> &CellVolumes() const;
+        const Runtime::Array<real> &CellCenters() const;
+        const Runtime::Array<real> &CellBarycenters() const;
+        const Runtime::Array<real> &CellScales() const;
+        const Runtime::Array<real> &CellMaxLenScale() const;
         /// Owned-cell ratios of smoothed to initial V/sum(face areas), or zero rows for unity.
         const Runtime::Array<real> &CellSmoothScaleFactors() const;
         const Runtime::Array<real> &FaceQuadrature() const;
-        const Runtime::Array<real> &FaceMetrics() const;
+        const Runtime::Array<real> &FaceCenters() const;
+        const Runtime::Array<real> &FaceMeanNormals() const;
+        const Runtime::Array<real> &FaceAreas() const;
         const Runtime::Array<real> &RadialMoments() const;
         const Runtime::Array<index> &FaceOffsets() const;
         const Runtime::Array<uint8_t> &FacePeriodicCodes() const;
         const Runtime::Array<FacePeriodicParameters> &PeriodicParameters() const;
-        const Runtime::Array<real> &NeighborCenters() const;
         /// Explicit setup copy of immutable metrics, independent of VR buffers.
         /// Row-space/halo/mesh identities are shared, but payload arrays belong
         /// only to the returned placement. Release the original host plan when
@@ -299,11 +310,11 @@ namespace DNDS::CFV
         MPI_Comm Communicator() const;
         real GetCellVol(index iCell) const;
         Geom::tPoint GetCellCent(index iCell) const;
-        /// Explicit CPU setup product: one maximum principal-axis cell extent
-        /// for every owned/ghost metric row. Shares GetCellMaxLenScale geometry
-        /// and its degeneracy-aware principal frame (relative gap 1e-8). No MPI or cache
-        /// mutation; the caller owns the returned buffer and must use it with
-        /// this validated metric/mesh generation. Build again after mesh edits.
+        Geom::tPoint GetCellBary(index iCell) const;
+        real GetCellScale(index iCell) const;
+        real GetCellMaxLenScale(index iCell) const;
+        /// Compatibility helper returning a host copy of the cached principal-axis
+        /// maximum cell extents computed once during ConstructMetrics.
         Runtime::Array<real> BuildCellMaxLenScale() const;
     };
 
@@ -498,12 +509,13 @@ namespace DNDS::CFV
     struct ReconstructionPointBasisView
     {
         Runtime::ArrayView<const real, false, Runtime::TableRows> cached, moments;
-        Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> cellCent;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cellScale;
         Math::TaylorBasisParameters polynomial;
         int cachedDerivatives = 0, availableDerivatives = 0;
         void ValidateDevice(Runtime::Device device) const
         {
-            Runtime::ValidateViewDevices(device, cached, moments, cells);
+            Runtime::ValidateViewDevices(device, cached, moments, cellCent, cellScale);
         }
         /// Prepare only when requested derivatives exceed cachedDerivatives.
         /// Fully cached placements need no cell-geometry allocation at all.
@@ -512,7 +524,7 @@ namespace DNDS::CFV
             index iCell, const std::array<real, 3> &point) const noexcept
         {
             return Math::TaylorPointEvaluationT<Scalar>::FromPoint(
-                point, {cells(iCell, 1), cells(iCell, 2), cells(iCell, 3)}, cells(iCell, 7));
+                point, {cellCent(iCell, 0), cellCent(iCell, 1), cellCent(iCell, 2)}, cellScale(iCell, 0));
         }
         /// Reuse this point context across all modes and field components;
         /// cached derivative rows still take precedence over direct evaluation.
@@ -657,7 +669,8 @@ namespace DNDS::CFV
         /// evaluation or arbitraryPointSampling was requested. Copies retain
         /// the same allocations used by RHS point evaluation, without matrices.
         const Runtime::Array<real> &SamplingMoments() const;
-        const Runtime::Array<real> &SamplingCellGeometry() const;
+        const Runtime::Array<real> &SamplingCellCenters() const;
+        const Runtime::Array<real> &SamplingCellScales() const;
         /// Stable field row identity, also available after CPU payload release.
         const Algebra::DofSpace &Space() const;
         bool SupportsKernel(ReconstructionDeviceKernel) const;

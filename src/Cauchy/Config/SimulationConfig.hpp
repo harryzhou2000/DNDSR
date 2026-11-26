@@ -296,6 +296,7 @@ namespace DNDS::Cauchy
         bool resolvedCellOmega = false;
         std::string firstLayerWallDistanceMethod = "cellCenter";
         RANSStateSettings ransState;
+        int metricOrder = 0;
         CFV::ReconstructionSettings cfv;
         CFV::LimitedVRSettings limitedVR;
         RiemannSettings riemann;
@@ -353,6 +354,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(pressureFloor, "Positive inclusive pressure admissibility floor for the initial perfect-gas equation");
             DNDS_FIELD(sensibleEnergyFloor, "Mixture internal-energy density margin above its backend reference temperature; no gamma conversion");
             DNDS_FIELD(wallDistanceFloor, "Minimum distance in solver units for RANS face/volume quadrature and first-layer replacements; 0 uses the positive denominator safeguard (1e-10)");
+            DNDS_FIELD(metricOrder, "Cell volume/barycenter/inertia geometry integration degree (0 uses INT_ORDER_MAX)");
             DNDS_FIELD(resolvedCellOmega, "ACM SST: set no-slip first-cell omega to 6 nu/(beta1 d1^2) after implicit updates");
             DNDS_FIELD(cellCenterWallDistanceForQuadrature, "Use the interpolated center distance for cell quadrature and the adjacent-center average for face quadrature. The first-layer mean-distance override is independent");
             DNDS_FIELD(firstLayerCenterWallDistance, "Enable first-layer distance replacement on no-slip-wall-adjacent cells for volume samples and mean-distance consumers such as the omega BC");
@@ -805,6 +807,7 @@ namespace DNDS::Cauchy
         {
             DNDS_check_throw_info(sourceSplitting == "coupled" || sourceSplitting == "strang", "unknown chemical source splitting method");
             DNDS_check_throw_info(sourceSplitting != "strang" || !steady, "Strang source splitting requires physical transient time");
+            DNDS_check_throw_info(sourceSplitting != "strang" || method != "bdf2", "Strang source splitting only supports single-step time methods (multistep BDF2 is forbidden)");
             reactor.Validate();
         }
         DNDS_DECLARE_CONFIG(TimeSettings)

@@ -349,9 +349,13 @@ namespace DNDS::Cauchy
         data->time.positivity.Validate();
         data->time.ValidateSourceIntegration();
         if (data->time.sourceSplitting == "strang")
+        {
             DNDS_check_throw_info(std::any_of(data->domains.begin(), data->domains.end(), [](const auto &domain)
                                               { return domain.settings.equation.source == "chemical"; }),
                                   "Strang source splitting requires a configured chemical source");
+            DNDS_check_throw_info(data->time.method != "bdf2",
+                                  "Strang source splitting only supports single-step time methods (multistep BDF2 is forbidden)");
+        }
         if (data->time.steady)
         {
             if (data->time.positivity.enabled)

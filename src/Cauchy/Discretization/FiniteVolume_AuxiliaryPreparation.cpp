@@ -100,7 +100,7 @@ namespace DNDS::Cauchy
                 wallValues = walls->HostView();
             }
             if (des)
-                cellLength.emplace(data->ransCellLength.Read());
+                cellLength.emplace(data->metrics.CellMaxLenScale().Read());
             index first = 0;
             locations = R::MetadataBuffer<EquationBlockLocation>::Generate(source.BlockNumber(),
                                                                            [&](index iBlock)

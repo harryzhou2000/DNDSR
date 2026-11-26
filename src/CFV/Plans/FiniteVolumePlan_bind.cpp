@@ -124,6 +124,7 @@ namespace DNDS::CFV
             .def(py::init<>())
             .def_readwrite("integrationOrder", &FiniteVolumeMetricOptions::integrationOrder)
             .def_readwrite("faceIntegrationOrder", &FiniteVolumeMetricOptions::faceIntegrationOrder)
+            .def_readwrite("geometryOrder", &FiniteVolumeMetricOptions::geometryOrder)
             .def_readwrite("axisymmetric", &FiniteVolumeMetricOptions::axisymmetric)
             .def_readwrite("collectivePreflight", &FiniteVolumeMetricOptions::collectivePreflight);
         py::class_<FiniteVolumePlan>(m, "FiniteVolumePlan")
@@ -150,7 +151,10 @@ namespace DNDS::CFV
             .def("BindHalo", &FiniteVolumePlan::BindHalo, py::arg("field"), py::arg("options") = Runtime::TransferOptions{}, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
             .def("GetCellVol", &FiniteVolumePlan::GetCellVol)
             .def("GetCellCent", &FiniteVolumePlan::GetCellCent)
-            .def("BuildCellMaxLenScale", &FiniteVolumePlan::BuildCellMaxLenScale, "CPU setup: derive Euler-compatible principal-axis maximum lengths for local metric rows; rebuild after mesh changes.");
+            .def("GetCellBary", &FiniteVolumePlan::GetCellBary)
+            .def("GetCellScale", &FiniteVolumePlan::GetCellScale)
+            .def("GetCellMaxLenScale", &FiniteVolumePlan::GetCellMaxLenScale)
+            .def("BuildCellMaxLenScale", &FiniteVolumePlan::BuildCellMaxLenScale, "CPU setup: return Euler-compatible principal-axis maximum lengths for local metric rows.");
         py::class_<ReconstructionBoundaryValues>(m, "ReconstructionBoundaryValues")
             .def_property_readonly("values", [](ReconstructionBoundaryValues &value)
                                    { return Runtime::PythonArray::Share(value.values); });

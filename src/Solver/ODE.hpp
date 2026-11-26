@@ -557,7 +557,7 @@ namespace DNDS::ODE
                 rhs.addTo(xLast, 1 / dt);
                 resOther = rhs;
                 rhs.addTo(x, -1. / dt);
-                rhs.addTo(rhs, BDFCoefs(kCurrent - 1, 0));
+                rhs.addTo(rhsbuf[0], BDFCoefs(kCurrent - 1, 0));
                 fsolve(x, rhs, resOther, dTau, dt, BDFCoefs(kCurrent - 1, 0), xinc, iter, 1.0, 0);
                 //* xinc = (I/dtau-A*alphaDiag)\rhs
 
@@ -603,6 +603,7 @@ namespace DNDS::ODE
         virtual ~ImplicitBDFDualTimeStep() = default;
 
         bool IsMultistep() const override { return kBDF > 1; }
+        void ResetFreshStart() override { cnPrev = 0; }
     };
 
     template <class TDATA, class TDTAU>
@@ -838,7 +839,7 @@ namespace DNDS::ODE
             {
                 fdt(x, dTau, BDFCoefs(0), 0);
 
-                frhs(rhs, x, dTau, iter, 1.0, 0);
+                frhs(rhsbuf[0], x, dTau, iter, 1.0, 0);
 
                 xBase.setConstant(0.0);
                 xBase.addTo(xLast, (BDFCoefs(1) - 0) / dt); // 0 because xBase includes xLast/dt part
@@ -922,6 +923,7 @@ namespace DNDS::ODE
         virtual ~ImplicitVBDFDualTimeStep() = default;
 
         bool IsMultistep() const override { return kBDF > 1; }
+        void ResetFreshStart() override { cnPrev = 0; }
     };
 
     /*******************************************************************************************/
@@ -1509,7 +1511,7 @@ namespace DNDS::ODE
             // MPI::Barrier(MPI_COMM_WORLD);
             // std::cout << "fucked" << std::endl;
 
-            frhs(rhs, x, dTau, 1, 0.5, 0);
+            frhs(rhs, x, dTau, 1, 0.0, 0);
             rhsbuf[0] = rhs;
             if (localDtStepping)
                 rhs *= dTau;
@@ -1519,7 +1521,7 @@ namespace DNDS::ODE
             // x += rhs;
             fincrement(x, rhs, 1.0, 0);
 
-            frhs(rhs, x, dTau, 1, 1, 0);
+            frhs(rhs, x, dTau, 1, 1.0, 0);
             rhsbuf[1] = rhs;
             if (localDtStepping)
                 rhs *= dTau;
@@ -1530,7 +1532,7 @@ namespace DNDS::ODE
             // x.addTo(rhs, 0.25);
             fincrement(x, rhs, 0.25, 0);
 
-            frhs(rhs, x, dTau, 1, 0.25, 0);
+            frhs(rhs, x, dTau, 1, 0.5, 0);
             rhsbuf[2] = rhs;
             if (localDtStepping)
                 rhs *= dTau;
@@ -1544,7 +1546,7 @@ namespace DNDS::ODE
 
         virtual TDATA &getLatestRHS() override
         {
-            return rhsbuf[0];
+            return rhsbuf[2];
         }
 
         TDATA &getRHS(int i) override

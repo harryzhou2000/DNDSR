@@ -9,11 +9,13 @@ namespace DNDS::CFV::Detail
         namespace R = Runtime;
         auto meshRead = geometry.mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto mesh = meshRead.HostView();
-        auto cellRead = geometry.cell.Read();
+        auto centRead = geometry.cellCent.Read();
+        auto scaleRead = geometry.cellScale.Read();
         auto offsetRead = geometry.faceOffsets.Read();
         auto pointRead = geometry.faceQuadrature.Read();
         auto momentRead = data.moments.Read();
-        const auto cells = cellRead.View<R::FixedRows<8>>();
+        const auto cellCent = centRead.View<R::FixedRows<3>>();
+        const auto cellScale = scaleRead.View<R::FixedRows<1>>();
         const auto offsets = offsetRead.View<R::FixedRows<1>>();
         const auto points = pointRead.View<R::FixedRows<7>>();
         const auto moments = momentRead.View<R::TableRows>();
@@ -51,8 +53,8 @@ namespace DNDS::CFV::Detail
                     // derivative tensor pullback used by matrix assembly.
                     const auto parentPoint = side == 0 ? point : FacePointInCell(mesh, iFace, side, point);
                     polynomial.Reconstruction(values, parentPoint,
-                                              {cells(iCell, 1), cells(iCell, 2), cells(iCell, 3)},
-                                              cells(iCell, 7), moments[iCell], data.settings.cacheDiffBaseOrder);
+                                              {cellCent(iCell, 0), cellCent(iCell, 1), cellCent(iCell, 2)},
+                                              cellScale(iCell, 0), moments[iCell], data.settings.cacheDiffBaseOrder);
                     for (int mode = 0; mode < data.n; ++mode)
                         for (int derivative = 0; derivative < data.cachedDerivatives; ++derivative)
                             cache(2 * iPoint + side, mode * data.cachedDerivatives + derivative) = values(derivative, mode);

@@ -34,12 +34,13 @@ namespace DNDS::CFV::Detail
         SamplingIndices cells, basisRows, outputRows;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> points;
         SamplingTable basis, moments;
-        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<8>> geometry;
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> cellCent;
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> cellScale;
         Math::TaylorBasisParameters polynomial;
         int cachedDerivatives = 0;
         void ValidateDevice(Runtime::Device device) const
         {
-            Runtime::ValidateViewDevices(device, cells, basisRows, outputRows, points, basis, moments, geometry);
+            Runtime::ValidateViewDevices(device, cells, basisRows, outputRows, points, basis, moments, cellCent, cellScale);
         }
     };
     /// Independent CPU point rows, with bounded thread-local basis scratch.

@@ -117,10 +117,10 @@ namespace DNDS::Cauchy
             const auto points = walls.cells;
             request.wallMean = {mean.data, mean.offsets, mean.rows, mean.width, mean.stride, mean.sizes, mean.kind, mean.device};
             request.wallPoints = {points.data, points.offsets, points.rows, points.width, points.stride, points.sizes, points.kind, points.device};
-            request.cells = pin->metric.View().cells; request.output = output; request.status = status;
+            request.cells = pin->metric.View().cellVolume; request.output = output; request.status = status;
             request.components = n; request.dimension = dim; request.fullBlock = fullBlock; request.scale = scale;
             request.evaluation = CUDA::SourceEvaluation::MeanDestruction;
-            CUDA::AddRANSSources(context, request, R::RowSelectionShape::AllRows(means.RowCount())); }, R::ReadAs<R::TableRows>(state.CoupledField().Owned()), R::ReadAs<R::TableRows>(gradient), R::ReadAs<R::FixedRows<1>>(work.sourceOffsets), R::ReadAs<R::FixedRows<1>>(work.sourceWeights), R::ReadAs<R::FixedRows<1>>(owner->ransCellLength), R::ReadWriteAs<R::UniformTableRows>(diagonal), R::WriteAs<R::FixedRows<1>>(rowsStatus));
+            CUDA::AddRANSSources(context, request, R::RowSelectionShape::AllRows(means.RowCount())); }, R::ReadAs<R::TableRows>(state.CoupledField().Owned()), R::ReadAs<R::TableRows>(gradient), R::ReadAs<R::FixedRows<1>>(work.sourceOffsets), R::ReadAs<R::FixedRows<1>>(work.sourceWeights), R::ReadAs<R::FixedRows<1>>(owner->metrics.CellMaxLenScale()), R::ReadWriteAs<R::UniformTableRows>(diagonal), R::WriteAs<R::FixedRows<1>>(rowsStatus));
         AppendStatus(engine, stream, rowsStatus);
 #else
         (void)work;

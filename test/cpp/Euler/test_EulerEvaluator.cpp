@@ -437,8 +437,8 @@ TEST_CASE("EulerEvaluator pipeline: Box (NS_3D, P1)" * doctest::test_suite("larg
     CHECK(std::isfinite(incL2));
     CHECK(rhsDensity > 0);
 
-    real goldenRhsDensity = 5.8855408029e-01;
-    real goldenIncL2 = 3.4532977412e+01;
+    real goldenRhsDensity = 5.8301945027e-01;
+    real goldenIncL2 = 3.1373209378e+01;
 
     if (g_mpi.rank == 0)
         std::cout << "  golden candidates: rhsDensity=" << std::scientific

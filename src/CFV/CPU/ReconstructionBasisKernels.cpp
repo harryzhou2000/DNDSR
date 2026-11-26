@@ -19,7 +19,7 @@ namespace DNDS::CFV::CPU
         const auto center = input.geometry.GetCellCent(cell);
         const auto prepared = Math::TaylorPointEvaluation::FromPoint(
             {position[0], position[1], position[2]}, {center[0], center[1], center[2]},
-            input.geometry.cells(cell, 7));
+            input.geometry.GetCellScale(cell));
         const auto parameters = polynomial.KernelParameters();
         scratch.resize(rows, input.modes);
         for (int mode = 0; mode < input.modes; ++mode)

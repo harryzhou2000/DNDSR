@@ -10,7 +10,7 @@ namespace DNDS::Cauchy
     struct VolumeSourceBasis
     {
         using Rows = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
-        Rows points, cached, moments, geometry;
+        Rows points, cached, moments, cellCent, cellScale;
         CFV::Math::TaylorBasisParameters polynomial;
         int cachedDerivatives = 0;
 
@@ -25,7 +25,7 @@ namespace DNDS::Cauchy
             if (derivatives > cachedDerivatives)
                 direct = CFV::Math::TaylorPointEvaluation::FromPoint<real>(
                     {points(point, 0), points(point, 1), points(point, 2)},
-                    {geometry(cell, 1), geometry(cell, 2), geometry(cell, 3)}, geometry(cell, 7));
+                    {cellCent(cell, 0), cellCent(cell, 1), cellCent(cell, 2)}, cellScale(cell, 0));
             for (int d = 0; d < derivatives; ++d)
                 for (int m = 0; m < polynomial.size - 1; ++m)
                     values[d][m] = d < cachedDerivatives ? cached(point, m * cachedDerivatives + d)

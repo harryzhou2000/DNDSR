@@ -273,7 +273,8 @@ namespace DNDS::CFV
                         // if (!(ifUseLimiter[iCell] & 0x0000000FU))
                         //     continue;
 
-                        tPoint unitNorm = faceMeanNorm[iFace];
+                        const auto faceID = mesh->GetFaceZone(iFace);
+                        tPoint unitNorm = this->GetFaceNormFromCell(iFace, iCell, if2c, -1);
 
                         const auto &matrixSecondaryThis =
                             this->GetMatrixSecondary(iCell, iFace, if2c);
@@ -283,6 +284,8 @@ namespace DNDS::CFV
 
                         Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOF>
                             uOtherOther = uRec[iCellOther](Eigen::seq(0, NRecDOFLim - 1), EigenAll);
+                        Eigen::RowVector<real, nVarsFixed> uOtherMean = u[iCellOther].transpose();
+                        this->ApplyPeriodicTransform(if2c, faceID, uOtherOther, uOtherMean);
 
                         if (LimEnd < uOtherOther.rows() - 1) // successive SR
                             uOtherOther(Eigen::seq(LimEnd + 1, NRecDOFLim - 1), EigenAll) =
@@ -298,8 +301,9 @@ namespace DNDS::CFV
                                 uC.matrix();
 
                         // 2 eig space :
-                        auto uR = iCellAtFace ? u[iCell] : u[iCellOther];
-                        auto uL = iCellAtFace ? u[iCellOther] : u[iCell];
+                        Eigen::Vector<real, nVarsFixed> uOtherVec = uOtherMean.transpose();
+                        auto uR = iCellAtFace ? u[iCell] : uOtherVec;
+                        auto uL = iCellAtFace ? uOtherVec : u[iCell];
 
                         uOtherIn = (FM(uL, uR, unitNorm, uOtherIn));
                         uThisIn = (FM(uL, uR, unitNorm, uThisIn));
@@ -446,7 +450,8 @@ namespace DNDS::CFV
                         // if (!(ifUseLimiter[iCell] & 0x0000000FU))
                         //     continue;
 
-                        tPoint unitNorm = faceMeanNorm[iFace];
+                        const auto faceID = mesh->GetFaceZone(iFace);
+                        tPoint unitNorm = this->GetFaceNormFromCell(iFace, iCell, if2c, -1);
 
                         const auto &matrixSecondaryThis =
                             this->GetMatrixSecondary(iCell, iFace, if2c);
@@ -456,6 +461,8 @@ namespace DNDS::CFV
 
                         Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed, 0, maxRecDOF>
                             uOtherOther = uRecBuf[iCellOther](Eigen::seq(0, NRecDOFLim - 1), EigenAll);
+                        Eigen::RowVector<real, nVarsFixed> uOtherMean = u[iCellOther].transpose();
+                        this->ApplyPeriodicTransform(if2c, faceID, uOtherOther, uOtherMean);
 
                         // if (LimEnd < uOtherOther.rows() - 1) // successive SR
                         //     uOtherOther(Eigen::seq(LimEnd + 1, NRecDOFLim - 1), EigenAll) =
@@ -471,8 +478,9 @@ namespace DNDS::CFV
                                 uC.matrix();
 
                         // 2 eig space :
-                        auto uR = iCellAtFace ? u[iCell] : u[iCellOther];
-                        auto uL = iCellAtFace ? u[iCellOther] : u[iCell];
+                        Eigen::Vector<real, nVarsFixed> uOtherVec = uOtherMean.transpose();
+                        auto uR = iCellAtFace ? u[iCell] : uOtherVec;
+                        auto uL = iCellAtFace ? uOtherVec : u[iCell];
 
                         uOtherIn = FM(uL, uR, unitNorm, uOtherIn);
                         uThisIn = FM(uL, uR, unitNorm, uThisIn);

@@ -117,6 +117,7 @@ namespace DNDS::CFV
         const auto mpi = mesh->getMPI();
         const int intOrder = options.integrationOrder;
         const int faceIntOrder = options.faceIntegrationOrder ? options.faceIntegrationOrder : intOrder;
+        const int geomOrder = options.geometryOrder ? options.geometryOrder : INT_ORDER_MAX;
         const bool axisymmetric = options.axisymmetric;
         const auto meshCommunication = mesh->PreparationCommunication();
         auto communication = meshCommunication
@@ -127,6 +128,7 @@ namespace DNDS::CFV
         communication->LocalStage([&]
                                   {
             DNDS_check_throw_info(intOrder >= 1 && intOrder <= INT_ORDER_MAX, "invalid FV integration order");
+            DNDS_check_throw_info(geomOrder >= 1 && geomOrder <= INT_ORDER_MAX, "invalid FV geometry integration order");
             DNDS_check_throw_info(faceIntOrder == 1 || faceIntOrder == intOrder, "FV face integration must be midpoint or the metric order");
             DNDS_check_throw_info(options.nIterCellSmoothScale >= 0, "negative FV cell smooth scale iteration count");
             auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
@@ -143,13 +145,22 @@ namespace DNDS::CFV
                                               std::abs(view.Periodic().translation[frame].map()[1]) < 1e-12,
                                           "axisymmetric periodic transforms must preserve radius=y");
                 }
-            data = std::make_shared<Detail::FiniteVolumeData>(mesh, intOrder, axisymmetric, communication);
-            data->cell = R::Array<real>(R::RowLayout::Dense(view.NumCellProc(), 8));
-            data->cell.SetName("CFV/metrics/cell", DNDS_ALLOCATION_SITE());
+            data = std::make_shared<Detail::FiniteVolumeData>(mesh, intOrder, geomOrder, axisymmetric, communication);
+            const index nCellProc = view.NumCellProc();
+            data->cellVolume = R::Array<real>(R::RowLayout::Dense(nCellProc, 1));
+            data->cellCent = R::Array<real>(R::RowLayout::Dense(nCellProc, 3));
+            data->cellBary = R::Array<real>(R::RowLayout::Dense(nCellProc, 3));
+            data->cellScale = R::Array<real>(R::RowLayout::Dense(nCellProc, 1));
+            data->cellMaxLenScale = R::Array<real>(R::RowLayout::Dense(nCellProc, 1));
+            data->cellVolume.SetName("CFV/metrics/cellVolume", DNDS_ALLOCATION_SITE());
+            data->cellCent.SetName("CFV/metrics/cellCent", DNDS_ALLOCATION_SITE());
+            data->cellBary.SetName("CFV/metrics/cellBary", DNDS_ALLOCATION_SITE());
+            data->cellScale.SetName("CFV/metrics/cellScale", DNDS_ALLOCATION_SITE());
+            data->cellMaxLenScale.SetName("CFV/metrics/cellMaxLenScale", DNDS_ALLOCATION_SITE());
             const index scaleRows = options.nIterCellSmoothScale ? view.NumCell() : 0;
             data->cellSmoothScaleFactors = R::Array<real>(R::RowLayout::Dense(scaleRows, 1));
             data->cellSmoothScaleFactors.SetName("CFV/metrics/cellSmoothScaleFactors", DNDS_ALLOCATION_SITE());
-            data->radialMoment = R::Array<real>(R::RowLayout::Dense(view.NumCellProc(), 3));
+            data->radialMoment = R::Array<real>(R::RowLayout::Dense(axisymmetric ? nCellProc : 0, 3));
             data->radialMoment.SetName("CFV/metrics/radialMoment", DNDS_ALLOCATION_SITE());
             auto radialWrite = data->radialMoment.Write();
             const auto radial = radialWrite.View<R::FixedRows<3>>();
@@ -165,76 +176,109 @@ namespace DNDS::CFV
                 [&](index iFace, index value) noexcept { offset(iFace, 0) = value; });
             data->faceQuadrature = R::Array<real>(R::RowLayout::Dense(count, 7));
             data->faceQuadrature.SetName("CFV/metrics/faceQuadrature", DNDS_ALLOCATION_SITE());
-            auto cells = data->cell.Write();
-            const auto cell = cells.View<R::FixedRows<8>>();
+            auto volWrite = data->cellVolume.Write();
+            auto centWrite = data->cellCent.Write();
+            auto baryWrite = data->cellBary.Write();
+            auto scaleWrite = data->cellScale.Write();
+            auto maxLenWrite = data->cellMaxLenScale.Write();
+            const auto cellVol = volWrite.View<R::FixedRows<1>>();
+            const auto cellCent = centWrite.View<R::FixedRows<3>>();
+            const auto cellBary = baryWrite.View<R::FixedRows<3>>();
+            const auto cellScale = scaleWrite.View<R::FixedRows<1>>();
+            const auto cellMaxLen = maxLenWrite.View<R::FixedRows<1>>();
             // Immutable process-wide shape tables are fully constructed before
             // this setup. Each worker owns coordinates and integration scratch.
-            OMP::ForSetupRows(0, view.NumCellProc(), [&](index iCell)
+            OMP::ForSetupRows(0, nCellProc, [&](index iCell)
             {
                 tSmallCoords coords;
                 view.GetCoordsOnCell(iCell, coords);
                 const auto element = view.GetCellElement(iCell);
-                // A midpoint RHS/VR rule does not reduce the geometric
-                // measure and centroid to one sample on a curved cell.
-                const int geometryOrder = intOrder == 1 ? INT_ORDER_MAX : intOrder;
-                Quadrature quadrature(element, geometryOrder), exact(element, INT_ORDER_MAX);
+                const tPoint cent = PPhysicsCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(element.type, 1, 0));
+                // Single quadrature loop at geomOrder (default INT_ORDER_MAX) computes
+                // volume, barycenter, axisymmetric radial moment, and principal-axis inertia
+                // in cell-center-shifted coordinates (avoiding origin-offset cancellation).
+                const Quadrature geomQuad(element, geomOrder);
                 real volume = 0.;
-                real plainVolume = 0;
-                tPoint bary = tPoint::Zero(), plainMoment = tPoint::Zero();
-                for (int iG = 0; iG < exact.GetNumPoints(); ++iG)
+                real plainVolume = 0.;
+                tPoint baryRel = tPoint::Zero();
+                tPoint plainMomentRel = tPoint::Zero();
+                tJacobi rawInertiaRel = tJacobi::Zero();
+                for (int iG = 0; iG < geomQuad.GetNumPoints(); ++iG)
                 {
-                    const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, INT_ORDER_MAX, iG);
+                    const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, geomOrder, iG);
                     const real det = CellJacobianDet(view.Dimension(), coords, shape);
                     DNDS_check_throw_info(std::isfinite(det) && det > 0, "FV cell has nonpositive Jacobian");
                     const tPoint p = PPhysicsCoordD01Nj(coords, shape);
                     DNDS_check_throw_info(!axisymmetric || p[1] >= 0, "negative axisymmetric radius");
-                    const real weight = det * exact.GetWeight(iG);
-                    plainVolume += weight;
-                    plainMoment += p * weight;
-                    volume += weight * (axisymmetric ? p[1] : 1.);
-                }
-                for (int iG = 0; iG < quadrature.GetNumPoints(); ++iG)
-                {
-                    const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, geometryOrder, iG);
-                    const tPoint p = PPhysicsCoordD01Nj(coords, shape);
-                    bary += p * CellJacobianDet(view.Dimension(), coords, shape) * quadrature.GetWeight(iG) * (axisymmetric ? p[1] : 1.);
+                    const real plainWeight = det * geomQuad.GetWeight(iG);
+                    const real weighted = plainWeight * (axisymmetric ? p[1] : 1.);
+                    const tPoint q = p - cent;
+                    plainVolume += plainWeight;
+                    plainMomentRel += q * plainWeight;
+                    // Legacy inertia uses geometric Jacobian even in radial integration.
+                    rawInertiaRel += (q * q.transpose()) * plainWeight;
+                    volume += weighted;
+                    baryRel += q * weighted;
                 }
                 DNDS_check_throw_info(std::isfinite(volume) && volume > 0, "nonpositive FV cell volume");
-                bary /= volume;
-                for (int d = 0; d < 3; ++d)
-                    radial(iCell, d) = axisymmetric ? (plainMoment[d] - plainVolume * bary[d]) / volume : 0;
-                const auto cent = PPhysicsCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(element.type, 1, 0));
-                const tPoint box = (coords.colwise() - bary).array().abs().rowwise().maxCoeff();
+                const tPoint baryOffset = baryRel / volume;
+                const tPoint bary = cent + baryOffset;
+                if (axisymmetric)
+                    for (int d = 0; d < 3; ++d)
+                        radial(iCell, d) = (plainMomentRel[d] - plainVolume * baryOffset[d]) / volume;
+                const tSmallCoords coordsFromBary = coords.colwise() - bary;
+                const tPoint box = coordsFromBary.array().abs().rowwise().maxCoeff();
                 const real scale = box.head(view.Dimension()).maxCoeff();
-                DNDS_check_throw_info(std::isfinite(volume) && scale > 0, "invalid FV cell geometry");
-                cell(iCell, 0) = volume;
-                for (int d = 0; d < 3; ++d) cell(iCell, 1 + d) = cent[d], cell(iCell, 4 + d) = bary[d];
-                cell(iCell, 7) = scale;
+                // Parallel-axis shift from cent to bary (all terms O(h^2)).
+                tJacobi inertia = (rawInertiaRel - plainMomentRel * baryOffset.transpose() -
+                                   baryOffset * plainMomentRel.transpose() +
+                                   plainVolume * (baryOffset * baryOffset.transpose())) /
+                                  volume;
+                inertia = 0.5 * (inertia + inertia.transpose());
+                tJacobi frame = tJacobi::Identity();
+                if (view.Dimension() == 3)
+                    frame = HardEigen::Eigen3x3RealSymPrincipalFrame(inertia);
+                else
+                    frame({0, 1}, {0, 1}) = HardEigen::Eigen2x2RealSymPrincipalFrame(inertia({0, 1}, {0, 1}));
+                const tSmallCoords centered = frame.transpose() * coordsFromBary;
+                const tPoint halfBox = centered.array().abs().rowwise().maxCoeff();
+                const real maxLenScale = 2.0 * halfBox.head(view.Dimension()).maxCoeff();
+                DNDS_check_throw_info(std::isfinite(volume) && scale > 0 &&
+                                          std::isfinite(maxLenScale) && maxLenScale > 0,
+                                      "invalid FV cell geometry");
+                cellVol(iCell, 0) = volume;
+                for (int d = 0; d < 3; ++d)
+                    cellCent(iCell, d) = cent[d], cellBary(iCell, d) = bary[d];
+                cellScale(iCell, 0) = scale;
+                cellMaxLen(iCell, 0) = maxLenScale;
             });
             auto points = data->faceQuadrature.Write();
             const auto point = points.View<R::FixedRows<7>>();
-            data->faceMean = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 7));
-            data->faceMean.SetName("CFV/metrics/faceMean", DNDS_ALLOCATION_SITE());
+            data->faceCent = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 3));
+            data->faceMeanNorm = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 3));
+            data->faceArea = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 1));
+            data->faceCent.SetName("CFV/metrics/faceCent", DNDS_ALLOCATION_SITE());
+            data->faceMeanNorm.SetName("CFV/metrics/faceMeanNorm", DNDS_ALLOCATION_SITE());
+            data->faceArea.SetName("CFV/metrics/faceArea", DNDS_ALLOCATION_SITE());
             data->facePeriodicCodes = R::Array<uint8_t>(R::RowLayout::Dense(view.IsPeriodic() ? view.NumFaceProc() : 0, 1));
             data->periodicParameters = R::Array<FacePeriodicParameters>(R::RowLayout::Dense(1, 1));
-            data->neighborCenters = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 6));
             data->facePeriodicCodes.SetName("CFV/metrics/facePeriodicCodes", DNDS_ALLOCATION_SITE());
             data->periodicParameters.SetName("CFV/metrics/periodicParameters", DNDS_ALLOCATION_SITE());
-            data->neighborCenters.SetName("CFV/metrics/neighborCenters", DNDS_ALLOCATION_SITE());
             auto periodicWrite = data->periodicParameters.Write();
             auto codesWrite = data->facePeriodicCodes.Write();
-            auto neighborWrite = data->neighborCenters.Write();
             const auto parameters = periodicWrite.View<R::FixedRows<1>, false>();
             const auto codes = codesWrite.View<R::FixedRows<1>, false>();
-            const auto neighbor = neighborWrite.View<R::FixedRows<6>, false>();
             parameters(0, 0).generators = view.Periodic();
             parameters(0, 0).rotatedGenerators = 0;
             for (int generator = 1; generator <= 3; ++generator)
                 if (!(view.Periodic().rotation[generator].map().array() == tGPoint::Identity().array()).all())
                     parameters(0, 0).rotatedGenerators |= uint8_t(1) << (generator - 1);
-            const FacePeriodicView periodic{codes.ConstView(), parameters.ConstView()};
-            auto meanWrite = data->faceMean.Write();
-            const auto mean = meanWrite.View<R::FixedRows<7>>();
+            auto faceCentWrite = data->faceCent.Write();
+            auto faceNormWrite = data->faceMeanNorm.Write();
+            auto faceAreaWrite = data->faceArea.Write();
+            const auto fCent = faceCentWrite.View<R::FixedRows<3>>();
+            const auto fNorm = faceNormWrite.View<R::FixedRows<3>>();
+            const auto fArea = faceAreaWrite.View<R::FixedRows<1>>();
             OMP::ForSetupRows(0, view.NumFaceProc(), [&](index iFace)
             {
                 if (view.IsPeriodic())
@@ -247,16 +291,6 @@ namespace DNDS::CFV
                     DNDS_check_throw_info(codes(iFace, 0) < uint8_t(FacePeriodicCode::Composed),
                                           "a composed face transform requires an explicit shared registry");
                 }
-                const auto parents = view.FaceCells(iFace);
-                for (int side = 0; side < 2; ++side)
-                {
-                    const index other = parents[1 - side] == UnInitIndex ? parents[side] : parents[1 - side];
-                    tPoint position = tPoint::Zero();
-                    if (other >= 0 && other < view.NumCellProc())
-                        position = periodic.OtherPoint(iFace, side, tPoint{cell(other, 1), cell(other, 2), cell(other, 3)});
-                    for (int d = 0; d < 3; ++d)
-                        neighbor(iFace, 3 * side + d) = position[d];
-                }
                 tSmallCoords coords;
                 view.GetCoordsOnFace(iFace, coords);
                 const auto element = view.GetFaceElement(iFace);
@@ -265,11 +299,11 @@ namespace DNDS::CFV
                 {
                     // With midpoint RHS, put the integrated area and mean
                     // normal into its one sample, including curved faces.
-                    const int geometryOrder = intOrder == 1 ? INT_ORDER_MAX : intOrder;
-                    const Quadrature measure(element, geometryOrder);
+                    const int faceMeasureOrder = intOrder == 1 ? geomOrder : intOrder;
+                    const Quadrature measure(element, faceMeasureOrder);
                     for (int iG = 0; iG < measure.GetNumPoints(); ++iG)
                     {
-                        const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, geometryOrder, iG);
+                        const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, faceMeasureOrder, iG);
                         const auto jacobian = ShapeJacobianCoordD01Nj(coords, shape);
                         const tPoint normal = view.Dimension() == 2 ? FacialJacobianToNormVec<2>(jacobian) : FacialJacobianToNormVec<3>(jacobian);
                         const auto position = PPhysicsCoordD01Nj(coords, shape);
@@ -302,8 +336,8 @@ namespace DNDS::CFV
                 DNDS_check_throw_info(std::isfinite(normalLength) && normalLength > 0, "degenerate FV mean face normal");
                 integratedNormal /= normalLength;
                 for (int d = 0; d < 3; ++d)
-                    mean(iFace, d) = center[d], mean(iFace, 3 + d) = integratedNormal[d];
-                mean(iFace, 6) = integratedArea;
+                    fCent(iFace, d) = center[d], fNorm(iFace, d) = integratedNormal[d];
+                fArea(iFace, 0) = integratedArea;
                 if (faceIntOrder == 1)
                 {
                     const index iPoint = offset(iFace, 0);
@@ -333,20 +367,25 @@ namespace DNDS::CFV
     FiniteVolumeRead::FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data, R::ExecutionContext context)
         : _data(std::move(data)),
           _meshRead(std::make_shared<MeshReadAccess>(_data->mesh->AcquireRead(MeshReadRequirements::CellFlux()))),
-          _cells(_data->cell.Read(context)), _quadrature(_data->faceQuadrature.Read(context)), _radialMoment(_data->radialMoment.Read(context)), _faceMean(_data->faceMean.Read(context)),
-          _neighborCenters(_data->neighborCenters.Read(context)), _periodicCodes(_data->facePeriodicCodes.Read(context)),
+          _cellVolume(_data->cellVolume.Read(context)), _cellCent(_data->cellCent.Read(context)),
+          _cellBary(_data->cellBary.Read(context)), _cellScale(_data->cellScale.Read(context)),
+          _cellMaxLenScale(_data->cellMaxLenScale.Read(context)),
+          _quadrature(_data->faceQuadrature.Read(context)), _radialMoment(_data->radialMoment.Read(context)),
+          _faceCent(_data->faceCent.Read(context)), _faceMeanNorm(_data->faceMeanNorm.Read(context)),
+          _faceArea(_data->faceArea.Read(context)),
+          _periodicCodes(_data->facePeriodicCodes.Read(context)),
           _periodicParameters(_data->periodicParameters.Read(context)), _offsets(_data->faceOffsets.Read(context))
     {
         DNDS_check_throw_info(_data->stamp.Valid(), "finite-volume metrics changed before acquisition");
     }
     FiniteVolumeHostView FiniteVolumeRead::HostView() const
     {
-        DNDS_check_throw_info(_data->cell.GetDevice() == R::Device::Host(), "HostView requested from device FV metrics");
+        DNDS_check_throw_info(_data->cellVolume.GetDevice() == R::Device::Host(), "HostView requested from device FV metrics");
         return View();
     }
     FiniteVolumeHostView FiniteVolumeRead::View() const
     {
-        return {_cells.View<R::FixedRows<8>>(), _offsets.View<R::FixedRows<1>>(), _quadrature.View<R::FixedRows<7>>(), _radialMoment.View<R::FixedRows<3>>(), _faceMean.View<R::FixedRows<7>>(), {_periodicCodes.View<R::FixedRows<1>, false>(), _periodicParameters.View<R::FixedRows<1>, false>()}, _neighborCenters.View<R::FixedRows<6>, false>()};
+        return {_cellVolume.View<R::FixedRows<1>>(), _cellCent.View<R::FixedRows<3>>(), _cellBary.View<R::FixedRows<3>>(), _cellScale.View<R::FixedRows<1>>(), _cellMaxLenScale.View<R::FixedRows<1>>(), _offsets.View<R::FixedRows<1>>(), _quadrature.View<R::FixedRows<7>>(), _radialMoment.View<R::FixedRows<3>>(), _faceCent.View<R::FixedRows<3>>(), _faceMeanNorm.View<R::FixedRows<3>>(), _faceArea.View<R::FixedRows<1>>(), {_periodicCodes.View<R::FixedRows<1>, false>(), _periodicParameters.View<R::FixedRows<1>, false>()}};
     }
     FiniteVolumeRead FiniteVolumePlan::AcquireRead(R::ExecutionContext context) const
     {
@@ -354,15 +393,20 @@ namespace DNDS::CFV
         DNDS_check_throw_info(context.device == Device(), "FV metric read context differs from placement");
         return FiniteVolumeRead(_data, context);
     }
-    const R::Array<real> &FiniteVolumePlan::CellMetrics() const { return _data->cell; }
+    const R::Array<real> &FiniteVolumePlan::CellVolumes() const { return _data->cellVolume; }
+    const R::Array<real> &FiniteVolumePlan::CellCenters() const { return _data->cellCent; }
+    const R::Array<real> &FiniteVolumePlan::CellBarycenters() const { return _data->cellBary; }
+    const R::Array<real> &FiniteVolumePlan::CellScales() const { return _data->cellScale; }
+    const R::Array<real> &FiniteVolumePlan::CellMaxLenScale() const { return _data->cellMaxLenScale; }
     const R::Array<real> &FiniteVolumePlan::CellSmoothScaleFactors() const { return _data->cellSmoothScaleFactors; }
     const R::Array<real> &FiniteVolumePlan::FaceQuadrature() const { return _data->faceQuadrature; }
-    const R::Array<real> &FiniteVolumePlan::FaceMetrics() const { return _data->faceMean; }
+    const R::Array<real> &FiniteVolumePlan::FaceCenters() const { return _data->faceCent; }
+    const R::Array<real> &FiniteVolumePlan::FaceMeanNormals() const { return _data->faceMeanNorm; }
+    const R::Array<real> &FiniteVolumePlan::FaceAreas() const { return _data->faceArea; }
     const R::Array<real> &FiniteVolumePlan::RadialMoments() const { return _data->radialMoment; }
     const R::Array<index> &FiniteVolumePlan::FaceOffsets() const { return _data->faceOffsets; }
     const R::Array<uint8_t> &FiniteVolumePlan::FacePeriodicCodes() const { return _data->facePeriodicCodes; }
     const R::Array<FacePeriodicParameters> &FiniteVolumePlan::PeriodicParameters() const { return _data->periodicParameters; }
-    const R::Array<real> &FiniteVolumePlan::NeighborCenters() const { return _data->neighborCenters; }
     FiniteVolumeTopologyRead::FiniteVolumeTopologyRead(std::shared_ptr<const Detail::FiniteVolumeData> data)
         : _data(std::move(data)), _source(std::make_shared<CellFaceIncidenceRead>(_data->topology->AcquireRead()))
     {
@@ -385,7 +429,7 @@ namespace DNDS::CFV
         Validate(); // The retained generation excludes mutation during validation.
         return guard;
     }
-    R::Device FiniteVolumePlan::Device() const { return _data->cell.GetDevice(); }
+    R::Device FiniteVolumePlan::Device() const { return _data->cellVolume.GetDevice(); }
     FiniteVolumePlan FiniteVolumePlan::Placed(R::Device device, R::ExecutionContext context) const
     {
         Validate();
@@ -456,53 +500,47 @@ namespace DNDS::CFV
     real FiniteVolumePlan::GetCellVol(index iCell) const
     {
         Validate();
-        auto read = _data->cell.Read();
-        return read.View<R::FixedRows<8>, true>()(iCell, 0);
-    }
-    Runtime::Array<real> FiniteVolumePlan::BuildCellMaxLenScale() const
-    {
-        const auto geometry = AcquireRead();
-        const auto metric = geometry.HostView();
-        const auto access = _data->mesh->AcquireRead(MeshReadRequirements::Primary());
-        const auto mesh = access.HostView();
-        Runtime::Array<real> result(Runtime::RowLayout::Dense(NumCellProc(), 1));
-        result.SetName("CFV/metrics/cellMaxLengthScale", DNDS_ALLOCATION_SITE());
-        auto write = result.Write();
-        const auto length = write.View<Runtime::FixedRows<1>>();
-        OMP::ForSetupRows(0, NumCellProc(), [&](index iCell)
-                          {
-            tSmallCoords coordinates;
-            mesh.GetCoordsOnCell(iCell, coordinates);
-            const auto element = mesh.GetCellElement(iCell);
-            const Quadrature quadrature(element, INT_ORDER_MAX);
-            const tPoint bary = metric.GetCellBary(iCell);
-            tJacobi inertia = tJacobi::Zero();
-            for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
-            {
-                const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, INT_ORDER_MAX, iQ);
-                const tPoint centered = PPhysicsCoordD01Nj(coordinates, shape) - bary;
-                // Legacy inertia uses the geometric Jacobian even in radial
-                // integration, with its metric volume and barycentre.
-                inertia += (centered * centered.transpose()) * CellJacobianDet(Dimension(), coordinates, shape) * quadrature.GetWeight(iQ);
-            }
-            inertia /= metric.GetCellVol(iCell);
-            tJacobi frame = tJacobi::Identity();
-            if (Dimension() == 3)
-                frame = HardEigen::Eigen3x3RealSymPrincipalFrame(inertia);
-            else
-                frame({0, 1}, {0, 1}) = HardEigen::Eigen2x2RealSymPrincipalFrame(inertia({0, 1}, {0, 1}));
-            const tSmallCoords centered = frame.transpose() * (coordinates.colwise() - bary);
-            const tPoint halfBox = centered.array().abs().rowwise().maxCoeff();
-            const real value = 2 * halfBox.head(Dimension()).maxCoeff();
-            DNDS_check_throw_info(std::isfinite(value) && value > 0, "invalid principal-axis cell length");
-            length(iCell, 0) = value; });
-        return result;
+        auto read = _data->cellVolume.Read();
+        return read.View<R::FixedRows<1>, true>()(iCell, 0);
     }
     tPoint FiniteVolumePlan::GetCellCent(index iCell) const
     {
         Validate();
-        auto read = _data->cell.Read();
-        const auto view = read.View<R::FixedRows<8>, true>();
-        return {view(iCell, 1), view(iCell, 2), view(iCell, 3)};
+        auto read = _data->cellCent.Read();
+        const auto view = read.View<R::FixedRows<3>, true>();
+        return {view(iCell, 0), view(iCell, 1), view(iCell, 2)};
+    }
+    tPoint FiniteVolumePlan::GetCellBary(index iCell) const
+    {
+        Validate();
+        auto read = _data->cellBary.Read();
+        const auto view = read.View<R::FixedRows<3>, true>();
+        return {view(iCell, 0), view(iCell, 1), view(iCell, 2)};
+    }
+    real FiniteVolumePlan::GetCellScale(index iCell) const
+    {
+        Validate();
+        auto read = _data->cellScale.Read();
+        return read.View<R::FixedRows<1>, true>()(iCell, 0);
+    }
+    real FiniteVolumePlan::GetCellMaxLenScale(index iCell) const
+    {
+        Validate();
+        auto read = _data->cellMaxLenScale.Read();
+        return read.View<R::FixedRows<1>, true>()(iCell, 0);
+    }
+    Runtime::Array<real> FiniteVolumePlan::BuildCellMaxLenScale() const
+    {
+        Validate();
+        DNDS_check_throw_info(Device() == R::Device::Host(), "BuildCellMaxLenScale requires host FV metrics");
+        Runtime::Array<real> result(Runtime::RowLayout::Dense(NumCellProc(), 1));
+        result.SetName("CFV/metrics/cellMaxLengthScale", DNDS_ALLOCATION_SITE());
+        const auto read = _data->cellMaxLenScale.Read();
+        auto write = result.Write();
+        const auto src = read.View<R::FixedRows<1>>();
+        const auto dst = write.View<R::FixedRows<1>>();
+        OMP::ForRows(0, NumCellProc(), [&](index iCell)
+                     { dst(iCell, 0) = src(iCell, 0); });
+        return result;
     }
 }

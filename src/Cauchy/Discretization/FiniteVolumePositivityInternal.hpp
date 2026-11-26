@@ -112,7 +112,7 @@ namespace DNDS::Cauchy
             {
                 hostBasis.emplace(owner->reconstruction->AcquireBasisRead());
                 const auto &view = hostBasis->EvaluationView();
-                geometry.basis = {view.cached, view.moments, view.geometry.cells,
+                geometry.basis = {view.cached, view.moments, view.geometry.cellCent, view.geometry.cellScale,
                                   CFV::Math::TaylorBasis(view.dimension, view.degree).KernelParameters(), view.cachedDerivatives, 1};
                 const index threads = std::min<index>(OMP::DistributedThreads(), std::max<index>(1, owner->metrics.NumCell()));
                 for (index iWorker = 0; iWorker < threads; ++iWorker)

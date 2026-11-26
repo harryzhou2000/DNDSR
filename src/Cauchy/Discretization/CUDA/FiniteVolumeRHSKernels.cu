@@ -115,7 +115,7 @@ namespace DNDS::Cauchy::CUDA
             output.low.ValidateDevice(context.device);
         if (output.wallForce.RowCount())
             output.wallForce.ValidateDevice(context.device);
-        const index owned = g.stencil.jacobianOffsets.RowCount() - 1, ghost = g.cells.RowCount() - owned, nFaces = g.stencil.stencilFaces.RowCount();
+        const index owned = g.stencil.jacobianOffsets.RowCount() - 1, ghost = g.cellCent.RowCount() - owned, nFaces = g.stencil.stencilFaces.RowCount();
         DNDS_check_throw_info((controls.mechanical ? g.acm.RowCount() == 1 : parameters.RowCount() == 1 && !g.acm.RowCount()) && output.high.RowCount() == nFaces && output.high.Width() == controls.components &&
                                   output.high.kind == R::RowLayoutKind::Table && output.high.stride == controls.components && output.status.RowCount() == nFaces && output.fallbackCounts.RowCount() == nFaces,
                               "CUDA RHS face output/profile mismatch");
@@ -130,17 +130,17 @@ namespace DNDS::Cauchy::CUDA
                                       "CUDA RHS basis publication is incomplete");
         }
         if (fields.centerViscosity.values.RowCount())
-            DNDS_check_throw_info(fields.centerViscosity.values.RowCount() == g.cells.RowCount() && controls.components > (controls.mechanical ? 4 : 5),
+            DNDS_check_throw_info(fields.centerViscosity.values.RowCount() == g.cellCent.RowCount() && controls.components > (controls.mechanical ? 4 : 5),
                                   "CUDA RHS cell turbulence requires a local table and a RANS model");
         if (controls.fluxPolicy.UsesDESDissipation())
-            DNDS_check_throw_info(fields.centerViscosity.values.RowCount() == g.cells.RowCount() && fields.centerViscosity.values.Width() == 2,
+            DNDS_check_throw_info(fields.centerViscosity.values.RowCount() == g.cellCent.RowCount() && fields.centerViscosity.values.Width() == 2,
                                   "CUDA RHS DES dissipation requires a prepared cell shielding column");
         if (controls.primitiveGradient)
             ValidateField(fields.viscousData, owned, ghost, 5 * controls.dimension, requireGhost);
         else if (reconstruct && controls.viscous && controls.distinctViscous)
             ValidateField(fields.viscousData, owned, ghost, fields.reconstruction.owned.Width(), requireGhost);
         if (fields.hasPreparedMean)
-            DNDS_check_throw_info(fields.preparedMean.RowCount() == g.cells.RowCount() && fields.preparedMean.Width() >= 2,
+            DNDS_check_throw_info(fields.preparedMean.RowCount() == g.cellCent.RowCount() && fields.preparedMean.Width() >= 2,
                                   "CUDA RHS prepared means are incomplete");
         if (controls.useStencil && controls.fluxPolicy.transverseSignal)
         {
@@ -157,7 +157,7 @@ namespace DNDS::Cauchy::CUDA
                                       fields.incoming.stride == fields.incoming.Width(),
                                   "CUDA RHS interface values require compact AoS rows");
         if (controls.components > (controls.mechanical ? 4 : 5))
-            DNDS_check_throw_info(g.hasWall && g.wallMean.RowCount() == g.cells.RowCount() && g.wallFaces.RowCount() + 1 == g.faceOffsets.RowCount(),
+            DNDS_check_throw_info(g.hasWall && g.wallMean.RowCount() == g.cellCent.RowCount() && g.wallFaces.RowCount() + 1 == g.faceOffsets.RowCount(),
                                   "CUDA RANS RHS requires placed wall samples");
         if (controls.produceLow)
             DNDS_check_throw_info(output.low.RowCount() == nFaces && output.low.Width() == controls.components && output.low.kind == R::RowLayoutKind::Table && output.low.stride == controls.components,

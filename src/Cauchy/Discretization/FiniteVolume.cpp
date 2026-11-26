@@ -100,13 +100,11 @@ namespace DNDS::Cauchy
                                                                             [&](int zone)
                                                                             { return data->boundary.At(zone).kind == BoundaryKind::NoSlipWall; }));
             data->metrics.Communication()->LocalStage([&]
-                                                      {
-                data->wallDistance.emplace(WallDistanceSamples::Construct(data->mesh, settings.numerics.RHSIntegrationOrder(),
-                                                                        settings.numerics.EffectiveWallDistanceFloor(),
-                                                                        firstLayer ? OptionalRef<const R::ArrayPair<uint8_t>>(*firstLayer) : OptionalRef<const R::ArrayPair<uint8_t>>{},
-                                                                        method, settings.numerics.resolvedCellOmega, settings.numerics.firstLayerCenterWallDistance,
-                                                                        settings.numerics.cellCenterWallDistanceForQuadrature));
-                data->ransCellLength = data->metrics.BuildCellMaxLenScale(); });
+                                                      { data->wallDistance.emplace(WallDistanceSamples::Construct(data->mesh, settings.numerics.RHSIntegrationOrder(),
+                                                                                                                  settings.numerics.EffectiveWallDistanceFloor(),
+                                                                                                                  firstLayer ? OptionalRef<const R::ArrayPair<uint8_t>>(*firstLayer) : OptionalRef<const R::ArrayPair<uint8_t>>{},
+                                                                                                                  method, settings.numerics.resolvedCellOmega, settings.numerics.firstLayerCenterWallDistance,
+                                                                                                                  settings.numerics.cellCenterWallDistanceForQuadrature)); });
             real minimum[]{data->wallDistance->LocalMinimumCellCenterDistance(),
                            data->wallDistance->LocalMinimumFirstLayerDistance()};
             MPI::AllreduceInPlace<MPI::Reduction::Min>(MPI::ContiguousView<real>{minimum, 2}, data->metrics.Communicator());

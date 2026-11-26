@@ -60,8 +60,8 @@ namespace DNDS::CFV
                                       std::isfinite(scaleMultiplier) && scaleMultiplier > 0 &&
                                       std::isfinite(geomWeightBias) && std::isfinite(geomWeightPower) &&
                                       std::isfinite(geomWeightPower1) && std::isfinite(geomWeightPower2) &&
-                                      dirWeightCombPowV >= 0 && dirWeightCombPowV <= 2,
-                                  "invalid isotropic functional configuration");
+                                      dirWeightCombPowV == 1,
+                                  "invalid isotropic functional configuration (dirWeightCombPowV must be 1 for Frobenius rotational invariance)");
             for (auto weight : manualDirWeights)
                 DNDS_check_throw_info(std::isfinite(weight) && weight >= 0, "invalid manual derivative weight");
         }

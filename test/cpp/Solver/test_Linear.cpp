@@ -34,7 +34,8 @@ struct DVec
 
 static auto dvinit(int n)
 {
-    return [n](DVec &v) { v = DVec(n); };
+    return [n](DVec &v)
+    { v = DVec(n); };
 }
 
 // ===================================================================
@@ -46,8 +47,8 @@ TEST_CASE("GMRES: solve 3x3 SPD system exactly")
     const int n = 3;
     Eigen::Matrix3d A;
     A << 4, 1, 0,
-         1, 3, 1,
-         0, 1, 2;
+        1, 3, 1,
+        0, 1, 2;
     Eigen::Vector3d b_exact(1, 2, 3);
     Eigen::Vector3d x_exact = A.ldlt().solve(b_exact);
 
@@ -57,10 +58,14 @@ TEST_CASE("GMRES: solve 3x3 SPD system exactly")
     b.data = b_exact;
     x.data.setZero();
 
-    auto FA = [&](DVec &xin, DVec &Ax) { Ax.data = A * xin.data; };
-    auto FML = [&](DVec &xin, DVec &MLx) { MLx = xin; }; // no preconditioner
-    auto fDot = [](DVec &a, DVec &b) -> double { return a.data.dot(b.data); };
-    auto fStop = [](int, double res, double resB) -> bool { return res < 1e-14 * resB; };
+    auto FA = [&](DVec &xin, DVec &Ax)
+    { Ax.data = A * xin.data; };
+    auto FML = [&](DVec &xin, DVec &MLx)
+    { MLx = xin; }; // no preconditioner
+    auto fDot = [](DVec &a, DVec &b) -> double
+    { return a.data.dot(b.data); };
+    auto fStop = [](int, double res, double resB) -> bool
+    { return res < 1e-14 * resB; };
 
     bool converged = gmres.solve(FA, FML, fDot, b, x, 10, fStop);
     CHECK(converged);
@@ -84,10 +89,14 @@ TEST_CASE("GMRES: solve 10x10 random SPD system")
     b.data = b_exact;
     x.data.setZero();
 
-    auto FA = [&](DVec &xin, DVec &Ax) { Ax.data = A * xin.data; };
-    auto FML = [&](DVec &xin, DVec &MLx) { MLx = xin; };
-    auto fDot = [](DVec &a, DVec &b) -> double { return a.data.dot(b.data); };
-    auto fStop = [](int, double res, double resB) -> bool { return res < 1e-12 * resB; };
+    auto FA = [&](DVec &xin, DVec &Ax)
+    { Ax.data = A * xin.data; };
+    auto FML = [&](DVec &xin, DVec &MLx)
+    { MLx = xin; };
+    auto fDot = [](DVec &a, DVec &b) -> double
+    { return a.data.dot(b.data); };
+    auto fStop = [](int, double res, double resB) -> bool
+    { return res < 1e-12 * resB; };
 
     bool converged = gmres.solve(FA, FML, fDot, b, x, 20, fStop);
     CHECK(converged);
@@ -113,14 +122,18 @@ TEST_CASE("GMRES: diagonal preconditioner improves convergence")
     DVec b1(n), x1(n);
     b1.data = b_exact;
     int restarts_npc = 0;
-    auto fStop1 = [&](int iRestart, double res, double resB) -> bool {
+    auto fStop1 = [&](int iRestart, double res, double resB) -> bool
+    {
         restarts_npc = iRestart;
         return res < 1e-12 * resB;
     };
     gmres1.solve(
-        [&](DVec &xin, DVec &Ax) { Ax.data = A * xin.data; },
-        [](DVec &xin, DVec &MLx) { MLx = xin; },
-        [](DVec &a, DVec &b) -> double { return a.data.dot(b.data); },
+        [&](DVec &xin, DVec &Ax)
+        { Ax.data = A * xin.data; },
+        [](DVec &xin, DVec &MLx)
+        { MLx = xin; },
+        [](DVec &a, DVec &b) -> double
+        { return a.data.dot(b.data); },
         b1, x1, 50, fStop1);
 
     // With diagonal preconditioner
@@ -128,15 +141,19 @@ TEST_CASE("GMRES: diagonal preconditioner improves convergence")
     DVec b2(n), x2(n);
     b2.data = b_exact;
     int restarts_pc = 0;
-    auto fStop2 = [&](int iRestart, double res, double resB) -> bool {
+    auto fStop2 = [&](int iRestart, double res, double resB) -> bool
+    {
         restarts_pc = iRestart;
         return res < 1e-12 * resB;
     };
     Eigen::VectorXd diagInv = A.diagonal().cwiseInverse();
     gmres2.solve(
-        [&](DVec &xin, DVec &Ax) { Ax.data = A * xin.data; },
-        [&](DVec &xin, DVec &MLx) { MLx.data = diagInv.asDiagonal() * xin.data; },
-        [](DVec &a, DVec &b) -> double { return a.data.dot(b.data); },
+        [&](DVec &xin, DVec &Ax)
+        { Ax.data = A * xin.data; },
+        [&](DVec &xin, DVec &MLx)
+        { MLx.data = diagInv.asDiagonal() * xin.data; },
+        [](DVec &a, DVec &b) -> double
+        { return a.data.dot(b.data); },
         b2, x2, 50, fStop2);
 
     double err2 = (x2.data - x_exact).norm();
@@ -154,10 +171,10 @@ TEST_CASE("PCG: solve 5x5 SPD system")
     const int n = 5;
     Eigen::MatrixXd R = Eigen::MatrixXd::Random(n, n);
     R << 1, 0.1, 0, 0, 0,
-         0.1, 2, 0.2, 0, 0,
-         0, 0.2, 3, 0.3, 0,
-         0, 0, 0.3, 4, 0.1,
-         0, 0, 0, 0.1, 5;
+        0.1, 2, 0.2, 0, 0,
+        0, 0.2, 3, 0.3, 0,
+        0, 0, 0.3, 4, 0.1,
+        0, 0, 0, 0.1, 5;
     Eigen::MatrixXd A = (R + R.transpose()) / 2.0; // symmetric
     Eigen::VectorXd b_exact = Eigen::VectorXd::Ones(n);
     Eigen::VectorXd x_exact = A.ldlt().solve(b_exact);
@@ -168,11 +185,16 @@ TEST_CASE("PCG: solve 5x5 SPD system")
     DVec x(n);
     x.data.setZero();
 
-    auto FA = [&](DVec &p, DVec &Ap) { Ap.data = A * p.data; };
-    auto FM = [&](DVec &z, DVec &r) { r = z; }; // no preconditioning
-    auto FResPrec = [&](DVec &xin, DVec &z) { z.data = b_exact - A * xin.data; };
-    auto fDot = [](DVec &a, DVec &b) -> TScalar { return a.data.dot(b.data); };
-    auto fStop = [](int, TScalar zrDot, TScalar) -> bool { return std::abs(zrDot) < 1e-24; };
+    auto FA = [&](DVec &p, DVec &Ap)
+    { Ap.data = A * p.data; };
+    auto FM = [&](DVec &z, DVec &r)
+    { r = z; }; // no preconditioning
+    auto FResPrec = [&](DVec &xin, DVec &z)
+    { z.data = b_exact - A * xin.data; };
+    auto fDot = [](DVec &a, DVec &b) -> TScalar
+    { return a.data.dot(b.data); };
+    auto fStop = [](int, TScalar zrDot, TScalar) -> bool
+    { return std::abs(zrDot) < 1e-24; };
 
     bool converged = pcg.solve(FA, FM, FResPrec, fDot, x, 100, fStop);
     CHECK(converged);
@@ -180,4 +202,31 @@ TEST_CASE("PCG: solve 5x5 SPD system")
     double err = (x.data - x_exact).norm();
     std::cout << "[PCG/5x5] err=" << std::scientific << err << std::endl;
     CHECK(err < 1e-10);
+}
+
+TEST_CASE("GMRES handles lucky breakdown on iteration 0 and updates x")
+{
+    constexpr int N = 4;
+    Eigen::MatrixXd A = 3.0 * Eigen::MatrixXd::Identity(N, N);
+    Eigen::VectorXd x_exact(N);
+    x_exact << 1.0, -2.0, 3.0, -4.0;
+    Eigen::VectorXd b = A * x_exact;
+
+    Linear::GMRES_LeftPreconditioned<DVec> gmres(4, [](DVec &v)
+                                                 { v.data.setZero(N); });
+    DVec x(N);
+    auto FA = [&](DVec &v, DVec &Av)
+    { Av.data = A * v.data; };
+    auto FM = [&](DVec &v, DVec &Mv)
+    { Mv = v; };
+    auto fDot = [](DVec &a, DVec &b) -> double
+    { return a.data.dot(b.data); };
+    auto fStop = [](int, double res, double resB) -> bool
+    { return res <= 1e-12 * resB; };
+
+    DVec bVec(N);
+    bVec.data = b;
+    bool converged = gmres.solve(FA, FM, fDot, bVec, x, 3, fStop);
+    CHECK(converged);
+    CHECK((x.data - x_exact).norm() < 1e-12);
 }

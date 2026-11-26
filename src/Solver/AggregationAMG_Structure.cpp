@@ -73,14 +73,14 @@ namespace DNDS::Solver
                 group[seed] = id;
                 while (int(members.size()) - starts.back() < target)
                 {
-                    real best = 0;
+                    real best = -1;
                     int candidate = -1;
                     for (int p = starts.back(); p < int(members.size()); ++p)
                         for (int k = g.offsets[members[p]]; k < g.offsets[members[p] + 1]; ++k)
                         {
                             const int j = g.columns[k];
                             const real s = g.weights[k];
-                            if (group[j] < 0 && (s > best || (s == best && j < candidate)))
+                            if (group[j] < 0 && (candidate < 0 || s > best || (s == best && j < candidate)))
                             {
                                 best = s;
                                 candidate = j;

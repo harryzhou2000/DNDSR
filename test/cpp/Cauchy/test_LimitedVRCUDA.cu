@@ -76,18 +76,18 @@ TEST_CASE("Full-width LVR target and direct sensors agree on CPU and CUDA")
     {
         const auto u = means.Owned().Read(), g = gradients.Owned().Read();
         auto c = target.Owned().Write(), scalar = scalars.Write();
-        C::CPU::PrepareLVRScalarsAndTarget(metric.cells, u.View<R::UniformTableRows>(), g.View<R::UniformTableRows>(),
+        C::CPU::PrepareLVRScalarsAndTarget(metric.cellScale, u.View<R::UniformTableRows>(), g.View<R::UniformTableRows>(),
                                            scalar.View<R::UniformTableRows>(), c.View<R::UniformTableRows>(), gas, 3, 19, 0);
         for (I row = 0; row < means.Owned().RowCount(); ++row)
         {
-            CHECK(c.View()(row, 5 * 19) == doctest::Approx(.06 * metric.cells(row, 7)));
+            CHECK(c.View()(row, 5 * 19) == doctest::Approx(.06 * metric.GetCellScale(row)));
             CHECK(c.View()(row, 5 * 19 + 3) == 0);
         }
     }
     R::EagerEngine engine;
     const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
     R::SubmitArrays(engine, stream, [gas](R::ExecutionContext c, auto cells, auto u, auto g, auto scalars, auto target, auto status)
-                    { K::PrepareLVRScalarsAndTarget(c, cells, u, g, scalars, target, gas, 3, 19, 0, status); }, R::ReadAs<R::FixedRows<8>>(deviceMetrics.CellMetrics()), R::ReadAs<R::TableRows>(dm.Owned()), R::ReadAs<R::TableRows>(dg.Owned()), R::WriteAs<R::TableRows>(dsScalar), R::WriteAs<R::TableRows>(dt), R::WriteAs<R::FixedRows<1>>(targetStatus));
+                    { K::PrepareLVRScalarsAndTarget(c, cells, u, g, scalars, target, gas, 3, 19, 0, status); }, R::ReadAs<R::FixedRows<1>>(deviceMetrics.CellScales()), R::ReadAs<R::TableRows>(dm.Owned()), R::ReadAs<R::TableRows>(dg.Owned()), R::WriteAs<R::TableRows>(dsScalar), R::WriteAs<R::TableRows>(dt), R::WriteAs<R::FixedRows<1>>(targetStatus));
     engine.Synchronize();
     Good(targetStatus);
     Equal(target.Owned(), dt);

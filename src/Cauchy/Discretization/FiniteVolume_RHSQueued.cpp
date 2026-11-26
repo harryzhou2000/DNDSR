@@ -106,7 +106,8 @@ namespace DNDS::Cauchy
             CUDA::RHSGeometry view;
             view.stencil = incidence;
             view.faceOffsets = metrics.faceOffsets;
-            view.cells = metrics.cells;
+            view.cellCent = metrics.cellCent;
+            view.cellBary = metrics.cellBary;
             view.quadrature = metrics.quadrature;
             if (controls.mechanical)
             {

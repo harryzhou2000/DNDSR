@@ -737,6 +737,93 @@ TEST_CASE("Selected physical Jacobians are principal matrices after periodic fra
             }
     }
 }
+
+TEST_CASE("RANS viscous and noSlipWall Jacobian has finite coupled blocks and positive destruction diagonal")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 2);
+    mesh->BuildNodeWallDist([](auto zone)
+                            { return zone == 7; });
+    for (const auto *model : {"SA", "KOmegaSST"})
+    {
+        CAPTURE(model);
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = 1e-3;
+        settings.equation.rans.model = model;
+        settings.boundaries["7"].kind = "noSlipWall";
+        settings.boundaries["7"].temperature = 1.0;
+        settings.numerics.reconstruction = "gradient";
+        settings.numerics.viscousGradient = "polynomial";
+        settings.numerics.cfv.maxOrder = 1;
+        settings.implicit.diagonal = "block";
+        settings.implicit.sourceJacobianMode = "rhsQuadrature";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        const DNDS::index width = equation.Schema().LogicalComponents().size();
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(width));
+        auto residual = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(width));
+        auto dir = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(width));
+        auto action = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(width));
+        {
+            auto write = state.CoupledField().Owned().Write();
+            auto dW = dir.CoupledField().Owned().Write();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto p = fv.Metrics().GetCellCent(iCell);
+                const auto flow = equation.Gas().Conservative({1.1 + 0.05 * p[0], 0.3 + 0.1 * p[1], -0.1, 0.05, 1.0});
+                for (int j = 0; j < 5; ++j)
+                    write.View()(iCell, j) = flow[j];
+                if (width == 6)
+                    write.View()(iCell, 5) = 0.02 * flow[0];
+                else
+                {
+                    write.View()(iCell, 5) = 0.01 * flow[0];
+                    write.View()(iCell, 6) = 5.0 * flow[0];
+                }
+                for (DNDS::index j = 0; j < width; ++j)
+                    dW.View()(iCell, j) = 1e-2 * (j + 1);
+            }
+        }
+        auto recState = fv.BuildReconstructionState(state);
+        auto work = fv.BuildWorkspace(state);
+        auto sourceDerivative = fv.BuildSourceDerivative(state);
+        REQUIRE(sourceDerivative);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        auto aux = fv.BuildAuxiliaryValues({true, true});
+        fv.Evaluate(state, residual, *recState, *work, aux, engine, stream, 0, std::ref(*sourceDerivative));
+        R::Array<double> invTau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+        {
+            auto tW = invTau.Write();
+            for (DNDS::index i = 0; i < fv.Metrics().NumCell(); ++i)
+                tW.View()(i, 0) = 0.0;
+        }
+        auto matrix = fv.BuildLinearProblem(state, C::DiagonalStorage::Block, C::OffDiagonalStorage::Assembled);
+        C::FiniteVolume::JacobianContext jacCtx{*recState, *work};
+        jacCtx.sourceDerivative.Emplace(*sourceDerivative);
+        fv.PrepareJacobian(state, aux, invTau, *matrix, {0.0, 1.0, false}, 0.0, {}, jacCtx);
+        const auto dRead = matrix->Diagonal().Read();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            for (DNDS::index k = 0; k < width * width; ++k)
+                CHECK(std::isfinite(dRead.View()(iCell, k)));
+            for (DNDS::index j = 0; j < width; ++j)
+                CHECK(dRead.View()(iCell, j * width + j) > 0.0);
+        }
+        matrix->Apply(dir, action);
+        const auto aR = action.CoupledField().Owned().Read();
+        double normSq = 0.0;
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (DNDS::index j = 0; j < width; ++j)
+            {
+                const double v = aR.View()(iCell, j);
+                CHECK(std::isfinite(v));
+                normSq += v * v;
+            }
+        CHECK(normSq > 0.0);
+    }
+}
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

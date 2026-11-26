@@ -46,7 +46,7 @@ namespace DNDS::CFV
         const auto geometry = _data->metrics.AcquireRead();
         const auto input = (ghost ? source.Ghost() : source.Owned()).Read();
         auto output = (ghost ? destination.Ghost() : destination.Owned()).Write();
-        Detail::ConvertGradient(geometry.View().cells, input.View<R::UniformTableRows>(), output.View<R::UniformTableRows>(),
+        Detail::ConvertGradient(geometry.View().cellScale, input.View<R::UniformTableRows>(), output.View<R::UniformTableRows>(),
                                 ghost ? _data->metrics.NumCell() : 0, _data->metrics.Dimension(), reconstruction.NRecDOF(), toCoefficients);
     }
     void GradientPlan::ConvertFields(R::EagerEngine &engine, const R::ExecutionStream &stream,
@@ -77,7 +77,7 @@ namespace DNDS::CFV
                                 Detail::LaunchGradientConversion(context, cells, input, output, firstCell, dimension, modes, toCoefficients, firstComponent, componentCount);
 #endif
                         },
-                        R::ReadAs<R::FixedRows<8>>(_data->metrics.CellMetrics()), R::ReadAs<R::UniformTableRows>(ghost ? source.Ghost() : source.Owned()), outputOperand);
+                        R::ReadAs<R::FixedRows<1>>(_data->metrics.CellScales()), R::ReadAs<R::UniformTableRows>(ghost ? source.Ghost() : source.Owned()), outputOperand);
     }
     void GradientPlan::ConvertToCoefficients(const FVField &gradient, const VariationalReconstructionPlan &reconstruction, FVField &coefficients) const
     {

@@ -585,6 +585,61 @@ TEST_CASE("Rotating physical domains retain a uniform inertial flow with explici
             CHECK(stage.converged);
     }
 }
+
+TEST_CASE("Cauchy implicit integrators achieve expected temporal convergence order")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    const auto runTo = [&](const std::string &method, int steps, double T)
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "constant";
+        settings.numerics.cfv.maxOrder = 1;
+        settings.implicit.diagonal = "block";
+        settings.implicit.iterations = 30;
+        settings.implicit.relativeTolerance = 1e-13;
+        settings.implicit.absoluteTolerance = 1e-14;
+        settings.implicit.pseudoCFL = 1e6;
+        settings.implicit.maxPseudoCFL = 1e6;
+        C::TimeSettings time;
+        time.method = method;
+        C::Domain domain("order-" + method, mesh, settings, time);
+        DensityWave(domain);
+        const double dt = T / steps;
+        for (int s = 0; s < steps; ++s)
+            REQUIRE(domain.Advance(dt).accepted);
+        const auto read = domain.Dofs().CoupledField().Owned().Read();
+        std::vector<double> out(size_t(read.View().RowCount() * 5));
+        for (DNDS::index i = 0; i < read.View().RowCount(); ++i)
+            for (int j = 0; j < 5; ++j)
+                out[size_t(i * 5 + j)] = read.View()(i, j);
+        return out;
+    };
+    const auto l2Diff = [&](const std::vector<double> &a, const std::vector<double> &b)
+    {
+        double sum = 0;
+        for (size_t i = 0; i < a.size(); ++i)
+            sum += (a[i] - b[i]) * (a[i] - b[i]);
+        sum = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Sum>(sum, mpi.comm);
+        return std::sqrt(sum);
+    };
+    const double T = 0.08;
+    const auto ref = runTo("esdirk4", 64, T);
+    for (const auto &[method, minOrder] : std::vector<std::pair<std::string, double>>{{"bdf2", 1.8}, {"ditr", 1.8}, {"esdirk4", 3.5}})
+    {
+        CAPTURE(method);
+        const auto u1 = runTo(method, 4, T);
+        const auto u2 = runTo(method, 8, T);
+        const double e1 = l2Diff(u1, ref);
+        const double e2 = l2Diff(u2, ref);
+        REQUIRE(e1 > 1e-12);
+        REQUIRE(e2 > 0);
+        const double order = std::log2(e1 / e2);
+        CAPTURE(e1);
+        CAPTURE(e2);
+        CAPTURE(order);
+        CHECK(order >= minOrder);
+    }
+}
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

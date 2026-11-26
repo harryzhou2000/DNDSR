@@ -61,7 +61,7 @@ namespace DNDS::Cauchy
             index components = 0, flowFirst = -1, speciesFirst = -1, ransFirst = -1;
             bool chemical = false, interleavedGradients = false;
             std::optional<index> derivativeSlot;
-            std::array<index, 4> basisSlots{};
+            std::array<index, 5> basisSlots{};
             VolumeSourceBasis basis;
             explicit Inputs(std::shared_ptr<const Data> data)
                 : owner(std::move(data)), stencil(owner->stencil.Read({owner->metrics.Device(), nullptr})), geometry(owner->metrics.AcquireMeshRead(bool(owner->wallDistance))) {}
@@ -91,8 +91,8 @@ namespace DNDS::Cauchy
                 std::optional<EquationBlockArrayView<real>> lowOutput;
                 if (low) lowOutput.emplace(EquationBlockArrayView<real>{outputs[1], low->firstComponent, low->componentNumber});
                 CFV::FiniteVolumeHostView metric;
-                metric.cells = cells;
-                CPU::AddEquationRotationSource(metric, frame, mean, output, lowOutput, pin->owner->equation.IsACM() ? 0 : 1, rows); }, std::vector<Input>{R::ReadAs<R::UniformTableRows>(state.PhysicalField(flow.physicalField).Owned())}, std::move(outputs), std::make_tuple(R::ReadAs<R::FixedRows<8>>(owner->metrics.CellMetrics())));
+                metric.cellVolume = cells;
+                CPU::AddEquationRotationSource(metric, frame, mean, output, lowOutput, pin->owner->equation.IsACM() ? 0 : 1, rows); }, std::vector<Input>{R::ReadAs<R::UniformTableRows>(state.PhysicalField(flow.physicalField).Owned())}, std::move(outputs), std::make_tuple(R::ReadAs<R::FixedRows<1>>(owner->metrics.CellVolumes())));
         }
         if (!sourceOffsets.RowCount())
         {
@@ -133,7 +133,7 @@ namespace DNDS::Cauchy
         {
             pin->basis.polynomial = sourceSampling->BasisParameters();
             pin->basis.cachedDerivatives = sourceSampling->CachedDerivativeNumber();
-            pin->basisSlots = {read(sourceSampling->PointStorage()), read(sourceSampling->BasisStorage()), read(sourceSampling->MomentStorage()), read(sourceSampling->CellGeometryStorage())};
+            pin->basisSlots = {read(sourceSampling->PointStorage()), read(sourceSampling->BasisStorage()), read(sourceSampling->MomentStorage()), read(sourceSampling->CellCenterStorage()), read(sourceSampling->CellScaleStorage())};
             for (index f = 0; f < state.PhysicalFieldNumber(); ++f)
                 pin->coefficientSlots.push_back(read(FluxCoefficients().PhysicalField(f).Owned()));
         }
@@ -198,7 +198,8 @@ namespace DNDS::Cauchy
             {
                 auto basis=pin->basis;
                 basis.points=inputs[pin->basisSlots[0]]; basis.cached=inputs[pin->basisSlots[1]];
-                basis.moments=inputs[pin->basisSlots[2]]; basis.geometry=inputs[pin->basisSlots[3]];
+                basis.moments=inputs[pin->basisSlots[2]]; basis.cellCent=inputs[pin->basisSlots[3]];
+                basis.cellScale=inputs[pin->basisSlots[4]];
                 request.basis=basis;
                 request.coefficients={coefficients.data(),index(coefficients.size())};
             }
@@ -227,7 +228,7 @@ namespace DNDS::Cauchy
                     SpanView<CPU::SourceWorkerScratch>{workers.data(), index(workers.size())});
             }
             if (submission) submission->sourceStatus = status;
-            else RequireNumericalSuccess(status, "queued volume source"); }, std::move(inputs), std::move(outputs), std::make_tuple(R::ReadAs<R::FixedRows<1>>(sourceOffsets), R::ReadAs<R::FixedRows<1>>(sourceWeights), R::ReadAs<R::RowLayout>(ransFirst >= 0 ? owner->ransCellLength : owner->deviceEmpty), R::ReadAs<R::RowLayout>(pin->walls ? owner->wallDistance->CellValues() : owner->deviceEmpty)));
+            else RequireNumericalSuccess(status, "queued volume source"); }, std::move(inputs), std::move(outputs), std::make_tuple(R::ReadAs<R::FixedRows<1>>(sourceOffsets), R::ReadAs<R::FixedRows<1>>(sourceWeights), R::ReadAs<R::RowLayout>(ransFirst >= 0 ? owner->metrics.CellMaxLenScale() : owner->deviceEmpty), R::ReadAs<R::RowLayout>(pin->walls ? owner->wallDistance->CellValues() : owner->deviceEmpty)));
         EndQueuedPhase(engine, stream, timing);
     }
 }

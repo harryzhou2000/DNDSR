@@ -636,8 +636,8 @@ TEST_CASE("Physical and interface gradient targets evaluate nonconstant fields a
             const I cell = stencil.topology.FaceCells(face)[0];
             const auto prepared = DNDS::CFV::Math::TaylorPointEvaluation::FromPoint(
                 std::array<double, 3>{location[0], location[1], location[2]},
-                std::array<double, 3>{stencil.metric.cells(cell, 1), stencil.metric.cells(cell, 2), stencil.metric.cells(cell, 3)},
-                stencil.metric.cells(cell, 7));
+                std::array<double, 3>{stencil.metric.cellCent(cell, 0), stencil.metric.cellCent(cell, 1), stencil.metric.cellCent(cell, 2)},
+                stencil.metric.GetCellScale(cell));
             const double centered = flow[0] + .2 * (polynomial.Derivative(0, int(quadratic + 1), prepared) - basis.moments(cell, quadratic + 1));
             if (kind == C::BoundaryKind::Extrapolate)
             {

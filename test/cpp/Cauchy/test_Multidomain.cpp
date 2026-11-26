@@ -379,10 +379,10 @@ TEST_CASE("Moving ACM disk shares one pressure shift across a closed interface")
         const auto &domain = original.GetDomain(0);
         const auto u = Values(domain);
         const auto &geometry = domain.Discretization().Metrics();
-        const auto &cells = geometry.CellMetrics();
+        const auto &cells = geometry.CellVolumes();
         const auto host = cells.GetDevice() == R::Device::Host() ? cells : cells.To(R::Device::Host());
         const auto read = host.Read();
-        const auto rows = read.View<R::FixedRows<8>>();
+        const auto rows = read.View<R::FixedRows<1>>();
         double pv = 0, volume = 0;
         for (I c = 0; c < geometry.NumCell(); ++c)
         {

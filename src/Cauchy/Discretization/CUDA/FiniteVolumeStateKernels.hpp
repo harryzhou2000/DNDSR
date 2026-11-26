@@ -70,7 +70,7 @@ namespace DNDS::Cauchy::CUDA
     /// row. Empty input returns the identity. Caller retains all buffers through
     /// completion and serializes reuse of result across streams.
     void MinimumStableStep(Runtime::ExecutionContext, StateInput spectralSum,
-                           Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells, real cfl,
+                           Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cells, real cfl,
                            StateReductionInput identity, StateReductionOutput result);
 
     /// Prepared reference-coordinate quadrature, in the CPU oracle's exact
@@ -83,7 +83,7 @@ namespace DNDS::Cauchy::CUDA
     {
         Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> offsets;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<4>> points;
-        Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cells;
         void ValidateDevice(Runtime::Device device) const
         {
             Runtime::ValidateViewDevices(device, offsets, points, cells);

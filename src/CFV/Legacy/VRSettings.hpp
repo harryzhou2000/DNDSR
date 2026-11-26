@@ -39,8 +39,8 @@ namespace DNDS::CFV
         bool cacheDiffBase = false; /// @brief if cache the base function values on each of the quadrature points
         uint8_t cacheDiffBaseSize = UINT8_MAX;
 
-        real jacobiRelax = 1.0; /// @brief VR SOR/Jacobi iteration relaxation factor
-        bool SORInstead = true; /// @brief use SOR instead of relaxed Jacobi iteration
+        real jacobiRelax = 1.0;  /// @brief VR SOR/Jacobi iteration relaxation factor
+        bool SORInstead = false; /// @brief use SOR instead of relaxed Jacobi iteration
 
         real smoothThreshold = 0.01;  /// @brief limiter's smooth indicator threshold
         real WBAP_nStd = 10;          /// @brief n used in WBAP limiters
@@ -48,7 +48,7 @@ namespace DNDS::CFV
         int limiterBiwayAlter = 0;    /// @brief 0=wbap-L2-biway, 1=minmod-biway
         int subs2ndOrder = 0;         /// @brief 0: vfv; 1: gauss rule; 2: least square; 11: GGMP;
         int subs2ndOrderGGScheme = 1; /// @brief 1: gauss rule using distance for interpolation; 0: no interpolation
-        real svdTolerance = 0;        /// @brief relative small-mode cutoff against sigma_max; zero uses Eigen's default
+        real svdTolerance = 1e-13;    /// @brief relative small-mode cutoff against sigma_max; zero uses Eigen's default
 
         real bcWeight = 1;
 
@@ -177,6 +177,9 @@ namespace DNDS::CFV
                          DNDS::Config::range(0));
             config.field(static_cast<int T::*>(&T::intOrder),                     "intOrder",
                          "Global integration degree",
+                         DNDS::Config::range(0));
+            config.field(static_cast<int T::*>(&T::geometryOrder),                "geometryOrder",
+                         "Integration degree for cell volume and barycenter (0 => INT_ORDER_MAX)",
                          DNDS::Config::range(0));
             config.field(static_cast<bool T::*>(&T::ignoreMeshGeometryDeficiency), "ignoreMeshGeometryDeficiency",
                          "Ignore mesh geometry deficiency warnings");

@@ -136,7 +136,7 @@ namespace DNDS::Cauchy
             const auto parameters = PrepareFlowProfile(profile);
             R::SubmitArrays(engine, stream, [retained, geometry, parameters, primitive, gas, frame = frame.KernelParameters(), time](auto context, auto means, auto offsets, auto points, auto partial, auto result, auto completed)
             {
-                CUDA::MeasureFlowError(context, {offsets, points, geometry->View().cells}, means,
+                CUDA::MeasureFlowError(context, {offsets, points, geometry->View().cellVolume}, means,
                     parameters, primitive, gas, frame, time, partial, result, completed);
             }, R::ReadAs<R::TableRows>(state.CoupledField().Owned()), R::ReadAs<R::FixedRows<1>>(retained->offsets),
                 R::ReadAs<R::FixedRows<4>>(retained->points), R::WriteAs<R::FixedRows<1>>(retained->partial),

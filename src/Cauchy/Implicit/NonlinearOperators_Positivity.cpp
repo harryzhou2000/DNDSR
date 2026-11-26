@@ -30,7 +30,7 @@ namespace DNDS::Cauchy
                 else
                 {
 #ifdef DNDS_USE_CUDA
-                    CUDA::PrepareSpectralPseudoTime(context, geometry->View().cells, Table(spectrum), Table(scale), Table(step), cfl);
+                    CUDA::PrepareSpectralPseudoTime(context, geometry->View().cellVolume, Table(spectrum), Table(scale), Table(step), cfl);
 #else
                     Unavailable{}();
 #endif
@@ -70,7 +70,7 @@ namespace DNDS::Cauchy
         {
             const CUDA::PseudoTimeParameters parameters{retained->policy.View().thermal, controls.cfl, controls.forecastScale, controls.relax,
                                                         controls.compressionPower, controls.positivity, controls.compressRHS, alphaSlot >= 0};
-            CUDA::PreparePseudoTime(context, geometry->View().cells, Table(input[u.firstSlot]), Table(output[d.firstSlot]), Table(input[spectralSlot]), Table(input[scaleSlot]),
+            CUDA::PreparePseudoTime(context, geometry->View().cellVolume, Table(input[u.firstSlot]), Table(output[d.firstSlot]), Table(input[spectralSlot]), Table(input[scaleSlot]),
                                     Table(output[inverseSlot]), alphaSlot >= 0 ? Table(output[alphaSlot]) : CUDA::LinearWriteRows{}, parameters, scratch, summary);
         };
 #else

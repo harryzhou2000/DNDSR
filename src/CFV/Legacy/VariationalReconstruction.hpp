@@ -540,18 +540,15 @@ namespace DNDS::CFV
             {
                 faceL = this->GetCellMaxLenScale(mesh->FaceCells(iFace)[0]) * 0.5;
                 if (mesh->FaceCells(iFace)[1] != UnInitIndex)
-                    faceL = std::max(faceL, this->GetCellMaxLenScale(mesh->FaceCells(iFace)[1]));
+                    faceL = std::max(faceL, this->GetCellMaxLenScale(mesh->FaceCells(iFace)[1]) * 0.5);
             }
             // CellMax option is the same as BaryDiff in terms of faceLOrig (being the Bary Dist)
             // CellMax only uses another faceL
 
             faceL *= settings.functionalSettings.scaleMultiplier;
 
-#ifdef USE_ECCENTRIC_COMB_POW_2
-            static constexpr int powV = 2;
-#else
+            // Enforce Frobenius rotational invariance (powV == 1).
             static constexpr int powV = 1;
-#endif
 
             if (!settings.functionalSettings.useAnisotropicFunctional)
             {

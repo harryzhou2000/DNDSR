@@ -2133,6 +2133,117 @@ TEST_CASE("P0 jump-only face viscosity retains physical gradients in the SA volu
     }
 }
 
+#ifdef DNDS_USE_CANTERA
+TEST_CASE("Active RANS + Cantera reacting FV evaluates nonzero chemical and turbulence sources with finite Jacobian")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 2);
+    mesh->BuildNodeWallDist([](auto zone)
+                            { return zone == 7; });
+    auto settings = Settings();
+    settings.mesh.dimension = 3;
+    settings.equation.eos = "idealGasMixture";
+    settings.equation.transport = "NewtonianFourier";
+    settings.equation.source = "chemical";
+    settings.equation.viscosity = 0;
+    settings.equation.mixture.mechanismFile = "h2o2.yaml";
+    settings.equation.mixture.rho0 = 1.0;
+    settings.equation.mixture.U0 = 1.0;
+    settings.equation.mixture.L0 = 1.0;
+    settings.equation.mixture.T0 = 1.0;
+    settings.equation.rans.model = "SA";
+    settings.boundaries["7"].kind = "noSlipWall";
+    settings.boundaries["7"].temperature = 1400.0;
+    settings.numerics.reconstruction = "gradient";
+    settings.numerics.cfv.maxOrder = 1;
+    settings.implicit.diagonal = "block";
+    settings.implicit.sourceJacobianMode = "rhsQuadrature";
+    auto setup = C::PhysicsResources::Resolve(settings.equation);
+    const auto &equation = setup.equation;
+    const int nSpec = equation.Mixture().SpeciesNumber();
+    const int nIndep = nSpec - 1;
+    const I width = I(equation.Schema().LogicalComponents().size());
+    REQUIRE(width == 5 + nIndep + 1);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(width));
+    auto residual = C::EquationDofOperations::NewVector(state);
+    auto sourceOnly = C::EquationDofOperations::NewVector(state);
+    {
+        auto lease = setup.workers->Acquire();
+        auto &chem = lease.Source();
+        std::vector<double> Y(size_t(nSpec), 1e-6);
+        const auto &names = equation.Mixture().SpeciesNames();
+        for (int k = 0; k < nSpec; ++k)
+        {
+            if (names[size_t(k)] == "H2")
+                Y[size_t(k)] = 0.025;
+            else if (names[size_t(k)] == "O2")
+                Y[size_t(k)] = 0.20;
+            else if (names[size_t(k)] == "AR" || names[size_t(k)] == "N2")
+                Y[size_t(k)] = 0.77;
+        }
+        double sumY = 0;
+        for (double v : Y)
+            sumY += v;
+        for (double &v : Y)
+            v /= sumY;
+        const DNDS::Physics::Chemistry::ConstSpeciesBufferView yView{Y.data(), nSpec};
+        const auto mRead = fv.Metrics().AcquireRead();
+        const auto metric = mRead.HostView();
+        auto write = state.WriteOwned();
+        const auto flow = write.Block("flow");
+        const auto species = write.Block("species");
+        const auto rans = write.Block("rans");
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const auto pt = metric.GetCellBary(iCell);
+            const double T = 1600.0 + 20.0 * pt[0];
+            const double p = 101325.0;
+            const double rho = p / (chem.mixtureR(yView) * T);
+            const double vx = 10.0 + 5.0 * pt[1];
+            const double eInt = chem.mixtureIntEnergy(T, yView, p);
+            flow(iCell, 0) = rho;
+            flow(iCell, 1) = rho * vx;
+            flow(iCell, 2) = 0.0;
+            flow(iCell, 3) = 0.0;
+            flow(iCell, 4) = rho * (eInt + 0.5 * vx * vx);
+            for (int k = 0; k < nIndep; ++k)
+                species(iCell, k) = rho * Y[size_t(k)];
+            rans(iCell, 0) = 1e-4 * rho;
+        }
+    }
+    auto recState = fv.BuildReconstructionState(state);
+    auto work = fv.BuildWorkspace(state, setup.workers);
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    fv.Evaluate(state, residual, *recState, *work, engine, stream);
+    C::EquationDofOperations::Fill(sourceOnly, 0.0);
+    fv.AddSource(state, sourceOnly, *recState, *work);
+    {
+        const auto resR = residual.ReadOwned();
+        const auto srcR = sourceOnly.ReadOwned();
+        double specSrcNorm = 0.0, ransSrcNorm = 0.0;
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            for (int j = 0; j < 5; ++j)
+                CHECK(std::isfinite(resR.Block("flow")(iCell, j)));
+            for (int k = 0; k < nIndep; ++k)
+            {
+                const double s = srcR.Block("species")(iCell, k);
+                CHECK(std::isfinite(s));
+                specSrcNorm += s * s;
+            }
+            const double r = srcR.Block("rans")(iCell, 0);
+            CHECK(std::isfinite(r));
+            ransSrcNorm += r * r;
+        }
+        specSrcNorm = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Sum>(specSrcNorm, mpi.comm);
+        ransSrcNorm = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Sum>(ransSrcNorm, mpi.comm);
+        CHECK(specSrcNorm > 0.0);
+        CHECK(ransSrcNorm > 0.0);
+    }
+}
+#endif
+
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

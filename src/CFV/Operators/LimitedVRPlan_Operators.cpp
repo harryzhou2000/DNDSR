@@ -16,6 +16,7 @@ namespace DNDS::CFV
     {
         ValidateRegion(region);
         _metrics.ValidateField(meanScalars, 2);
+        DNDS_check_throw_info(output.Width() == 3 || output.Width() == 4, "LVR seed gate width must be 3 or 4");
         _metrics.ValidateField(baseGates, output.Width());
         _metrics.ValidateField(output, output.Width());
         DNDS_check_throw_info(previous.GetDevice() == Device() && !previous.Layout().IsVariable() && previous.RowCount() == _metrics.NumCell() && previous.Layout().Width() + 1 == output.Width(),
@@ -26,8 +27,9 @@ namespace DNDS::CFV
     void LimitedVRPlan::BuildExtremumSeeds(const FVField &meanScalars, const FVField &baseGates, const R::Array<real> &previous,
                                            FVField &output, const LimitedVRSettings &settings, ReconstructionRegion region) const
     {
-        ValidateSeeds(meanScalars, baseGates, previous, output, region);
         const auto parameters = LimitedVRKernelParameters::FromSettings(settings);
+        DNDS_check_throw_info(output.Width() == settings.GateWidth(), "LVR seed output width does not match settings.GateWidth()");
+        ValidateSeeds(meanScalars, baseGates, previous, output, region);
         DNDS_check_throw_info(Device() == R::Device::Host(), "synchronous LVR convenience API requires host placement; use its queued overload for CUDA");
         const auto geometry = _metrics.AcquireRead();
         auto scalarRead = meanScalars.Owned().Read(), gateRead = baseGates.Owned().Read(), history = previous.Read();

@@ -929,10 +929,11 @@ namespace DNDS::CFV
                           { DNDS_check_throw_info(ids(iPoint, 0) >= 0 && ids(iPoint, 0) < Metrics().NumCellProc(), "sampling cell outside prepared closure"); });
         auto mo = mean.Owned().Read(), mg = mean.Ghost().Read(), co = coefficients.Owned().Read(), cg = coefficients.Ghost().Read();
         R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{mo.View<R::UniformTableRows>(), mg.View<R::UniformTableRows>()}, rec{co.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
-        auto pRead = points.Read(), geomRead = Metrics()._data->cell.Read(), momentRead = _data->moments.Read();
+        auto pRead = points.Read(), centRead = Metrics()._data->cellCent.Read(), scaleRead = Metrics()._data->cellScale.Read(), momentRead = _data->moments.Read();
         auto output = values.Write();
         const auto p = pRead.View<R::FixedRows<3>>();
-        const auto geom = geomRead.View<R::FixedRows<8>>();
+        const auto cellCent = centRead.View<R::FixedRows<3>>();
+        const auto cellScale = scaleRead.View<R::FixedRows<1>>();
         const auto moment = momentRead.View<R::TableRows>();
         const auto out = output.View<R::UniformTableRows>();
         OMP::ForRows(0, cells.RowCount(), [&](index iPoint)
@@ -940,7 +941,7 @@ namespace DNDS::CFV
             Math::SmallMatrix basis;
             const auto cell = ids(iPoint, 0);
             Math::PolynomialDerivatives(basis, Metrics().Dimension(), Settings().maxOrder, {p(iPoint, 0), p(iPoint, 1), p(iPoint, 2)},
-                                        {geom(cell, 1), geom(cell, 2), geom(cell, 3)}, geom(cell, 7));
+                                        {cellCent(cell, 0), cellCent(cell, 1), cellCent(cell, 2)}, cellScale(cell, 0));
             for (index v = 0; v < nv; ++v)
             {
                 real value = derivative == 0 ? u(cell, v) : 0;

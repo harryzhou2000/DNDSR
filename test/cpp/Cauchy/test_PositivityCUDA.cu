@@ -72,9 +72,11 @@ namespace
                                 { return 2 * i; });
         auto basis = Table<real>(2 * cells, old.modes, [](I q, I mode)
                                  { return (q % 2 ? -1. : 1.) / (mode + 1); });
-        R::Array<real> points(R::RowLayout::Dense(0, 3)), empty(R::RowLayout::Dense(0, 0)), cellGeometry(R::RowLayout::Dense(0, 8));
+        R::Array<real> points(R::RowLayout::Dense(0, 3)), empty(R::RowLayout::Dense(0, 0)),
+            cellCent(R::RowLayout::Dense(0, 3)), cellScale(R::RowLayout::Dense(0, 1));
         const auto faceRead = faceRows.Read(), offsetsRead = offsets.Read();
-        const auto basisRead = basis.Read(), pointRead = points.Read(), emptyRead = empty.Read(), geometryRead = cellGeometry.Read();
+        const auto basisRead = basis.Read(), pointRead = points.Read(), emptyRead = empty.Read(),
+                   centRead = cellCent.Read(), scaleRead = cellScale.Read();
         C::FiniteVolumeStencilView stencil;
         stencil.topology.cellFaces = {faceRead.View(), {}};
         auto descriptors = Table<C::FiniteVolumeStencilView>(1, 1, [&](I, I)
@@ -89,7 +91,8 @@ namespace
         geometry.maximumCellPoints = 2;
         geometry.basis.cached = emptyRead.View<R::TableRows>();
         geometry.basis.moments = emptyRead.View<R::TableRows>();
-        geometry.basis.cells = geometryRead.View<R::FixedRows<8>>();
+        geometry.basis.cellCent = centRead.View<R::FixedRows<3>>();
+        geometry.basis.cellScale = scaleRead.View<R::FixedRows<1>>();
         geometry.basis.polynomial = DNDS::CFV::Math::TaylorBasis(2, 3).KernelParameters();
         geometry.basis.availableDerivatives = 1;
         C::ModalPositivityPolicy policy;
@@ -105,9 +108,10 @@ namespace
         policy.modeEnd = {0, 2, 5, 9};
         auto dmeans = means.To(device), dbasis = basis.To(device);
         auto dfaces = faceRows.To(device), doffsets = offsets.To(device);
-        auto dpoints = points.To(device), dempty = empty.To(device), dcells = cellGeometry.To(device);
+        auto dpoints = points.To(device), dempty = empty.To(device), dcent = cellCent.To(device), dscale = cellScale.To(device);
         const auto deviceFaces = dfaces.Read(context), deviceOffsets = doffsets.Read(context);
-        const auto deviceBasis = dbasis.Read(context), devicePoints = dpoints.Read(context), deviceEmpty = dempty.Read(context), deviceCells = dcells.Read(context);
+        const auto deviceBasis = dbasis.Read(context), devicePoints = dpoints.Read(context), deviceEmpty = dempty.Read(context),
+                   deviceCent = dcent.Read(context), deviceScale = dscale.Read(context);
         auto deviceStencil = stencil;
         deviceStencil.topology.cellFaces.owned = deviceFaces.View();
         auto deviceDescriptorSource = Table<C::FiniteVolumeStencilView>(1, 1, [&](I, I)
@@ -121,7 +125,8 @@ namespace
         resident.volumePoints = devicePoints.View<R::FixedRows<3>>();
         resident.basis.cached = deviceEmpty.View<R::TableRows>();
         resident.basis.moments = deviceEmpty.View<R::TableRows>();
-        resident.basis.cells = deviceCells.View<R::FixedRows<8>>();
+        resident.basis.cellCent = deviceCent.View<R::FixedRows<3>>();
+        resident.basis.cellScale = deviceScale.View<R::FixedRows<1>>();
         auto deviceInitial = initial.To(device);
         const auto initialRead = deviceInitial.Read(context);
         const auto meanRead = means.Read(), deviceMean = dmeans.Read(context);
@@ -206,14 +211,14 @@ TEST_CASE("CUDA physical-dt forecast ignores RANS bounds and reports invalid mea
                            {
         if (j >= 5) return real(-1e20);
         return i == 1 && j == 4 ? real(-100) : i == 2 && j == 0 ? real(-10) : real(0); });
-    auto geometry = Table<real>(3, 8, [](I i, I j)
-                                { return j == 0 ? real(i + 1) : real(0); });
+    auto geometry = Table<real>(3, 1, [](I i, I)
+                                { return real(i + 1); });
     std::pair<I, real> expected;
     {
         const auto u = means.Read(), r = rhs.Read(), g = geometry.Read();
         const auto meanLayout = Components(u.View<R::UniformTableRows>()), rhsLayout = Components(r.View<R::UniformTableRows>());
         DNDS::CFV::FiniteVolumeHostView metrics;
-        metrics.cells = g.View<R::FixedRows<8>, false>();
+        metrics.cellVolume = g.View<R::FixedRows<1>, false>();
         const auto result = C::CPU::LimitPhysicalStepRows(meanLayout.View(), rhsLayout.View(), metrics, thermal.View(), .1, .5, 1, 1);
         REQUIRE(bool(result));
         expected = result.value;
@@ -228,7 +233,7 @@ TEST_CASE("CUDA physical-dt forecast ignores RANS bounds and reports invalid mea
         const auto u = du.Read(context), r = dr.Read(context), g = dg.Read(context);
         auto a = alpha.Write(context);
         auto s = status.Write(context);
-        K::LimitPhysicalStepRows(context, u.View<R::TableRows>(), r.View<R::TableRows>(), g.View<R::FixedRows<8>, false>(), thermal.View(), .1, .5, 1, 1, a.View<R::FixedRows<1>>(), s.View<R::FixedRows<1>>());
+        K::LimitPhysicalStepRows(context, u.View<R::TableRows>(), r.View<R::TableRows>(), g.View<R::FixedRows<1>, false>(), thermal.View(), .1, .5, 1, 1, a.View<R::FixedRows<1>>(), s.View<R::FixedRows<1>>());
         REQUIRE(cudaStreamSynchronize(::DNDS::Runtime::CUDAStream(context)) == cudaSuccess);
     };
     launch();

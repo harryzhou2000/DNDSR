@@ -189,7 +189,7 @@ namespace DNDS::Cauchy
         R::SubmitArrays(engine, stream, [](R::ExecutionContext context, auto input, auto output)
                         { Algebra::ApplyRowViews(context, Algebra::PointwiseOperation::Copy, output.DynamicView(), input.DynamicView()); }, R::ReadAs<R::TableRows>(*auxiliary.faceSpectralRadius), R::WriteAs<R::TableRows>(values.radius));
         R::SubmitArrays(engine, stream, [scratch, cells, parameters, controls, full, rowMajorBlocks = output.RowMajorBlocks()](R::ExecutionContext context, auto tau, auto diagonal, auto status)
-                        { CUDA::InitializePerfectGasFluxJacobianDiagonal(context, scratch->metric.View().cells, tau, diagonal, status, cells,
+                        { CUDA::InitializePerfectGasFluxJacobianDiagonal(context, scratch->metric.View().cellVolume, tau, diagonal, status, cells,
                                                                          parameters.frame, controls.physicalMass, parameters.scale, parameters.components, full, rowMajorBlocks); }, R::ReadAs<R::TableRows>(inversePseudoTime), R::WriteAs<R::UniformTableRows>(output.Diagonal()), R::WriteAs<R::FixedRows<1>>(scratch->rowsStatus));
         scratch->AppendStatus(engine, stream, scratch->rowsStatus);
         if (_data->equation.HasRANS())

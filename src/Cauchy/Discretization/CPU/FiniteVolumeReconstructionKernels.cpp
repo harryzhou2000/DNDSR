@@ -26,7 +26,7 @@ namespace DNDS::Cauchy::CPU
         // The wrapper selects one provider, once. No EOS/worker call occurs
         // inside the face loop; mixtures consume the cached mean properties.
         if (bool(gas) == bool(thermodynamics) ||
-            (thermodynamics && (!thermodynamics->HasCharacteristics() || thermodynamics->RowCount() != metric.cells.RowCount())))
+            (thermodynamics && (!thermodynamics->HasCharacteristics() || thermodynamics->RowCount() != metric.NumCellProc())))
             return NumericalStatus{NumericalError::InvalidInput};
         index fallbacks = 0;
         const auto loadFlow = [&](index iCell)
@@ -40,16 +40,16 @@ namespace DNDS::Cauchy::CPU
         {
             const auto iFace = stencil.stencilFaces(iAux, 0);
             const auto cells = stencil.topology.FaceCells(iFace);
-            if (cells[0] < 0 || cells[0] >= metric.cells.RowCount())
+            if (cells[0] < 0 || cells[0] >= metric.NumCellProc())
                 return index(0);
             const auto left = loadFlow(cells[0]);
             auto right = left;
-            if (cells[1] >= 0 && cells[1] < metric.cells.RowCount())
+            if (cells[1] >= 0 && cells[1] < metric.NumCellProc())
                 right = stencil.metric.periodic.Rotates(iFace)
                             ? FiniteVolumeDetail::RotateState(loadFlow(cells[1]), stencil.metric.periodic.OtherRotation(iFace, 0))
                             : loadFlow(cells[1]);
             const auto normal = metric.GetFaceMeanNorm(iFace);
-            const index rightCell = cells[1] >= 0 && cells[1] < metric.cells.RowCount() ? cells[1] : cells[0];
+            const index rightCell = cells[1] >= 0 && cells[1] < metric.NumCellProc() ? cells[1] : cells[0];
             const auto result = thermodynamics
                                     ? TryCachedMeanCharacteristics(left, right, thermodynamics->Characteristics(cells[0]),
                                                                    thermodynamics->Characteristics(rightCell), {normal[0], normal[1], normal[2]})

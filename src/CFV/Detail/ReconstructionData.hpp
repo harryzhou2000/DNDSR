@@ -30,58 +30,76 @@ namespace DNDS::CFV::Detail
         std::optional<Runtime::RowTransferPlan> halo;
         mutable std::once_flag partitionOnce;
         mutable std::optional<Geom::EntityWorkPartition> workPartition;
-        int dim, intOrder;
+        int dim, intOrder, geometryOrder;
         bool axisymmetric;
-        // Cell table: volume, center[3], barycenter[3], isotropic half-box scale.
-        Runtime::Array<real> cell;
+        // Separate semantic cell geometry arrays (no raw column packing).
+        Runtime::Array<real> cellVolume;
+        Runtime::Array<real> cellCent;
+        Runtime::Array<real> cellBary;
+        // Isotropic half-box scale for Taylor polynomial basis normalization.
+        Runtime::Array<real> cellScale;
+        // Principal-axis inertia maximum extent (used by DES and VR CellMax).
+        Runtime::Array<real> cellMaxLenScale;
         Runtime::Array<real> cellSmoothScaleFactors; // owned cells only
         // Integral (x-bary_r)*dA divided by radial volume, used by the weighted
-        // divergence identity in axisymmetric Green-Gauss. Zero otherwise.
+        // divergence identity in axisymmetric Green-Gauss. Zero rows otherwise.
         Runtime::Array<real> radialMoment;
         // Face quadrature table: position[3], unit normal[3], weighted measure.
         Runtime::Array<real> faceQuadrature;
-        // One geometric record per face: reference center, normalized area-
-        // integrated normal, and scalar area. Independent of RHS quadrature.
-        Runtime::Array<real> faceMean;
+        // Separate semantic face-mean geometry arrays (independent of RHS quadrature).
+        Runtime::Array<real> faceCent;
+        Runtime::Array<real> faceMeanNorm;
+        Runtime::Array<real> faceArea;
         Runtime::Array<index> faceOffsets;
         Runtime::Array<uint8_t> facePeriodicCodes;
         Runtime::Array<FacePeriodicParameters> periodicParameters;
-        Runtime::Array<real> neighborCenters;
         /// Canonical incidence-only placement. It shares host native arrays
         /// and copies only the requested topology when placed on a device.
         /// Operator read scopes pin the source generation through queued use.
         std::optional<Geom::CellFaceIncidenceStorage> topology;
-        FiniteVolumeData(ssp<Geom::UnstructuredMesh> m, int order, bool axis, std::shared_ptr<Runtime::CommunicationContext> context)
+        FiniteVolumeData(ssp<Geom::UnstructuredMesh> m, int order, int geomOrder, bool axis, std::shared_ptr<Runtime::CommunicationContext> context)
             : mesh(std::move(m)), stamp(mesh->versions.Stamp(Runtime::Change::Topology | Runtime::Change::Geometry |
                                                              Runtime::Change::Distribution | Runtime::Change::Layout)),
               cells(mesh->Entities(Geom::EntityKind::Cell)),
               communication(std::move(context)), dofs(communication, cells.NumOwned(), cells.NumGhost(), "FV cells"),
-              dim(mesh->getDim()), intOrder(order), axisymmetric(axis)
+              dim(mesh->getDim()), intOrder(order), geometryOrder(geomOrder), axisymmetric(axis)
         {
             topology.emplace(Geom::CellFaceIncidenceStorage::Capture(mesh));
         }
         FiniteVolumeData(const FiniteVolumeData &source, Runtime::Device device, Runtime::ExecutionContext context)
             : mesh(source.mesh), stamp(source.stamp), cells(source.cells), communication(source.communication),
               dofs(source.dofs), halo(source.halo), workPartition(source.workPartition),
-              dim(source.dim), intOrder(source.intOrder), axisymmetric(source.axisymmetric),
-              cell(source.cell.To(device, context)), cellSmoothScaleFactors(source.cellSmoothScaleFactors.To(device, context)),
+              dim(source.dim), intOrder(source.intOrder), geometryOrder(source.geometryOrder), axisymmetric(source.axisymmetric),
+              cellVolume(source.cellVolume.To(device, context)),
+              cellCent(source.cellCent.To(device, context)),
+              cellBary(source.cellBary.To(device, context)),
+              cellScale(source.cellScale.To(device, context)),
+              cellMaxLenScale(source.cellMaxLenScale.To(device, context)),
+              cellSmoothScaleFactors(source.cellSmoothScaleFactors.To(device, context)),
               radialMoment(source.radialMoment.To(device, context)),
-              faceQuadrature(source.faceQuadrature.To(device, context)), faceMean(source.faceMean.To(device, context)),
+              faceQuadrature(source.faceQuadrature.To(device, context)),
+              faceCent(source.faceCent.To(device, context)),
+              faceMeanNorm(source.faceMeanNorm.To(device, context)),
+              faceArea(source.faceArea.To(device, context)),
               faceOffsets(source.faceOffsets.To(device, context)),
               facePeriodicCodes(source.facePeriodicCodes.To(device, context)),
               periodicParameters(source.periodicParameters.To(device, context)),
-              neighborCenters(source.neighborCenters.To(device, context)),
               topology(source.topology->Placed(device, context))
         {
-            cell.SetName("CFV/metrics/cell", DNDS_ALLOCATION_SITE());
+            cellVolume.SetName("CFV/metrics/cellVolume", DNDS_ALLOCATION_SITE());
+            cellCent.SetName("CFV/metrics/cellCent", DNDS_ALLOCATION_SITE());
+            cellBary.SetName("CFV/metrics/cellBary", DNDS_ALLOCATION_SITE());
+            cellScale.SetName("CFV/metrics/cellScale", DNDS_ALLOCATION_SITE());
+            cellMaxLenScale.SetName("CFV/metrics/cellMaxLenScale", DNDS_ALLOCATION_SITE());
             cellSmoothScaleFactors.SetName("CFV/metrics/cellSmoothScaleFactors", DNDS_ALLOCATION_SITE());
             radialMoment.SetName("CFV/metrics/radialMoment", DNDS_ALLOCATION_SITE());
             faceQuadrature.SetName("CFV/metrics/faceQuadrature", DNDS_ALLOCATION_SITE());
-            faceMean.SetName("CFV/metrics/faceMean", DNDS_ALLOCATION_SITE());
+            faceCent.SetName("CFV/metrics/faceCent", DNDS_ALLOCATION_SITE());
+            faceMeanNorm.SetName("CFV/metrics/faceMeanNorm", DNDS_ALLOCATION_SITE());
+            faceArea.SetName("CFV/metrics/faceArea", DNDS_ALLOCATION_SITE());
             faceOffsets.SetName("CFV/metrics/faceOffsets", DNDS_ALLOCATION_SITE());
             facePeriodicCodes.SetName("CFV/metrics/facePeriodicCodes", DNDS_ALLOCATION_SITE());
             periodicParameters.SetName("CFV/metrics/periodicParameters", DNDS_ALLOCATION_SITE());
-            neighborCenters.SetName("CFV/metrics/neighborCenters", DNDS_ALLOCATION_SITE());
         }
     };
     struct ReconstructionData

@@ -169,7 +169,6 @@ namespace DNDS::Cauchy
         std::optional<ThermalBounds> fixedFlowThermalBounds;
         std::optional<AdmissibilityPolicy> defaultAdmissibility;
         std::optional<WallDistanceSamples> wallDistance;
-        Runtime::Array<real> ransCellLength;
         /// CPU-only immutable preparation; called before a spatial placement.
         void BuildSourceQuadrature();
         /// Build compact canonical face routing and incidence matrix slots.
@@ -203,6 +202,7 @@ namespace DNDS::Cauchy
             CFV::FiniteVolumeMetricOptions options;
             options.integrationOrder = settings.numerics.cfv.intOrder;
             options.faceIntegrationOrder = settings.numerics.RHSIntegrationOrder();
+            options.geometryOrder = settings.numerics.metricOrder;
             options.collectivePreflight = settings.implicit.collectiveChecks;
             options.nIterCellSmoothScale = settings.implicit.nIterCellSmoothScale;
             options.progress = std::move(progress);

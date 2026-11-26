@@ -41,7 +41,7 @@ namespace DNDS::Cauchy::CUDA
                         atomicOr(error.data, 1);
                         continue;
                     }
-                    const real distance = (s.metric.GetNeighborCent(face, 0) - s.metric.GetCellCent(cells[0])).norm();
+                    const real distance = (s.metric.periodic.OtherPoint(face, 0, s.metric.GetCellCent(cells[1])) - s.metric.GetCellCent(cells[0])).norm();
                     const real area = s.metric.GetFaceArea(face);
                     if (!(distance > 0 && isfinite(distance) && area > 0 && isfinite(area)))
                     {

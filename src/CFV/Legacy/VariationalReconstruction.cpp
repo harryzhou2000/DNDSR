@@ -752,7 +752,16 @@ namespace DNDS::CFV
                     B += AHalf_GG.transpose() * BHalf_GG * this->GetGreenGauss1WeightOnCell(iCell);
                 }
                 if (iCellOther == iCell) //* coincide periodic
-                    A -= B, B *= 0;
+                {
+                    bool rotatedSelf = false;
+                    if (mesh->isPeriodic && Geom::FaceIDIsPeriodic(faceID))
+                    {
+                        const auto iPer = Geom::FaceIDIsPeriodicDonor(faceID) ? -faceID - 3 : -faceID;
+                        rotatedSelf = !periodicity.rotation[iPer].map().isApprox(tGPoint::Identity(), 1e-14);
+                    }
+                    if (!rotatedSelf)
+                        A -= B, B *= 0;
+                }
                 if (c_.needOriginalMatrix)
                     c_.matrixAB(iCell, 1 + ic2f) = B;
                 local_Bs.emplace_back(std::move(B));
@@ -878,12 +887,30 @@ namespace DNDS::CFV
             index iCellR = mesh->face2cell(iFace, 1);
             if (iCellR == UnInitIndex) // only for faces with two
                 continue;
-            // get dbv from 1st derivative to last
-            MatrixXR DiffI = this->GetIntPointDiffBaseValue(iCellL, iFace, 0, -1, Eigen::seq(1, EigenLast));
-            MatrixXR DiffJ = this->GetIntPointDiffBaseValue(iCellR, iFace, 1, -1, Eigen::seq(1, EigenLast));
+            // get full dbv so periodic derivative rotation includes row 0 before slicing 1..end
+            const auto faceID = mesh->GetFaceZone(iFace);
+            MatrixXR DiffI_full = this->GetIntPointDiffBaseValue(iCellL, iFace, 0, -1, EigenAll);
+            MatrixXR DiffJ_full = this->GetIntPointDiffBaseValue(iCellR, iFace, 1, -1, EigenAll);
+            MatrixXR DiffJ_inL = DiffJ_full;
+            MatrixXR DiffI_inR = DiffI_full;
+            if (mesh->isPeriodic && Geom::FaceIDIsPeriodic(faceID))
+            {
+                if (Geom::FaceIDIsPeriodicDonor(faceID)) // L (side 0) is donor, R (side 1) is main
+                {
+                    periodicity.TransDiValueInplace<dim>(DiffJ_inL, faceID);
+                    periodicity.TransDiValueBackInplace<dim>(DiffI_inR, faceID);
+                }
+                else if (Geom::FaceIDIsPeriodicMain(faceID)) // L (side 0) is main, R (side 1) is donor
+                {
+                    periodicity.TransDiValueBackInplace<dim>(DiffJ_inL, faceID);
+                    periodicity.TransDiValueInplace<dim>(DiffI_inR, faceID);
+                }
+            }
+            MatrixXR DiffI = DiffI_full(Eigen::seq(1, EigenLast), EigenAll);
+            MatrixXR DiffJ = DiffJ_full(Eigen::seq(1, EigenLast), EigenAll);
             MatrixXR M2_L2R, M2_R2L;
-            HardEigen::EigenLeastSquareSolve(DiffI, DiffJ, M2_R2L);
-            HardEigen::EigenLeastSquareSolve(DiffJ, DiffI, M2_L2R);
+            HardEigen::EigenLeastSquareSolve(DiffI, DiffJ_inL(Eigen::seq(1, EigenLast), EigenAll), M2_R2L);
+            HardEigen::EigenLeastSquareSolve(DiffJ, DiffI_inR(Eigen::seq(1, EigenLast), EigenAll), M2_L2R);
             // TODO: cleanse M2s' lower triangle
             int maxNDOFM1 = c_.matrixSecondary[iFace].cols() / 2;
             c_.matrixSecondary[iFace](

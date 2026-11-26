@@ -12,7 +12,7 @@ namespace DNDS::Cauchy::CUDA
     namespace
     {
         constexpr int Threads = 128;
-        using Cells = R::ArrayView<const real, false, R::FixedRows<8>>;
+        using Cells = R::ArrayView<const real, false, R::FixedRows<1>>;
         using ActiveRows = R::ArrayView<const uint8_t, R::AccessBoundsChecks, R::FixedRows<1>>;
         __device__ StateReductionValue Merge(StateReductionValue a, StateReductionValue b)
         {

@@ -21,7 +21,7 @@ namespace DNDS::Cauchy::CUDA
                 diagonal(cell, full ? Algebra::DenseBlockEntry(row, col, n, rowMajor) : row) += scale * source(cell, row * n + col);
             }
         }
-        __global__ void Rotation(R::ArrayView<const real, false, R::FixedRows<8>> cells,
+        __global__ void Rotation(R::ArrayView<const real, false, R::FixedRows<1>> cells,
                                  RigidFrameParameters frame, SourceInput means, SourceOutput output,
                                  SourceOutput low, bool produceLow, Runtime::RowSelection selected, int firstMomentum)
         {
@@ -122,7 +122,7 @@ namespace DNDS::Cauchy::CUDA
             {
                 const int modes = request.basis.polynomial.size - 1;
                 DNDS_check_throw_info(modes <= 19, "source modal order exceeds P3");
-                R::ValidateViewDevices(context.device, request.coefficients, request.basis.points, request.basis.cached, request.basis.moments, request.basis.geometry);
+                R::ValidateViewDevices(context.device, request.coefficients, request.basis.points, request.basis.cached, request.basis.moments, request.basis.cellCent, request.basis.cellScale);
                 CheckTable(request.coefficients, cells, request.components * modes);
                 DNDS_check_throw_info(request.coefficients.kind == R::RowLayoutKind::Table && request.coefficients.stride == request.coefficients.Width(),
                                       "CUDA modal source requires compact combined AoS coefficients");
@@ -168,7 +168,7 @@ namespace DNDS::Cauchy::CUDA
         ApplyDerivative<<<Blocks(source.RowCount() * diagonal.Width()), 128, 0, R::CUDAStream(context)>>>(source, diagonal, n, full, rowMajor, scale);
         CheckLaunch();
     }
-    void AddRotationSource(R::ExecutionContext context, R::ArrayView<const real, false, R::FixedRows<8>> cells,
+    void AddRotationSource(R::ExecutionContext context, R::ArrayView<const real, false, R::FixedRows<1>> cells,
                            RigidFrameParameters frame, SourceInput means, SourceOutput output, SourceOutput low, bool produceLow, Runtime::RowSelection selected, int firstMomentum)
     {
         DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA rotation source requires a CUDA context");

@@ -406,12 +406,13 @@ namespace DNDS::Cauchy::Riemann::Math
                 result.flux = fluxRight;
                 return blendWithCentral();
             }
-            const Scalar denominator = left[0] * (sl - uL) - right[0] * (sr - uR);
             const Scalar faceL = NormalSpeed(input.left, input), faceR = NormalSpeed(input.right, input);
-            const Scalar contact = DNDS::Math::ScalarAbs(denominator) > DenominatorGuard<Scalar>() ? (input.right.flow.pressure - input.left.flow.pressure + left[0] * faceL * (sl - uL) - right[0] * faceR * (sr - uR)) / denominator : 0;
+            const Scalar gridNormal = Dot(input.gridVelocity, input.normal);
+            const Scalar denominator = left[0] * (sl - faceL) - right[0] * (sr - faceR);
+            const Scalar contact = DNDS::Math::ScalarAbs(denominator) > DenominatorGuard<Scalar>() ? (input.right.flow.pressure - input.left.flow.pressure + left[0] * faceL * (sl - faceL) - right[0] * faceR * (sr - faceR)) / denominator : 0;
             const bool upstream = contact >= 0;
             const auto &state = upstream ? left : right, &physical = upstream ? fluxLeft : fluxRight;
-            const Scalar wave = upstream ? sl : sr, velocity = upstream ? uL : uR, pressure = upstream ? input.left.flow.pressure : input.right.flow.pressure;
+            const Scalar wave = upstream ? sl : sr, velocity = upstream ? faceL : faceR, pressure = upstream ? input.left.flow.pressure : input.right.flow.pressure;
             const Scalar div = wave - contact;
             if (DNDS::Math::ScalarAbs(div) < DenominatorGuard<Scalar>())
             {
@@ -421,7 +422,7 @@ namespace DNDS::Cauchy::Riemann::Math
             const Scalar starPressure = pressure + state[0] * (wave - velocity) * (contact - velocity);
             for (int j = 0; j < 5; ++j)
             {
-                const Scalar direction = j == 0 ? 0 : j == 4 ? contact
+                const Scalar direction = j == 0 ? 0 : j == 4 ? contact + gridNormal
                                                              : input.normal[j - 1];
                 result.flux[j] = ((state[j] * wave - physical[j]) * contact + direction * starPressure * wave) / div;
             }

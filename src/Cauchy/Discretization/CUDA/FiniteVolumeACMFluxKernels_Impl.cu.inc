@@ -32,10 +32,14 @@ namespace DNDS::Cauchy::CUDA::Detail
         index unusedFallbacks = 0;
         const auto sample = geometry.FaceSample(iFace, entry);
         ACM::KernelPoint<C> left, right;
-        ReconstructPoint<C>(geometry, physics, controls, fields, sample, false, left, unusedFallbacks);
+        std::array<real, C> leftViscous{}, rightViscous{};
+        const bool separateViscous = controls.viscous && controls.distinctViscous && !controls.primitiveGradient;
+        ReconstructPoint<C>(geometry, physics, controls, fields, sample, false, left, unusedFallbacks,
+                            separateViscous ? &leftViscous : nullptr);
         BoundaryKind kind = BoundaryKind::Interior;
         if (sample.other != UnInitIndex)
-            ReconstructPoint<C>(geometry, physics, controls, fields, sample, true, right, unusedFallbacks);
+            ReconstructPoint<C>(geometry, physics, controls, fields, sample, true, right, unusedFallbacks,
+                                separateViscous ? &rightViscous : nullptr);
         else
         {
             right = left;
@@ -59,6 +63,8 @@ namespace DNDS::Cauchy::CUDA::Detail
             }
             else if (!ACM::ExteriorAt(physics.flow, kind, left.values, bc, sample.normal, sample.ownPoint, controls.frame, right.values, C, omega))
                 return NumericalStatus{NumericalError::UnsupportedRequest}.At(sample.cell, entry);
+            if (separateViscous)
+                rightViscous = right.values;
             // Keep the reflected SA scalar for the wall-normal viscous jump.
         }
         std::array<real, C> flux{};
@@ -68,12 +74,14 @@ namespace DNDS::Cauchy::CUDA::Detail
         if (controls.viscous && kind != BoundaryKind::SlipWall)
         {
             ACM::KernelPoint<C> face;
+            const auto &vLeft = separateViscous ? leftViscous : left.values;
+            const auto &vRight = separateViscous ? rightViscous : right.values;
             for (int j = 0; j < C; ++j)
             {
                 face.values[j] = .5 * (left.values[j] + right.values[j]);
                 for (int d = 0; d < 3; ++d)
                     face.gradients[j][d] = .5 * (left.gradients[j][d] + right.gradients[j][d]) +
-                                           sample.normal[d] * (right.values[j] - left.values[j]) / sample.viscousDistance;
+                                           sample.normal[d] * (vRight[j] - vLeft[j]) / sample.viscousDistance;
             }
             real viscosity = physics.flow.kinematicViscosity;
             if constexpr (C > 4)

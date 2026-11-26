@@ -14,7 +14,7 @@ namespace DNDS::CFV::Detail
     {
         Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> cells;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> means, points, gradients;
-        Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> geometry;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> cellBary;
         Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> output;
         int dimension = 0;
         bool gradient = false;
@@ -24,7 +24,7 @@ namespace DNDS::CFV::Detail
         {
             Runtime::ValidateViewDevices(device, cells, means, output);
             if (gradient)
-                Runtime::ValidateViewDevices(device, points, gradients, geometry);
+                Runtime::ValidateViewDevices(device, points, gradients, cellBary);
         }
     };
 }

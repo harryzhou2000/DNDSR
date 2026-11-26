@@ -38,7 +38,8 @@ namespace CauchyTest
             _columns, _active, _auxiliaryCellFaces, _coreCells, _dependentCells, _coreFaces, _dependentFaces;
         CompactR::Array<DNDS::Geom::NodePeriodicBits> _bits;
         CompactR::Array<DNDS::Geom::ElemInfo> _faceInfo;
-        CompactR::Array<DNDS::real> _cells, _faceMetrics, _quadrature, _distances, _neighbors, _radial;
+        CompactR::Array<DNDS::real> _cellVolume, _cellCent, _cellBary, _cellScale, _cellMaxLenScale,
+            _faceCent, _faceMeanNorm, _faceArea, _quadrature, _distances, _radial;
         CompactR::Array<uint8_t> _codes;
         CompactR::Array<DNDS::CFV::FacePeriodicParameters> _parameters;
         CompactR::Array<DNDS::Cauchy::FaceRouting> _routing;
@@ -147,8 +148,39 @@ namespace CauchyTest
             _incidenceOffsets = Dense<CompactIndex>(1, offsets);
             _columns = Dense<CompactIndex>(2, columns);
             _active = Dense<CompactIndex>(1, active);
-            _cells = Dense<DNDS::real>(8, input.cells);
-            _faceMetrics = Dense<DNDS::real>(7, input.faceMetrics);
+            const size_t nCells = input.cells.size() / 8;
+            const size_t nFaces = static_cast<size_t>(faces);
+            std::vector<DNDS::real> cellVol(nCells, 0.0), cellCent(nCells * 3, 0.0),
+                cellBary(nCells * 3, 0.0), cellScale(nCells, 0.0), cellMaxLen(nCells, 0.0);
+            for (size_t i = 0; i < nCells; ++i)
+            {
+                cellVol[i] = input.cells[8 * i];
+                for (int d = 0; d < 3; ++d)
+                {
+                    cellCent[3 * i + d] = input.cells[8 * i + 1 + d];
+                    cellBary[3 * i + d] = input.cells[8 * i + 4 + d];
+                }
+                cellScale[i] = input.cells[8 * i + 7];
+                cellMaxLen[i] = 2.0 * input.cells[8 * i + 7];
+            }
+            std::vector<DNDS::real> faceCent(nFaces * 3, 0.0), faceNorm(nFaces * 3, 0.0), faceArea(nFaces, 0.0);
+            for (size_t i = 0; i < nFaces; ++i)
+            {
+                for (int d = 0; d < 3; ++d)
+                {
+                    faceCent[3 * i + d] = input.faceMetrics[7 * i + d];
+                    faceNorm[3 * i + d] = input.faceMetrics[7 * i + 3 + d];
+                }
+                faceArea[i] = input.faceMetrics[7 * i + 6];
+            }
+            _cellVolume = Dense<DNDS::real>(1, cellVol);
+            _cellCent = Dense<DNDS::real>(3, cellCent);
+            _cellBary = Dense<DNDS::real>(3, cellBary);
+            _cellScale = Dense<DNDS::real>(1, cellScale);
+            _cellMaxLenScale = Dense<DNDS::real>(1, cellMaxLen);
+            _faceCent = Dense<DNDS::real>(3, faceCent);
+            _faceMeanNorm = Dense<DNDS::real>(3, faceNorm);
+            _faceArea = Dense<DNDS::real>(1, faceArea);
             _quadrature = Dense<DNDS::real>(7, input.quadrature);
             _distances = Dense<DNDS::real>(1, input.distances);
             _codes = Dense<uint8_t>(1, input.codes);
@@ -159,23 +191,6 @@ namespace CauchyTest
             _coreFaces = Dense<CompactIndex>(1, input.coreFaces);
             _dependentFaces = Dense<CompactIndex>(1, input.dependentFaces);
             _radial = CompactR::Array<DNDS::real>(CompactR::RowLayout::Dense(0, 3));
-            _neighbors = CompactR::Array<DNDS::real>(CompactR::RowLayout::Dense(faces, 6));
-            {
-                const auto codes = _codes.Read();
-                const auto parameters = _parameters.Read();
-                const DNDS::CFV::FacePeriodicView periodic{codes.View<CompactR::FixedRows<1>>(), parameters.View<CompactR::FixedRows<1>>()};
-                auto write = _neighbors.Write();
-                for (CompactIndex iFace = 0; iFace < faces; ++iFace)
-                    for (int side = 0; side < 2; ++side)
-                    {
-                        const auto pair = input.faceCells[iFace];
-                        const auto other = pair[1 - side] == DNDS::UnInitIndex ? pair[side] : pair[1 - side];
-                        const auto point = periodic.OtherPoint(iFace, side,
-                                                               DNDS::Geom::tPoint{input.cells[8 * other + 1], input.cells[8 * other + 2], input.cells[8 * other + 3]});
-                        for (int d = 0; d < 3; ++d)
-                            write.View()(iFace, 3 * side + d) = point[d];
-                    }
-            }
             const auto place = [&](auto &array)
             {
                 if (context.device != CompactR::Device::Host())
@@ -190,8 +205,14 @@ namespace CauchyTest
             place(_columns);
             place(_active);
             place(_auxiliaryCellFaces);
-            place(_cells);
-            place(_faceMetrics);
+            place(_cellVolume);
+            place(_cellCent);
+            place(_cellBary);
+            place(_cellScale);
+            place(_cellMaxLenScale);
+            place(_faceCent);
+            place(_faceMeanNorm);
+            place(_faceArea);
             place(_quadrature);
             place(_distances);
             place(_codes);
@@ -201,7 +222,6 @@ namespace CauchyTest
             place(_dependentCells);
             place(_coreFaces);
             place(_dependentFaces);
-            place(_neighbors);
             place(_radial);
             place(_empty);
             _view.topology = {{Capture<CompactIndex, CompactR::RowLayout>(_cellFaces), {}},
@@ -209,12 +229,17 @@ namespace CauchyTest
                               {Capture<DNDS::Geom::NodePeriodicBits, CompactR::RowLayout>(_bits), {}},
                               {Capture<DNDS::Geom::ElemInfo, CompactR::RowLayout>(_faceInfo), {}},
                               true};
-            _view.metric.cells = Capture<DNDS::real, CompactR::FixedRows<8>>(_cells);
+            _view.metric.cellVolume = Capture<DNDS::real, CompactR::FixedRows<1>>(_cellVolume);
+            _view.metric.cellCent = Capture<DNDS::real, CompactR::FixedRows<3>>(_cellCent);
+            _view.metric.cellBary = Capture<DNDS::real, CompactR::FixedRows<3>>(_cellBary);
+            _view.metric.cellScale = Capture<DNDS::real, CompactR::FixedRows<1>>(_cellScale);
+            _view.metric.cellMaxLenScale = Capture<DNDS::real, CompactR::FixedRows<1>>(_cellMaxLenScale);
             _view.metric.faceOffsets = Capture<CompactIndex, CompactR::FixedRows<1>>(_faceOffsets);
             _view.metric.quadrature = Capture<DNDS::real, CompactR::FixedRows<7>>(_quadrature);
             _view.metric.radialMoment = Capture<DNDS::real, CompactR::FixedRows<3>>(_radial);
-            _view.metric.faceMean = Capture<DNDS::real, CompactR::FixedRows<7>>(_faceMetrics);
-            _view.metric.neighborCenters = Capture<DNDS::real, CompactR::FixedRows<6>>(_neighbors);
+            _view.metric.faceCent = Capture<DNDS::real, CompactR::FixedRows<3>>(_faceCent);
+            _view.metric.faceMeanNorm = Capture<DNDS::real, CompactR::FixedRows<3>>(_faceMeanNorm);
+            _view.metric.faceArea = Capture<DNDS::real, CompactR::FixedRows<1>>(_faceArea);
             _view.metric.periodic = {Capture<uint8_t, CompactR::FixedRows<1>>(_codes), Capture<DNDS::CFV::FacePeriodicParameters, CompactR::FixedRows<1>>(_parameters)};
             _view.routing = Capture<DNDS::Cauchy::FaceRouting, CompactR::FixedRows<1>>(_routing);
             _view.columns = Capture<CompactIndex, CompactR::FixedRows<2>>(_columns);

@@ -20,7 +20,7 @@ namespace DNDS::CFV::CPU
                     for (int d = 0; d < request.dimension; ++d)
                         value += request.gradients(
                                      iCell, j * request.dimension + d) *
-                                 (request.points(iQuery, d) - request.geometry(iCell, d + 1));
+                                 (request.points(iQuery, d) - request.cellBary(iCell, d));
                 request.output(iQuery, j) = value;
             } });
     }

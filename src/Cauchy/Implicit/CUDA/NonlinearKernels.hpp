@@ -10,7 +10,7 @@ namespace DNDS::Cauchy::CUDA
 {
     using OmegaStateRows = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     void SetResolvedCellOmega(Runtime::ExecutionContext, WallCellRows, OmegaStateRows, index column, real coefficient);
-    using NonlinearCells = Runtime::ArrayView<const real, false, Runtime::FixedRows<8>>;
+    using NonlinearCells = Runtime::ArrayView<const real, false, Runtime::FixedRows<1>>;
 
     /** @brief Compact per-block/final nonlinear reduction, never per-cell scratch.
      * @details norms contains raw component integrals and volume at index N.

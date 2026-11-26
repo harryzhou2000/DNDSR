@@ -37,7 +37,7 @@ TEST_CASE("Rotated periodic sector preserves vector linear fields across distrib
         {
             const auto p = geometry.HostView().GetCellBary(iCell);
             u.View()(iCell, 0) = p[0], u.View()(iCell, 1) = p[1], u.View()(iCell, 2) = 0, u.View()(iCell, 3) = 3;
-            const auto scale = geometry.HostView().cells(iCell, 7);
+            const auto scale = geometry.HostView().GetCellScale(iCell);
             r.View()(iCell, 0) = scale, r.View()(iCell, plan.NRecDOF() + 1) = scale;
         }
         auto b = bc.values.Write();
@@ -63,7 +63,7 @@ TEST_CASE("Rotated periodic sector preserves vector linear fields across distrib
             for (I component = 0; component < 4; ++component)
                 for (I mode = 0; mode < plan.NRecDOF(); ++mode)
                     CHECK(read.View()(iCell, component * plan.NRecDOF() + mode) == doctest::Approx(
-                                                                                       component < 2 && mode == component ? geometry.HostView().cells(iCell, 7) : 0)
+                                                                                       component < 2 && mode == component ? geometry.HostView().GetCellScale(iCell) : 0)
                                                                                        .epsilon(1e-10)
                                                                                        .scale(1));
     }
@@ -97,7 +97,7 @@ TEST_CASE("Rotated periodic sector preserves vector linear fields across distrib
             for (I component = 0; component < 4; ++component)
                 for (I mode = 0; mode < plan.NRecDOF(); ++mode)
                     CHECK(read.View()(iCell, component * plan.NRecDOF() + mode) == doctest::Approx(
-                                                                                       component < 2 && mode == component ? geometry.HostView().cells(iCell, 7) : 0)
+                                                                                       component < 2 && mode == component ? geometry.HostView().GetCellScale(iCell) : 0)
                                                                                        .epsilon(1e-10)
                                                                                        .scale(1));
     }
@@ -160,7 +160,7 @@ TEST_CASE("Axisymmetric metrics and all gradient methods obey radial linear mome
         {
             const auto p = geometry.HostView().GetCellBary(iCell);
             u.View()(iCell, 0) = 2 + 3 * p[0] - .7 * p[1];
-            r.View()(iCell, 0) = 3 * geometry.HostView().cells(iCell, 7), r.View()(iCell, 1) = -.7 * geometry.HostView().cells(iCell, 7);
+            r.View()(iCell, 0) = 3 * geometry.HostView().GetCellScale(iCell), r.View()(iCell, 1) = -.7 * geometry.HostView().GetCellScale(iCell);
         }
         for (I iPoint = 0; iPoint < reconstruction.NumBoundaryQuadrature(); ++iPoint)
         {
@@ -175,8 +175,8 @@ TEST_CASE("Axisymmetric metrics and all gradient methods obey radial linear mome
     auto geometry = metrics.AcquireRead();
     for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
         for (I mode = 0; mode < reconstruction.NRecDOF(); ++mode)
-            CHECK(read.View()(iCell, mode) == doctest::Approx(mode == 0 ? 3 * geometry.HostView().cells(iCell, 7) : mode == 1 ? -.7 * geometry.HostView().cells(iCell, 7)
-                                                                                                                              : 0)
+            CHECK(read.View()(iCell, mode) == doctest::Approx(mode == 0 ? 3 * geometry.HostView().GetCellScale(iCell) : mode == 1 ? -.7 * geometry.HostView().GetCellScale(iCell)
+                                                                                                                                  : 0)
                                                   .epsilon(1e-9)
                                                   .scale(1));
 }
@@ -342,7 +342,7 @@ TEST_CASE("Shared basis policies snapshot points and sample cubic values and der
             for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
             {
                 const auto center = geometry.HostView().GetCellCent(iCell);
-                const auto scale = geometry.HostView().cells(iCell, 7);
+                const auto scale = geometry.HostView().GetCellScale(iCell);
                 u.View()(iCell, 0) = center[0] * center[0] * center[0] + center[0] * .01 / 4 + 2 * center[1];
                 for (int mode = 0; mode < plan.NRecDOF(); ++mode)
                     r.View()(iCell, mode) = 0;
@@ -374,7 +374,7 @@ TEST_CASE("Shared basis policies snapshot points and sample cubic values and der
             const auto matrix = cache.FaceMatrix(iPoint, side);
             CHECK(matrix.RowCount() == expectedRows);
             CHECK(matrix.Width() == plan.NRecDOF());
-            const double scale = geometry.HostView().cells(0, 7);
+            const double scale = geometry.HostView().GetCellScale(0);
             CHECK(basis.rows() == expectedRows);
             if (expectedRows >= 3)
             {
@@ -581,7 +581,7 @@ TEST_CASE("Bundled polynomial values and gradients preserve the independent samp
             for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
             {
                 const auto center = geometry.HostView().GetCellCent(iCell);
-                const double scale = geometry.HostView().cells(iCell, 7);
+                const double scale = geometry.HostView().GetCellScale(iCell);
                 c.View()(iCell, 0) = iCell;
                 for (int d = 0; d < 3; ++d)
                     p.View()(iCell, d) = center[d] + (d == 0 ? .013 : d == 1 ? -.007

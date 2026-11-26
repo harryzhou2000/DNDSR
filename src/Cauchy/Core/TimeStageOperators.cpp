@@ -130,7 +130,7 @@ namespace DNDS::Cauchy
             retained->stepSummary.SetName("physical-step/CFL/summary", DNDS_ALLOCATION_SITE());
         }
         R::SubmitArrayBatch(engine, stream, [geometry, cfl](auto context, auto input, auto, auto identity, auto value)
-                            { CUDA::MinimumStableStep(context, Table(input[0]), geometry->View().cells, cfl, identity, value); }, std::move(inputs), Outputs{}, std::make_tuple(R::ReadAs<R::FixedRows<1>>(retained->stepIdentity), R::WriteAs<R::FixedRows<1>>(retained->stepSummary)));
+                            { CUDA::MinimumStableStep(context, Table(input[0]), geometry->View().cellVolume, cfl, identity, value); }, std::move(inputs), Outputs{}, std::make_tuple(R::ReadAs<R::FixedRows<1>>(retained->stepIdentity), R::WriteAs<R::FixedRows<1>>(retained->stepSummary)));
         engine.Synchronize();
         const auto host = retained->stepSummary.To(R::Device::Host(), stream.Context());
         const auto read = host.Read();
@@ -189,7 +189,7 @@ namespace DNDS::Cauchy
         };
 #ifdef DNDS_USE_CUDA
         const auto device = [geometry, u, r, policy, dt, relax, scale, power](auto context, auto input, auto, auto scratch, auto value)
-        { CUDA::LimitPhysicalStep(context, geometry->View().cells, Table(input[u.firstSlot]), Table(input[r.firstSlot]), policy.View().thermal,
+        { CUDA::LimitPhysicalStep(context, geometry->View().cellVolume, Table(input[u.firstSlot]), Table(input[r.firstSlot]), policy.View().thermal,
                                   dt, relax, scale, power, scratch, value); };
 #else
         const auto device = [] {};
@@ -221,7 +221,7 @@ namespace DNDS::Cauchy
         };
 #ifdef DNDS_USE_CUDA
         const auto device = [geometry, a, u, h, l, bounds, c](auto context, auto input, auto, auto scratch, auto value)
-        { CUDA::MeasureExplicitBlend(context, geometry->View().cells, Table(input[a.firstSlot]), Table(input[u.firstSlot]),
+        { CUDA::MeasureExplicitBlend(context, geometry->View().cellVolume, Table(input[a.firstSlot]), Table(input[u.firstSlot]),
                                      Table(input[h.firstSlot]), Table(input[l.firstSlot]), bounds, c, scratch, value); };
 #else
         const auto device = [] {};
@@ -260,7 +260,7 @@ namespace DNDS::Cauchy
             else
             {
 #ifdef DNDS_USE_CUDA
-                CUDA::UpdateExplicitFlow(context, geometry->View().cells, Table(input[a.firstSlot]), Table(input[r.firstSlot]),
+                CUDA::UpdateExplicitFlow(context, geometry->View().cellVolume, Table(input[a.firstSlot]), Table(input[r.firstSlot]),
                     l ? Table(input[l->firstSlot]) : CUDA::TimeStageInput{}, Table(output[y.firstSlot]), alpha, c);
 #else
                 DNDS_check_throw_info(false, "CUDA time-stage operators are not compiled");
@@ -301,7 +301,7 @@ namespace DNDS::Cauchy
         };
 #ifdef DNDS_USE_CUDA
         const auto device = [geometry, a, r, y, rans, c](auto context, auto input, auto output, auto scratch, auto value)
-        { CUDA::UpdateExplicitExtended(context, geometry->View().cells, Table(input[a.firstSlot]), Table(input[r.firstSlot]),
+        { CUDA::UpdateExplicitExtended(context, geometry->View().cellVolume, Table(input[a.firstSlot]), Table(input[r.firstSlot]),
                                        Table(output[y.firstSlot]), rans, c, scratch, value); };
 #else
         const auto device = [] {};

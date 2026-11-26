@@ -132,7 +132,7 @@ namespace DNDS::Cauchy
                                     CUDA::PrepareLVRScalarsAndTarget(context, cells, AoS(means), AoS(slopes), AoS(output), AoS(coefficients), gas, dimension, count, first, status);
 #endif
                             },
-                            R::ReadAs<R::FixedRows<8>>(data.metrics.CellMetrics()), R::ReadAs<R::UniformTableRows>(values), R::ReadAs<R::UniformTableRows>(input), R::WriteAs<R::UniformTableRows>(out), R::WriteAs<R::UniformTableRows>(target), R::WriteAs<R::FixedRows<1>>(status));
+                            R::ReadAs<R::FixedRows<1>>(data.metrics.CellScales()), R::ReadAs<R::UniformTableRows>(values), R::ReadAs<R::UniformTableRows>(input), R::WriteAs<R::UniformTableRows>(out), R::WriteAs<R::UniformTableRows>(target), R::WriteAs<R::FixedRows<1>>(status));
             accumulateStatus(status);
         };
         fill(false);

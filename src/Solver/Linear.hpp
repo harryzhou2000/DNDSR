@@ -50,85 +50,77 @@ namespace DNDS::Linear
             real scale_MLb = std::sqrt(fDot(MLb, MLb));
             MatrixXR h;
             h.setZero(kSubspace + 1, kSubspace);
-            uint32_t iRestart = 0;
-            for (iRestart = 0; iRestart <= nRestart; iRestart++)
+            bool converged = false;
+            for (uint32_t iRestart = 0; iRestart <= nRestart; iRestart++)
             {
-                FA(x, V_temp);          // V_temp = A * x
-                FML(V_temp, Vs[0]);     // Vs[0] = ML * A * x
-                Vs[0].addTo(MLb, -1.0); // Vs[0] = ML * A * x - ML * b = -r
-                real beta = UnInitReal;
-                beta = std::sqrt(fDot(Vs[0], Vs[0])); // beta = norm2(r)
-                if (FStop(iRestart, beta, scale_MLb)) // see if converge
+                h.setZero();
+                FA(x, V_temp);                             // V_temp = A * x
+                FML(V_temp, Vs[0]);                        // Vs[0] = ML * A * x
+                Vs[0].addTo(MLb, -1.0);                    // Vs[0] = ML * A * x - ML * b = -r
+                real beta = std::sqrt(fDot(Vs[0], Vs[0])); // beta = norm2(r)
+                if (FStop(iRestart, beta, scale_MLb))      // see if converge
+                {
+                    converged = true;
                     break;
-                if (std::abs(beta) < verySmallReal || // beta is floating-point negligible
-                    (iRestart == nRestart))
+                }
+                if (std::abs(beta) < verySmallReal) // beta is floating-point negligible
+                {
+                    converged = true;
+                    break;
+                }
+                if (iRestart == nRestart)
                     break;
                 Vs[0] *= -1.0 / beta; // Vs[0] = r/norm2(r)
 
                 uint32_t j = 0;
-                for (; j < kSubspace; j++) // Arnoldi
+                bool luckyBreakdown = false;
+                for (; j < kSubspace; j++) // Arnoldi (Modified Gram-Schmidt)
                 {
                     FA(Vs[j], V_temp);      // V_temp = A * Vs[j]
                     FML(V_temp, Vs[j + 1]); // Vs[j + 1] = ML * A * Vs[j]
+                    real normAv = std::sqrt(fDot(Vs[j + 1], Vs[j + 1]));
                     for (uint32_t i = 0; i <= j; i++)
                     {
-                        // Gram-Schmidt, calculate projected lengths
-                        h(i, j) = fDot(Vs[j + 1], (Vs[i])); // h(i, j) = dot(ML * A * Vs[j],Vs[i])
+                        h(i, j) = fDot(Vs[j + 1], Vs[i]);
+                        Vs[j + 1].addTo(Vs[i], -h(i, j));
                     }
-                    for (uint32_t i = 0; i <= j; i++)
+                    h(j + 1, j) = std::sqrt(fDot(Vs[j + 1], Vs[j + 1]));
+                    if (h(j + 1, j) <= std::max(normAv * 1e-14, verySmallReal))
                     {
-                        // Gram-Schmidt, subtract projections
-                        Vs[j + 1].addTo(Vs[i], -h(i, j)); // Vs[j + 1] = ML * A * Vs[j] - sum_{i=0,1,...j}(h(i,j) *  Vs[i])
-                    }
-                    h(j + 1, j) = std::sqrt(fDot(Vs[j + 1], Vs[j + 1])); //
-                    if (h(j + 1, j) < scale_MLb * 1e-32)
-                    {
-                        std::cout << "early stop" << std::endl;
+                        luckyBreakdown = true;
+                        j++;
                         break;
                     }
                     Vs[j + 1] *= 1.0 / h(j + 1, j); // normalize
                 }
-                // std::cout << beta << std::endl;
 
+                if (j < 1)
+                    break;
                 VectorXR eBeta;
                 eBeta.resize(j + 1);
                 eBeta.setZero();
                 eBeta(0) = beta; // eBeta = e_1 * beta
-                if (j < 1)
-                    break;
 
-                { // the QR method
-                  //  auto QR = h.colPivHouseholderQr();
-                  //  QR.setThreshold(std::sqrt(scale_MLb) * 1e-32);
-                  //  if (QR.rank() != h.rows())
-                  //      DNDS_assert_info(false, "GMRES not good");
-                  //  Eigen::VectorXd y = QR.solve(eBeta);
-                }
-
-                // auto sol = h(Eigen::seq(0, j + 1 - 1), Eigen::seq(0, j - 1)).bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
-                // Eigen::VectorXd y = sol.solve(eBeta); //! warning: this gmres is dumb and do not lucky stop
                 MatrixXR y;
-                MatrixXR hPart = h(Eigen::seq(0, j + 1 - 1), Eigen::seq(0, j - 1));
+                MatrixXR hPart = h(Eigen::seq(0, j), Eigen::seq(0, j - 1));
                 DNDS_assert_info(hPart.allFinite(), "GMRES_LeftPreconditioned acquired inf or nan coefficient");
                 auto rank = HardEigen::EigenLeastSquareSolve(hPart, eBeta, y);
 
-                // int rank;
-                // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-                // if (rank == 0)
-                //     std::cout << h << std::endl;
-
-                for (uint32_t jj = 0; jj < j; jj++) // x = V(:, 0,1,2,...kSubspace-1) * y
-                {
+                for (uint32_t jj = 0; jj < j; jj++) // x = V(:, 0,1,2,...j-1) * y
                     x.addTo(Vs[jj], y(jj));
-                    // std::cout << iRestart << "::" << Vs[j].transpose() << "::" << y(j) << std::endl;
-                }
-                if (rank < h.cols())
-                {
 
-                    break; // do not restart
+                if (luckyBreakdown || rank < hPart.cols())
+                {
+                    // Check true preconditioned residual after lucky-breakdown or rank-deficient update.
+                    FA(x, V_temp);
+                    FML(V_temp, Vs[0]);
+                    Vs[0].addTo(MLb, -1.0);
+                    real finalBeta = std::sqrt(fDot(Vs[0], Vs[0]));
+                    converged = FStop(iRestart + 1, finalBeta, scale_MLb) || std::abs(finalBeta) < verySmallReal;
+                    break;
                 }
             }
-            return iRestart < nRestart;
+            return converged;
         }
     };
 

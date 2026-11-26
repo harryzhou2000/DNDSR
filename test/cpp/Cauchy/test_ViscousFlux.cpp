@@ -25,6 +25,7 @@ TEST_CASE("P3 viscous face derivatives reproduce polynomial heat conduction and 
     settings.numerics.viscousGradient = "polynomial";
     settings.numerics.cfv.maxOrder = 3;
     settings.numerics.cfv.intOrder = 6;
+    settings.numerics.cfv.cacheDiffBase = true;
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     const auto &gas = equation.Gas();
     C::FiniteVolume fv(mesh, settings, equation);

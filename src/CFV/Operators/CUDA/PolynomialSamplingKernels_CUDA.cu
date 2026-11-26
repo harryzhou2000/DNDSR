@@ -25,9 +25,9 @@ namespace DNDS::CFV::Detail
             }
             else
             {
-                const real scale = plan.geometry(iCell, 7);
+                const real scale = plan.cellScale(iCell, 0);
                 const std::array<real, 3> point{plan.points(iPoint, 0), plan.points(iPoint, 1), plan.points(iPoint, 2)};
-                const std::array<real, 3> center{plan.geometry(iCell, 1), plan.geometry(iCell, 2), plan.geometry(iCell, 3)};
+                const std::array<real, 3> center{plan.cellCent(iCell, 0), plan.cellCent(iCell, 1), plan.cellCent(iCell, 2)};
                 const auto evaluation = Math::TaylorPointEvaluation::FromPoint(point, center, scale);
                 for (int mode = 0; mode < modes; ++mode)
                     basis[mode] = plan.polynomial.ReconstructionDerivative(derivative, mode, evaluation, plan.moments, iCell);

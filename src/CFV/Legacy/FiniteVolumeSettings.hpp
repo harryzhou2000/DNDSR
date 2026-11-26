@@ -23,8 +23,9 @@ namespace DNDS::CFV
     {
         using json = nlohmann::ordered_json;
 
-        int maxOrder{1}; /// @brief polynomial degree of reconstruction
-        int intOrder{1}; /// @brief integration degree globally set @note this is actually reduced somewhat
+        int maxOrder{1};      /// @brief polynomial degree of reconstruction
+        int intOrder{1};      /// @brief integration degree globally set @note this is actually reduced somewhat
+        int geometryOrder{0}; /// @brief integration degree for cell volume/barycenter geometry (0 => INT_ORDER_MAX)
         bool ignoreMeshGeometryDeficiency = false;
 
         int nIterCellSmoothScale = 15;
@@ -46,6 +47,8 @@ namespace DNDS::CFV
             DNDS_FIELD(maxOrder,                      "Polynomial degree of reconstruction",
                        DNDS::Config::range(0));
             DNDS_FIELD(intOrder,                      "Global integration degree",
+                       DNDS::Config::range(0));
+            DNDS_FIELD(geometryOrder,                 "Integration degree for cell volume and barycenter (0 => INT_ORDER_MAX)",
                        DNDS::Config::range(0));
             DNDS_FIELD(ignoreMeshGeometryDeficiency,  "Ignore mesh geometry deficiency warnings");
             DNDS_FIELD(nIterCellSmoothScale,          "Cell smooth scale iterations",

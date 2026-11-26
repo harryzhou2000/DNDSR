@@ -83,7 +83,8 @@ namespace DNDS::Cauchy
             if (directBasis || options.arbitraryPointSampling)
             {
                 samplingPlacement.Seed(_data->reconstruction->SamplingMoments(), placed->reconstruction->SamplingMoments());
-                samplingPlacement.Seed(_data->reconstruction->SamplingCellGeometry(), placed->reconstruction->SamplingCellGeometry());
+                samplingPlacement.Seed(_data->reconstruction->SamplingCellCenters(), placed->reconstruction->SamplingCellCenters());
+                samplingPlacement.Seed(_data->reconstruction->SamplingCellScales(), placed->reconstruction->SamplingCellScales());
             }
             DNDS_check_throw_info(solver.UsesAMG() || placed->reconstruction->SupportsKernel(placed->reconstructionKernel),
                                   "requested CFV reconstruction kernel is unsupported on this device/build (legacy selectors require DNDS_CFV_CUDA_ENABLE_V1_KERNELS)");
@@ -96,7 +97,6 @@ namespace DNDS::Cauchy
             return target;
         };
         placed->boundaryFaces = moveField(_data->boundaryFaces, "boundary/faces");
-        placed->ransCellLength = moveField(_data->ransCellLength, "ransCellLength");
         if (_data->equation.IsACM())
         {
             placed->deviceACMBoundaryConditions = R::MetadataBuffer<ACM::BoundaryParameters>::Generate(

@@ -45,7 +45,8 @@ namespace DNDS::Cauchy::CUDA
                                           request.coefficients.Width() == request.components * request.modes && request.coefficients.kind == R::RowLayoutKind::Table,
                                       "CUDA boundary polynomial shape mismatch");
                 if (request.centers)
-                    DNDS_check_throw_info(request.basis.cells.RowCount() >= request.means.RowCount() &&
+                    DNDS_check_throw_info(request.basis.cellCent.RowCount() >= request.means.RowCount() &&
+                                              request.basis.cellScale.RowCount() >= request.means.RowCount() &&
                                               request.basis.moments.RowCount() >= request.means.RowCount() &&
                                               request.basis.moments.Width() == request.modes + 1,
                                           "center polynomial boundary evaluation requires resident point geometry and moments");

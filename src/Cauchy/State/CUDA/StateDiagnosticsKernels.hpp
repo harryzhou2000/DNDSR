@@ -25,7 +25,7 @@ namespace DNDS::Cauchy::CUDA
     /// last arriving block performs the fixed-index tail tree without spinning.
     /// No allocation, host observation, MPI or floating-point atomic sum.
     void AccumulateStateDiagnostics(Runtime::ExecutionContext, DiagnosticInput mean, DiagnosticInput residual,
-                                    Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells,
+                                    Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cells,
                                     std::optional<PerfectGas> gas, DiagnosticOutput partial, DiagnosticOutput result, DiagnosticCounter);
     /// Publish interleaved (-min,max) pairs over the owned combined row view.
     void MeasureStateBounds(Runtime::ExecutionContext, DiagnosticInput mean, BoundsOutput partial,

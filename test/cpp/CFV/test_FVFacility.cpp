@@ -91,11 +91,18 @@ TEST_CASE("Midpoint face publication preserves integrated measures and cell metr
         const auto geometryRead = fullGeometry.AcquireRead(), firstOrderRead = firstOrder.AcquireRead();
         const auto geometry = geometryRead.HostView(), onePoint = firstOrderRead.HostView();
         for (DNDS::index iCell = 0; iCell < full.NumCellProc(); ++iCell)
-            for (DNDS::index j = 0; j < 8; ++j)
-            {
-                CHECK(a.cells(iCell, j) == b.cells(iCell, j));
-                CHECK(geometry.cells(iCell, j) == onePoint.cells(iCell, j));
-            }
+        {
+            CHECK(a.GetCellVol(iCell) == b.GetCellVol(iCell));
+            CHECK(a.GetCellCent(iCell) == b.GetCellCent(iCell));
+            CHECK(a.GetCellBary(iCell) == b.GetCellBary(iCell));
+            CHECK(a.GetCellScale(iCell) == b.GetCellScale(iCell));
+            CHECK(a.GetCellMaxLenScale(iCell) == b.GetCellMaxLenScale(iCell));
+            CHECK(geometry.GetCellVol(iCell) == onePoint.GetCellVol(iCell));
+            CHECK(geometry.GetCellCent(iCell) == onePoint.GetCellCent(iCell));
+            CHECK(geometry.GetCellBary(iCell) == onePoint.GetCellBary(iCell));
+            CHECK(geometry.GetCellScale(iCell) == onePoint.GetCellScale(iCell));
+            CHECK(geometry.GetCellMaxLenScale(iCell) == onePoint.GetCellMaxLenScale(iCell));
+        }
         int nonplanar = 0;
         for (DNDS::index iFace = 0; iFace < full.NumFaceProc(); ++iFace)
         {
@@ -781,6 +788,118 @@ TEST_CASE("Two-buffer SOR preserves its MPI input and split automatically select
         auto alias = a;
         alias.temporary = coefficientsA;
         CHECK_THROWS(split.DoReconstructionIterTo(mean, coefficientsA, alias, boundaryA, C::ReconstructionRegion::Core));
+    }
+}
+
+TEST_CASE("Curved O2 mesh metrics, geometryOrder, CellMax alignment, and quadratic VR recovery")
+{
+    auto meshO1 = Mesh();
+    auto mesh = std::make_shared<UnstructuredMesh>(mpi, 2);
+    mesh->BuildO2FromO1Elevation(*meshO1);
+    mesh->PrepareNativeTopology();
+    // Apply a smooth curved coordinate warp so faces and cells are genuinely curved O2.
+    mesh->TransformCoords([](const tPoint &p) -> tPoint
+                          { return {p[0] + 0.04 * std::sin(pi * p[1]), p[1] + 0.03 * std::sin(pi * p[0]), p[2]}; });
+    C::FiniteVolumeMetricOptions metricOpts;
+    metricOpts.integrationOrder = 5;
+    metricOpts.geometryOrder = Elem::INT_ORDER_MAX;
+    const auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, metricOpts);
+    CHECK(metrics.RadialMoments().RowCount() == 0);
+    // Single-pass cellMaxLenScale matches legacy VariationalReconstruction::GetCellMaxLenScale.
+    C::VRSettings legacySettings(2);
+    legacySettings.maxOrder = 2;
+    legacySettings.intOrder = 5;
+    legacySettings.functionalSettings.scaleType = C::VRSettings::FunctionalSettings::ScaleType::CellMax;
+    C::VariationalReconstruction<2> legacy(mpi, mesh);
+    nlohmann::ordered_json json;
+    legacySettings.WriteIntoJson(json);
+    legacy.parseSettings(json);
+    legacy.ConstructMetrics();
+    legacy.ConstructBaseAndWeight([](t_index, int order)
+                                  { return order == 0 ? 1. : 0.; });
+    legacy.ConstructRecCoeff();
+    {
+        const auto mRead = metrics.AcquireRead();
+        const auto mView = mRead.HostView();
+        for (DNDS::index iCell = 0; iCell < metrics.NumCellProc(); ++iCell)
+        {
+            CHECK(mView.GetCellVol(iCell) == doctest::Approx(legacy.GetCellVol(iCell)).epsilon(1e-12));
+            CHECK((mView.GetCellBary(iCell) - legacy.GetCellBary(iCell)).norm() < 1e-12);
+            CHECK(mView.GetCellMaxLenScale(iCell) == doctest::Approx(legacy.GetCellMaxLenScale(iCell)).epsilon(1e-11));
+        }
+    }
+    // Verify LengthScale::CellMax recovers a quadratic polynomial on curved O2.
+    C::ReconstructionSettings settings;
+    settings.maxOrder = 2;
+    settings.intOrder = 5;
+    settings.boundaryDerivativeWeights = {1, 0, 0, 0};
+    settings.functional.scaleType = C::ReconstructionFunctionalSettings::LengthScale::CellMax;
+    const auto vr = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+    auto mean = metrics.BuildField(1);
+    auto coeff = vr.BuildCoefficients(1);
+    auto work = vr.BuildWorkspace(1);
+    auto bc = vr.BuildBoundaryValues(1);
+    const auto poly = [](const tPoint &p)
+    { return 1.0 + 0.3 * p[0] - 0.5 * p[1] + 0.2 * p[0] * p[0] - 0.1 * p[0] * p[1] + 0.4 * p[1] * p[1]; };
+    {
+        auto meshRead = mesh->AcquireRead(Geom::MeshReadRequirements::Primary());
+        const auto mView = meshRead.HostView();
+        const auto geomRead = metrics.AcquireRead();
+        const auto geom = geomRead.HostView();
+        auto uWrite = mean.Owned().Write();
+        for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        {
+            Geom::tSmallCoords coords;
+            mView.GetCoordsOnCell(iCell, coords);
+            const auto elem = mView.GetCellElement(iCell);
+            const Elem::Quadrature q(elem, Elem::INT_ORDER_MAX);
+            DNDS::real integral = 0;
+            for (int iG = 0; iG < q.GetNumPoints(); ++iG)
+            {
+                const auto &shape = Elem::GetCachedShapeAtQuadrature(elem.type, Elem::INT_ORDER_MAX, iG);
+                const tPoint pt = Elem::PPhysicsCoordD01Nj(coords, shape);
+                integral += poly(pt) * Elem::CellJacobianDet(2, coords, shape) * q.GetWeight(iG);
+            }
+            uWrite.View()(iCell, 0) = integral / geom.GetCellVol(iCell);
+        }
+    }
+    metrics.BindHalo(mean).Begin().Wait();
+    {
+        auto bWrite = bc.values.Write();
+        for (DNDS::index i = 0; i < vr.NumBoundaryQuadrature(); ++i)
+            bWrite.View()(i, 0) = poly(vr.GetBoundaryQuadrature(i).point);
+    }
+    auto halo = vr.BindHalo(coeff);
+    for (int iter = 0; iter < 80; ++iter)
+    {
+        halo.Begin().Wait();
+        vr.DoReconstructionIter(mean, coeff, work, bc);
+    }
+    halo.Begin().Wait();
+    R::Array<DNDS::index> sampleCells(R::RowLayout::Dense(metrics.NumCell(), 1));
+    R::Array<DNDS::real> samplePoints(R::RowLayout::Dense(metrics.NumCell(), 3));
+    R::Array<DNDS::real> sampleOut(R::RowLayout::Dense(metrics.NumCell(), 1));
+    {
+        const auto geomRead = metrics.AcquireRead();
+        const auto geom = geomRead.HostView();
+        auto cW = sampleCells.Write();
+        auto pW = samplePoints.Write();
+        for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        {
+            cW.View()(iCell, 0) = iCell;
+            const tPoint pt = geom.GetCellBary(iCell);
+            for (int d = 0; d < 3; ++d)
+                pW.View()(iCell, d) = pt[d];
+        }
+    }
+    vr.Evaluate(mean, coeff, sampleCells, samplePoints, sampleOut);
+    {
+        const auto outR = sampleOut.Read(), pR = samplePoints.Read();
+        for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        {
+            const tPoint pt{pR.View()(iCell, 0), pR.View()(iCell, 1), pR.View()(iCell, 2)};
+            CHECK(outR.View()(iCell, 0) == doctest::Approx(poly(pt)).epsilon(1e-7));
+        }
     }
 }
 

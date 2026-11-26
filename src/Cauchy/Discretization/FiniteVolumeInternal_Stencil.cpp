@@ -120,7 +120,7 @@ namespace DNDS::Cauchy
                 // faces contribute no flux; their valid positive length avoids
                 // an otherwise meaningless divide by zero.
                 const real scale = area > 0 ? 2 * std::min(metric.GetCellVol(parents[0]),
-                    metric.GetCellVol(parents[1] == UnInitIndex ? parents[0] : parents[1])) / area : metric.cells(parents[0], 7);
+                    metric.GetCellVol(parents[1] == UnInitIndex ? parents[0] : parents[1])) / area : metric.GetCellScale(parents[0]);
                 for (index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
                 {
                     distance(q, 0) = std::max(.25 * scale, std::min(2 * scale, std::abs(delta.dot(metric.GetFaceNorm(q)))));

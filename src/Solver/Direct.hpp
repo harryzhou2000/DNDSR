@@ -588,12 +588,13 @@ namespace DNDS::Direct
                             if (jPInUpperPos != -1)
                                 dThis->GetUpper(i, ijP) -= dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos);
                             //! LU(iP, jP) -= LU(iP, kP) * LU(kP, jP);
-                            if (iPInUpperPos != -1)
+                            if (iPInUpperPos != -1 && iPInLowerPosOfJRow != -1)
                                 dThis->GetLower(j, iPInLowerPosOfJRow) -= dThis->GetLower(j, pos2) * dThis->GetUpper(k, iPInUpperPos);
                             // !LU(jP, iP) -= LU(jP, kP) * LU(kP, iP);
                             return false;
                         });
-                    dThis->GetLower(j, iPInLowerPosOfJRow) *= dThis->GetDiag(i);
+                    if (iPInLowerPosOfJRow != -1)
+                        dThis->GetLower(j, iPInLowerPosOfJRow) *= dThis->GetDiag(i);
                     // !LU(jP, iP) *= inv(LU(iP, iP));
                 }
             }

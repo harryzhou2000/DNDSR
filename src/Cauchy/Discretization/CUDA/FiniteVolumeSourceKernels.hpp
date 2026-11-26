@@ -48,7 +48,7 @@ namespace DNDS::Cauchy::CUDA
         SourceIndices offsets;
         SourceScalar weights, lengths, wallMean;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::CSRRows> wallPoints;
-        Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cells;
         Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> output;
         /// Optional canonical row-major dense (or diagonal-only) integrated
         /// contribution for the RHS evaluation. No temporal weight is applied.
@@ -71,7 +71,7 @@ namespace DNDS::Cauchy::CUDA
     /// Optional low-order output receives the same source. RANS components are
     /// unchanged. No field transform or geometry mutation is performed.
     void AddRotationSource(Runtime::ExecutionContext context,
-                           Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells,
+                           Runtime::ArrayView<const real, false, Runtime::FixedRows<1>> cells,
                            RigidFrameParameters frame, SourceInput means, SourceOutput output,
                            SourceOutput lowOutput, bool produceLow, Runtime::RowSelection selected, int firstMomentum = 1);
 }

@@ -20,8 +20,8 @@ namespace DNDS::CFV::Detail
             else
             {
                 const std::array<real, 3> point{plan.points(iPoint, 0), plan.points(iPoint, 1), plan.points(iPoint, 2)};
-                const std::array<real, 3> center{plan.geometry(iCell, 1), plan.geometry(iCell, 2), plan.geometry(iCell, 3)};
-                const auto evaluation = Math::TaylorPointEvaluation::FromPoint(point, center, plan.geometry(iCell, 7));
+                const std::array<real, 3> center{plan.cellCent(iCell, 0), plan.cellCent(iCell, 1), plan.cellCent(iCell, 2)};
+                const auto evaluation = Math::TaylorPointEvaluation::FromPoint(point, center, plan.cellScale(iCell, 0));
                 for (int mode = 0; mode < modes; ++mode)
                     values[mode] = plan.polynomial.ReconstructionDerivative(derivative, mode, evaluation, plan.moments, iCell);
             }

@@ -120,3 +120,95 @@ TEST_CASE("Block Jacobi preserves resolvable modes with a structural zero diagon
     CHECK(read.View()(0, 0) == 0.);
     CHECK(read.View()(0, 1) == doctest::Approx(3.));
 }
+
+TEST_CASE("AggregationAMG builds at least 3 levels and reduces residual across V-cycles, including zero-weight edges")
+{
+    constexpr int n = 64;
+    constexpr int width = 2;
+    std::vector<int> rowOffsets(n + 1, 0), cols;
+    std::vector<double> wts;
+    for (int i = 0; i < n; ++i)
+    {
+        if (i > 0)
+        {
+            cols.push_back(i - 1);
+            wts.push_back(1.0);
+        }
+        if (i + 1 < n)
+        {
+            cols.push_back(i + 1);
+            // Include zero-weight edges to verify best=-1 aggregation fix.
+            wts.push_back((i % 8 == 3) ? 0.0 : 1.0);
+        }
+        rowOffsets[i + 1] = int(cols.size());
+    }
+    R::Array<int> offsets(R::RowLayout::Dense(n + 1, 1)), columns(R::RowLayout::Dense(int(cols.size()), 1));
+    R::Array<double> weights(R::RowLayout::Dense(int(wts.size()), 1));
+    R::Array<double> off(R::RowLayout::Dense(int(cols.size()), width * width));
+    R::Array<double> diagonal(R::RowLayout::Dense(n, width * width));
+    R::Array<double> rhs(R::RowLayout::Dense(n, width)), x(rhs.Layout()), residual(rhs.Layout()), corr(rhs.Layout());
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n * width, n * width);
+    Eigen::VectorXd b(n * width);
+    {
+        auto o = offsets.Write(), c = columns.Write();
+        auto w = weights.Write(), offW = off.Write(), diagW = diagonal.Write();
+        auto rhsW = rhs.Write(), xW = x.Write();
+        for (int i = 0; i <= n; ++i)
+            o.View()(i, 0) = rowOffsets[i];
+        for (size_t k = 0; k < cols.size(); ++k)
+        {
+            c.View()(k, 0) = cols[k];
+            w.View()(k, 0) = wts[k];
+            offW.View()(k, 0) = -1.0;
+            offW.View()(k, 1) = 0.05;
+            offW.View()(k, 2) = 0.05;
+            offW.View()(k, 3) = -1.0;
+        }
+        for (int i = 0; i < n; ++i)
+        {
+            diagW.View()(i, 0) = 2.4;
+            diagW.View()(i, 1) = -0.1;
+            diagW.View()(i, 2) = -0.1;
+            diagW.View()(i, 3) = 2.4;
+            A.block<width, width>(i * width, i * width) << 2.4, -0.1, -0.1, 2.4;
+            for (int k = rowOffsets[i]; k < rowOffsets[i + 1]; ++k)
+                A.block<width, width>(i * width, cols[k] * width) << -1.0, 0.05, 0.05, -1.0;
+            b[i * width] = std::sin(0.2 * (i + 1));
+            b[i * width + 1] = std::cos(0.15 * (i + 1));
+            rhsW.View()(i, 0) = b[i * width];
+            rhsW.View()(i, 1) = b[i * width + 1];
+            xW.View()(i, 0) = 0.0;
+            xW.View()(i, 1) = 0.0;
+        }
+    }
+    S::AggregationAMGSettings settings;
+    settings.aggregateSize = 4;
+    settings.minCoarseRows = 4;
+    settings.maxLevels = 5;
+    settings.preSweeps = 2;
+    settings.postSweeps = 2;
+    settings.coarseSweeps = 10;
+    settings.relaxation = 0.7;
+    S::AggregationAMG solver(offsets, columns, weights, width, settings);
+    REQUIRE(solver.LevelCount() >= 3);
+    solver.Refresh(off, diagonal);
+    Eigen::VectorXd xv = Eigen::VectorXd::Zero(n * width);
+    const double initialNorm = b.norm();
+    for (int cycle = 0; cycle < 25; ++cycle)
+    {
+        Eigen::VectorXd r = b - A * xv;
+        {
+            auto rW = residual.Write();
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < width; ++j)
+                    rW.View()(i, j) = r[i * width + j];
+        }
+        solver.Apply(residual, corr);
+        const auto cR = corr.Read();
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < width; ++j)
+                xv[i * width + j] += cR.View()(i, j);
+    }
+    const double finalNorm = (b - A * xv).norm();
+    CHECK(finalNorm < 1e-4 * initialNorm);
+}

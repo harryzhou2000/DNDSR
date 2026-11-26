@@ -64,7 +64,7 @@ namespace DNDS::Cauchy::CUDA::Detail
         real lengthSquared = 0;
         for (int d = 0; d < 3; ++d)
         {
-            distance[d] = (internal ? sample.otherPoint[d] : sample.ownPoint[d]) - geometry.cells(sample.cell, 4 + d);
+            distance[d] = (internal ? sample.otherPoint[d] : sample.ownPoint[d]) - geometry.cellBary(sample.cell, d);
             lengthSquared += sqr(distance[d]);
         }
         if (!(lengthSquared > 0))
@@ -124,27 +124,36 @@ namespace DNDS::Cauchy::CUDA::Detail
         const auto &condition = geometry.conditions(sample.condition, 0);
         const bool internal = sample.other != UnInitIndex;
         const bool wall = !internal && condition.kind == BoundaryKind::NoSlipWall;
+        const bool interfaceFace = !internal && condition.kind == BoundaryKind::Interface;
         const bool wallFluxState = wall && controls.fluxPolicy.noRsOnWall;
         const bool mirrorIsothermal = wall && condition.isothermal && controls.fluxPolicy.isothermalWallInviscidMirror && !wallFluxState;
         const auto wallVelocity = mirrorIsothermal ? PrepareWallVelocity(condition, sample.ownPoint, controls.frame) : Vector3{};
         PerfectGasKernelPoint<Components> left, right, face;
-        ReconstructPoint<Components, PolynomialScalar>(geometry, parameters, controls, fields, sample, false, left, fallbacks);
+        std::array<real, Components> leftViscous{}, rightViscous{};
+        const bool separateViscous = controls.viscous && controls.distinctViscous && !controls.primitiveGradient;
+        ReconstructPoint<Components, PolynomialScalar>(geometry, parameters, controls, fields, sample, false, left, fallbacks,
+                                                       separateViscous ? &leftViscous : nullptr);
         if (internal)
-            ReconstructPoint<Components, PolynomialScalar>(geometry, parameters, controls, fields, sample, true, right, fallbacks);
+            ReconstructPoint<Components, PolynomialScalar>(geometry, parameters, controls, fields, sample, true, right, fallbacks,
+                                                           separateViscous ? &rightViscous : nullptr);
         else
         {
             right = left;
             const auto status = ExteriorPoint(geometry, parameters, controls, fields, sample, right);
             if (!status)
                 return status.At(sample.cell, sample.point);
+            if (separateViscous)
+                rightViscous = right.values;
         }
         real wallSAViscousInterior = 0;
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
         if constexpr (Components == 6)
             if (wall)
             {
-                wallSAViscousInterior = left.values[5];
+                wallSAViscousInterior = separateViscous ? leftViscous[5] : left.values[5];
                 left.values[5] = right.values[5] = 0;
+                if (separateViscous)
+                    leftViscous[5] = rightViscous[5] = 0;
             }
 #endif
         if (wallFluxState)
@@ -258,7 +267,7 @@ namespace DNDS::Cauchy::CUDA::Detail
                                     : AdvectedScalarFlux(leftScalar, right.values[j], speedLeft, speedRight, alpha);
         }
         // Cauchy omits the former isotropic 2*rho*k/3 momentum flux and energy work.
-        if (controls.viscous && (internal || wall))
+        if (controls.viscous && (internal || wall || interfaceFace))
         {
             if (controls.primitiveGradient)
             {
@@ -275,12 +284,14 @@ namespace DNDS::Cauchy::CUDA::Detail
             else
             {
                 const real inverseDistance = wall && controls.fluxPolicy.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
+                const auto &vLeft = separateViscous ? leftViscous : left.values;
+                const auto &vRight = separateViscous ? rightViscous : right.values;
                 for (int j = 0; j < Components; ++j)
                 {
                     face.values[j] = .5 * (left.values[j] + right.values[j]);
                     for (int d = 0; d < 3; ++d)
                         face.gradients[j][d] = .5 * (left.gradients[j][d] + right.gradients[j][d]) +
-                                               sample.normal[d] * (right.values[j] - left.values[j]) * inverseDistance;
+                                               sample.normal[d] * (vRight[j] - vLeft[j]) * inverseDistance;
                 }
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
                 if constexpr (Components == 6)

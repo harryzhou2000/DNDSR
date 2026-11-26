@@ -783,7 +783,7 @@ static const Eigen::Vector3d g_goldenN = Eigen::Vector3d(0.6, 0.8, 0.0).normaliz
 
 static GoldenFluxCase g_goldenTests[] = {
     {"Roe", Roe, {8.1162345145e+01, 5.8813861917e+04, 5.8759839011e+04, 5.9539454795e+02, 2.7251925995e+07}},
-    {"HLLC", HLLC, {9.3486183606e+01, 5.5647501399e+04, 5.7057534871e+04, 2.3371545902e+03, 2.5454872499e+07}},
+    {"HLLC", HLLC, {9.2681176598e+01, 5.6142130861e+04, 5.7864625439e+04, 2.3170294149e+03, 2.5314835053e+07}},
     {"HLLEP", HLLEP, {9.2861523292e+01, 5.1385111929e+04, 6.2875774679e+04, 5.7376094955e+03, 2.6719441912e+07}},
 };
 
@@ -928,4 +928,31 @@ TEST_CASE("EulerP Roe entropy threshold uses total speed and preserves orientati
     rotatedRight.segment<3>(1) = rotation * right.segment<3>(1);
     expectedFlux.segment<3>(1) = rotation * flux.segment<3>(1);
     CHECK(evaluate(rotatedLeft, rotatedRight, rotation * normal, false).isApprox(expectedFlux, 1e-13));
+}
+
+TEST_CASE("Euler HLLC ALE moving-mesh consistency and PVRS shock sign")
+{
+    using State = Eigen::Vector<DNDS::real, 5>;
+    const State U = prim2cons(1.4, 80.0, -35.0, 20.0, 120000.0);
+    const Eigen::Vector3d n = Eigen::Vector3d(0.6, 0.8, 0.0).normalized();
+    const Eigen::Vector3d vg = 45.0 * n; // non-zero normal grid velocity
+    const State exactAleFlux = exactNormalFlux(U, n) - vg.dot(n) * U;
+
+    State F = State::Zero();
+    DNDS::real lam0 = 0, lam123 = 0, lam4 = 0;
+    InviscidFlux_IdealGas_Dispatcher<3>(
+        HLLC, U, U, U, U, vg, n, g_gamma, g_gamma, F,
+        0.0, 0.0, 0.0, noDump, lam0, lam123, lam4);
+    for (int i = 0; i < 5; ++i)
+        CHECK(F(i) == doctest::Approx(exactAleFlux(i)).epsilon(1e-11));
+
+    // Distinct cell means vs identical face states must still satisfy F(U, U) == f(U).
+    const State meanL = prim2cons(1.8, 120.0, -10.0, 5.0, 150000.0);
+    const State meanR = prim2cons(0.9, 40.0, 25.0, -15.0, 90000.0);
+    State Frec = State::Zero();
+    InviscidFlux_IdealGas_Dispatcher<3>(
+        HLLC, U, U, meanL, meanR, vg, n, g_gamma, g_gamma, Frec,
+        0.0, 0.0, 0.0, noDump, lam0, lam123, lam4);
+    for (int i = 0; i < 5; ++i)
+        CHECK(Frec(i) == doctest::Approx(exactAleFlux(i)).epsilon(1e-11));
 }

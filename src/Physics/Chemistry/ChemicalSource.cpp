@@ -575,8 +575,9 @@ namespace DNDS::Physics::Chemistry
             I.netCV->setInitialTime(0.0);
             I.netCV->setTolerances(rtol, atol);
             I.netCV->setMaxSteps(maxSteps);
-            if (maxOrder > 0)
-                I.netCV->integrator().setMaxOrder(maxOrder);
+            // Reset CVODE's max order on every call (5 is CVODE's BDF default)
+            // so a reused ReactorNet never retains a lower maxOrder from an earlier call.
+            I.netCV->integrator().setMaxOrder(maxOrder > 0 ? maxOrder : 5);
             I.netCV->advance(advanceTime);
 
             T = I.reactorCV->temperature();
@@ -1059,9 +1060,10 @@ namespace DNDS::Physics::Chemistry
         int Ns1 = I.Ns - 1;
         std::vector<double> compositionEnergyDiff(Ns1, 0.0);
 
-        // zero Jacobian
-        for (int idx = 0; idx < J.rows * J.cols; ++idx)
-            J.data[idx] = 0;
+        // zero Jacobian (respect leading dimension J.ld)
+        for (int c = 0; c < J.cols; ++c)
+            for (int r = 0; r < J.rows; ++r)
+                J.data[r + c * J.ld] = 0;
 
         int speciesCol0 = J.cols - Ns1;
         DNDS_check_throw_info(speciesCol0 > iEnergy,

@@ -171,7 +171,10 @@ namespace DNDS::Cauchy
             const auto point = metric.periodic.FacePoint(iFace, side, physicalPoint);
             const auto leftNormal = location == FaceEvaluationLocation::Center ? metric.GetFaceMeanNorm(iFace) : metric.GetFaceNorm(iPoint);
             const auto normal = side == 0 ? leftNormal : Geom::tPoint(-rotation * leftNormal);
-            const auto other = metric.GetNeighborCent(iFace, side);
+            const index otherCell = parents[1 - side] == UnInitIndex ? parents[side] : parents[1 - side];
+            const auto other = otherCell >= 0 && otherCell < metric.NumCellProc()
+                                   ? metric.periodic.OtherPoint(iFace, side, metric.GetCellCent(otherCell))
+                                   : Geom::tPoint::Zero();
             FiniteVolumeDetail::SampleRecord result{};
             result.cell = parents[side];
             result.other = parents[1 - side];

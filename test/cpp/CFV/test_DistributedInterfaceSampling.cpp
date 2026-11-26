@@ -40,7 +40,7 @@ TEST_CASE("Distributed polynomial sampling evaluates on cell owners and returns 
             g.View()(iCell, 1) = -.5;
             g.View()(iCell, 2) = .7;
             g.View()(iCell, 3) = 4;
-            const double scale = view.cells(iCell, 7);
+            const double scale = view.GetCellScale(iCell);
             r.View()(iCell, 0) = 2 * scale;
             r.View()(iCell, 1) = -0.5 * scale;
             r.View()(iCell, 2) = 0.7 * scale;
@@ -180,7 +180,7 @@ TEST_CASE("Warped quad interface projects offset queries before distributed poly
         {
             u.View()(iCell, 0) = field(view.GetCellBary(iCell), mpi.rank);
             for (int d = 0; d < 3; ++d)
-                r.View()(iCell, d) = gradient[d] * view.cells(iCell, 7);
+                r.View()(iCell, d) = gradient[d] * view.GetCellScale(iCell);
         }
     }
     metrics.BindHalo(mean).Begin().Wait();
@@ -292,8 +292,8 @@ TEST_CASE("Coupling participants without a donor mesh sample a reversed donor su
                 {
                     const auto p = view.GetCellCent(iCell);
                     u.View()(iCell, 0) = 1 + 2 * p[0] - .5 * p[1] + 10 * donorMPI.rank;
-                    r.View()(iCell, 0) = 2 * view.cells(iCell, 7);
-                    r.View()(iCell, 1) = -.5 * view.cells(iCell, 7);
+                    r.View()(iCell, 0) = 2 * view.GetCellScale(iCell);
+                    r.View()(iCell, 1) = -.5 * view.GetCellScale(iCell);
                 }
             }
             metrics->BindHalo(*mean).Begin().Wait();

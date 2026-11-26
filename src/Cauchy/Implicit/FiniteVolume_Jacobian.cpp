@@ -192,7 +192,7 @@ namespace DNDS::Cauchy
                         const index slot = s.columns(face, side);
                         DNDS_check_throw_info(cells[side] == cell && slot >= 0 && slot < columns.RowSize(cell) && columns(cell, slot) == other,
                                               "CPU AMG face slot differs from matrix pattern");
-                        const real distance = (s.metric.GetNeighborCent(face, 0) - s.metric.GetCellCent(cells[0])).norm();
+                        const real distance = (s.metric.periodic.OtherPoint(face, 0, s.metric.GetCellCent(cells[1])) - s.metric.GetCellCent(cells[0])).norm();
                         const real area = s.metric.GetFaceArea(face);
                         DNDS_check_throw_info(std::isfinite(distance) && distance > 0 && std::isfinite(area) && area > 0,
                                               "CPU AMG requires positive finite face geometry");

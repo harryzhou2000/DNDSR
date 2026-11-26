@@ -48,7 +48,7 @@ namespace DNDS::CFV::Math
     {
         const auto source = input[iRow];
         const auto destination = output[iRow];
-        const real scale = cells(firstCell + iRow, 7);
+        const real scale = cells(firstCell + iRow, 0);
         const index components = toCoefficients ? source.size() / dimension : destination.size() / dimension;
         const index end = componentCount < 0 ? components : firstComponent + componentCount;
         if (toCoefficients)

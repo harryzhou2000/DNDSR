@@ -63,9 +63,8 @@ TEST_CASE("CUDA RANS quadrature sources and destruction diagonals match generic 
                                         { return .1 + .01 * i; });
             auto weights = Table<real>(5, 1, [](I i, I)
                                        { return std::array<real, 5>{.4, .6, .3, .7, 1}[i]; });
-            auto metric = Table<real>(3, 8, [](I i, I j)
-                                      { return j == 0 ? real(1 + i) : j == 7 ? 1.1 + .1 * i
-                                                                             : 0.; });
+            auto metric = Table<real>(3, 1, [](I i, I)
+                                      { return real(1 + i); });
             const auto state = [&](I iRow, I j)
             {
                 const auto flow = equation.Gas().Conservative({1.1 + .01 * iRow, .3, .02, -.1, 1.2});
@@ -122,7 +121,7 @@ TEST_CASE("CUDA RANS quadrature sources and destruction diagonals match generic 
                 const std::vector<C::RHSScalarView> points{q.View<R::UniformTableRows>()};
                 const std::vector<std::array<C::CPU::SourceGradientView, 3>> derivatives{{{{g0.View<R::UniformTableRows>(), 1, 0}, {g1.View<R::UniformTableRows>(), 1, 0}, {g2.View<R::UniformTableRows>(), 1, 0}}}};
                 C::CPU::SourceKernelRequest request;
-                request.metric.cells = geo.View<R::FixedRows<8>, false>();
+                request.metric.cellVolume = geo.View<R::FixedRows<1>, false>();
                 request.offsets = off.View<R::FixedRows<1>>();
                 request.weights = w.View<R::FixedRows<1>>();
                 request.lengths = len.View<R::FixedRows<1>>();
@@ -223,7 +222,7 @@ TEST_CASE("CUDA RANS quadrature sources and destruction diagonals match generic 
                 request.lengths = len.View<R::FixedRows<1>>();
                 request.wallMean = wm.View<R::FixedRows<1>>();
                 request.wallPoints = wp.View<R::CSRRows>();
-                request.cells = geo.View<R::FixedRows<8>, false>();
+                request.cells = geo.View<R::FixedRows<1>, false>();
                 request.output = output.View<R::UniformTableRows>();
                 request.status = errors.View<R::FixedRows<1>>();
                 if (paired)
@@ -276,8 +275,8 @@ TEST_CASE("CUDA moving-axis source preserves scalar components")
     const auto context = R::ExecutionContext::CUDA(0);
     auto mean = Table<real>(2, 7, [](I i, I j)
                             { return 1 + .2 * i + .1 * j; });
-    auto geometry = Table<real>(2, 8, [](I i, I j)
-                                { return j == 0 ? 2 + i : 0; });
+    auto geometry = Table<real>(2, 1, [](I i, I)
+                                { return real(2 + i); });
     auto selected = Table<I>(2, 1, [](I i, I)
                              { return 1 - i; })
                         .To(device);
@@ -292,7 +291,7 @@ TEST_CASE("CUDA moving-axis source preserves scalar components")
         const auto m = dm.Read(context), g = dg.Read(context);
         const auto rows = selected.Read(context);
         auto result = output.Write(context);
-        K::AddRotationSource(context, g.View<R::FixedRows<8>, false>(), frame.KernelParameters(), m.View<R::TableRows>(), result.View<R::TableRows>(), {}, false, rows.View<R::FixedRows<1>>());
+        K::AddRotationSource(context, g.View<R::FixedRows<1>, false>(), frame.KernelParameters(), m.View<R::TableRows>(), result.View<R::TableRows>(), {}, false, rows.View<R::FixedRows<1>>());
         REQUIRE(cudaStreamSynchronize(::DNDS::Runtime::CUDAStream(context)) == cudaSuccess);
     }
     const auto result = output.To(host);

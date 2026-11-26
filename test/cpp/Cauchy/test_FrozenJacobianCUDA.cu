@@ -296,8 +296,8 @@ TEST_CASE("CUDA frozen Jacobians match CPU blocks and actions including ALE peri
 TEST_CASE("CUDA diagonal initialization preserves CPU mass and moving-frame block convention")
 {
     const auto context = R::ExecutionContext::CUDA(0);
-    const auto cells = Table<real>(4, 8, [](I i, I j)
-                                   { return j == 0 ? .7 + .3 * i : 0; });
+    const auto cells = Table<real>(4, 1, [](I i, I)
+                                   { return .7 + .3 * i; });
     const auto tau = Table<real>(4, 1, [](I i, I)
                                  { return .1 * i; });
     const auto rows = Table<I>(4, 1, [](I i, I)
@@ -321,7 +321,7 @@ TEST_CASE("CUDA diagonal initialization preserves CPU mass and moving-frame bloc
                 auto write = diagonal.Write(context);
                 auto st = status.Write(context);
                 // CFV's metric view intentionally has its own unchecked policy.
-                const auto source = cr.View<R::FixedRows<8>>();
+                const auto source = cr.View<R::FixedRows<1>>();
                 const C::CUDA::JacobianCellMetrics metric{source.data, nullptr, source.rows, source.width, source.stride, nullptr, source.kind, source.device};
                 C::CUDA::InitializePerfectGasFluxJacobianDiagonal(context, metric, tr.View<R::TableRows>(), write.View<R::UniformTableRows>(),
                                                                   st.View<R::FixedRows<1>>(), rr.View<R::FixedRows<1>>(), frame.KernelParameters(), .2, .73, n, full);

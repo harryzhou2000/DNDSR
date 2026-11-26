@@ -68,7 +68,7 @@ namespace DNDS::Cauchy
             const auto vL = velocity(leftMean), vR = velocity(rightMean);
             const Scalar unL = dot(vL, normal) - dot(gridVelocity, normal), unR = dot(vR, normal) - dot(gridVelocity, normal);
             const Scalar rho = DNDS::Math::ScalarSqrt(leftMean[0] * rightMean[0]);
-            const Scalar star = DNDS::Math::ScalarMax(Scalar(0), Scalar(.5) * (data.leftMean.flow.pressure + data.rightMean.flow.pressure) - Scalar(.5) * (unL - unR) * rho * data.roe.soundSpeed);
+            const Scalar star = DNDS::Math::ScalarMax(Scalar(0), Scalar(.5) * (data.leftMean.flow.pressure + data.rightMean.flow.pressure) + Scalar(.5) * (unL - unR) * rho * data.roe.soundSpeed);
             const auto shock = [&](Scalar pressure)
             { return star <= pressure ? Scalar(1) : DNDS::Math::ScalarSqrt(1 + (gas.gamma + 1) / (2 * gas.gamma) * (star / pressure - 1)); };
             data.outerWaves = {unL - data.leftMean.soundSpeed * shock(data.leftMean.flow.pressure), unR + data.rightMean.soundSpeed * shock(data.rightMean.flow.pressure)};

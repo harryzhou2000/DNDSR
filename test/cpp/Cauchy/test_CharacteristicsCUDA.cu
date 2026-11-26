@@ -53,8 +53,8 @@ TEST_CASE("CUDA analytic mean characteristics match CPU inverse and canonical pe
         result.generators.rotation[1].map() = Eigen::Map<const Eigen::Matrix3d>(rotation.data());
         result.rotatedGenerators = 1;
         return result; });
-    auto faceMean = Table<real>(5, 7, [&](I iFace, I j)
-                                { return iFace < 4 && j >= 3 && j < 6 ? normals[iFace][j - 3] : 0.; });
+    auto faceMeanNorm = Table<real>(5, 3, [&](I iFace, I j)
+                                    { return iFace < 4 ? normals[iFace][j] : 0.; });
     std::array<C::FlowCharacteristics, 5> expected{};
     {
         for (I iFace = 0; iFace < 4; ++iFace)
@@ -88,7 +88,7 @@ TEST_CASE("CUDA analytic mean characteristics match CPU inverse and canonical pe
     auto dr = routing.To(device);
     auto dp = parameters.To(device);
     auto dk = codes.To(device);
-    auto df = faceMean.To(device);
+    auto df = faceMeanNorm.To(device);
     const auto cellRead = dc.Read({device, nullptr});
     const auto routeRead = dr.Read({device, nullptr});
     const auto parameterRead = dp.Read({device, nullptr});
@@ -97,7 +97,7 @@ TEST_CASE("CUDA analytic mean characteristics match CPU inverse and canonical pe
     C::FiniteVolumeStencilView view;
     view.topology.faceCells = {cellRead.View<R::RowLayout>(), {}};
     view.routing = routeRead.View<R::FixedRows<1>>();
-    view.metric.faceMean = faceRead.View<R::FixedRows<7>>();
+    view.metric.faceMeanNorm = faceRead.View<R::FixedRows<3>>();
     view.metric.periodic = {codeRead.View<R::FixedRows<1>>(), parameterRead.View<R::FixedRows<1>>()};
     const auto publication = R::MetadataBuffer<C::FiniteVolumeStencilView>({view}).CopyTo(device, {device, nullptr});
     for (const I width : {I(5), I(6), I(7)})

@@ -36,19 +36,21 @@ namespace DNDS::CFV
             std::vector<R::Array<float>> floatArrays;
             std::vector<R::Array<index>> indexArrays;
             std::vector<R::Array<uint8_t>> byteArrays;
+            std::vector<R::Array<FacePeriodicParameters>> periodicArrays;
             // Immutable device read leases are retained with the publication;
             // scheduled commands retain the publication through completion.
             std::vector<R::Array<real>::ReadLease> realReads;
             std::vector<R::Array<float>::ReadLease> floatReads;
             std::vector<R::Array<index>::ReadLease> indexReads;
             std::vector<R::Array<uint8_t>::ReadLease> byteReads;
+            std::vector<R::Array<FacePeriodicParameters>::ReadLease> periodicReads;
             R::Array<real> empty;
             ReconstructionDeviceView view;
             R::RowSelection coreRows, dependentRows;
             FiniteVolumeHostView metricView;
             ReconstructionBasisHostView basisView;
             ReconstructionPointBasisView pointBasisView;
-            std::optional<R::Array<real>> samplingMoments, samplingCellGeometry;
+            std::optional<R::Array<real>> samplingMoments, samplingCellCent, samplingCellScale;
             std::optional<R::Array<real>> samplingFaceBasis;
             std::shared_ptr<Geom::UnstructuredMeshSnapshot> mesh;
             ReconstructionPlacementData(const std::shared_ptr<const ReconstructionData> &source, R::Device placement,
@@ -90,12 +92,18 @@ namespace DNDS::CFV
                     indexReads.push_back(indexArrays.back().Read({device, nullptr}));
                     return indexReads.back().View();
                 }
-                else
+                else if constexpr (std::is_same_v<T, uint8_t>)
                 {
-                    static_assert(std::is_same_v<T, uint8_t>);
                     byteArrays.push_back(std::move(array));
                     byteReads.push_back(byteArrays.back().Read({device, nullptr}));
                     return byteReads.back().View();
+                }
+                else
+                {
+                    static_assert(std::is_same_v<T, FacePeriodicParameters>);
+                    periodicArrays.push_back(std::move(array));
+                    periodicReads.push_back(periodicArrays.back().Read({device, nullptr}));
+                    return periodicReads.back().View();
                 }
             }
             R::ArrayView<const float> AddQuantized(const char *name, const R::Array<real> &input, R::ExecutionContext context, R::AllocationOptions allocation = {})
@@ -374,26 +382,48 @@ namespace DNDS::CFV
         result->faces = metric.faceOffsets.RowCount() - 1;
         if (options.metrics)
         {
-            const auto cell = result->Add("quadrature/cellGeometry", metric.cell, context);
-            result->samplingCellGeometry = result->realArrays.back();
+            const auto cellVolume = result->Add("quadrature/cellVolume", metric.cellVolume, context);
+            const auto cellCent = result->Add("quadrature/cellCent", metric.cellCent, context);
+            result->samplingCellCent = result->realArrays.back();
+            const auto cellBary = result->Add("quadrature/cellBary", metric.cellBary, context);
+            const auto cellScale = result->Add("quadrature/cellScale", metric.cellScale, context);
+            result->samplingCellScale = result->realArrays.back();
+            const auto cellMaxLen = result->Add("quadrature/cellMaxLenScale", metric.cellMaxLenScale, context);
             const auto offsets = result->Add("faceOffsets", metric.faceOffsets, context);
             const auto quadrature = result->Add("faceQuadrature", metric.faceQuadrature, context);
             const auto radial = result->Add("radialMoment", metric.radialMoment, context);
-            const auto faceMean = result->Add("faceMean", metric.faceMean, context);
-            result->metricView = {R::Detail::ProjectView<const real, false, R::FixedRows<8>>(cell, metric.cell.Layout()),
+            const auto faceCent = result->Add("faceCent", metric.faceCent, context);
+            const auto faceMeanNorm = result->Add("faceMeanNorm", metric.faceMeanNorm, context);
+            const auto faceArea = result->Add("faceArea", metric.faceArea, context);
+            const auto periodicCodes = result->Add("facePeriodicCodes", metric.facePeriodicCodes, context);
+            const auto periodicParams = result->Add("periodicParameters", metric.periodicParameters, context);
+            result->metricView = {R::Detail::ProjectView<const real, false, R::FixedRows<1>>(cellVolume, metric.cellVolume.Layout()),
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<3>>(cellCent, metric.cellCent.Layout()),
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<3>>(cellBary, metric.cellBary.Layout()),
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<1>>(cellScale, metric.cellScale.Layout()),
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<1>>(cellMaxLen, metric.cellMaxLenScale.Layout()),
                                   R::Detail::ProjectView<const index, false, R::FixedRows<1>>(offsets, metric.faceOffsets.Layout()),
                                   R::Detail::ProjectView<const real, false, R::FixedRows<7>>(quadrature, metric.faceQuadrature.Layout()),
                                   R::Detail::ProjectView<const real, false, R::FixedRows<3>>(radial, metric.radialMoment.Layout()),
-                                  R::Detail::ProjectView<const real, false, R::FixedRows<7>>(faceMean, metric.faceMean.Layout())};
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<3>>(faceCent, metric.faceCent.Layout()),
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<3>>(faceMeanNorm, metric.faceMeanNorm.Layout()),
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<1>>(faceArea, metric.faceArea.Layout()),
+                                  {R::Detail::ProjectView<const uint8_t, false, R::FixedRows<1>>(periodicCodes, metric.facePeriodicCodes.Layout()),
+                                   R::Detail::ProjectView<const FacePeriodicParameters, false, R::FixedRows<1>>(periodicParams, metric.periodicParameters.Layout())}};
         }
         if (options.arbitraryPointSampling)
         {
             result->Add("quadrature/cellMoments", host.moments, context);
             result->samplingMoments = result->realArrays.back();
-            if (!result->samplingCellGeometry)
+            if (!result->samplingCellCent)
             {
-                result->Add("quadrature/cellGeometry", metric.cell, context);
-                result->samplingCellGeometry = result->realArrays.back();
+                result->Add("quadrature/cellCent", metric.cellCent, context);
+                result->samplingCellCent = result->realArrays.back();
+            }
+            if (!result->samplingCellScale)
+            {
+                result->Add("quadrature/cellScale", metric.cellScale, context);
+                result->samplingCellScale = result->realArrays.back();
             }
         }
         if (options.basis)
@@ -422,17 +452,24 @@ namespace DNDS::CFV
                     result->Add("quadrature/cellMoments", host.moments, context);
                     result->samplingMoments = result->realArrays.back();
                 }
-                if (!result->samplingCellGeometry)
+                if (!result->samplingCellCent)
                 {
-                    result->Add("quadrature/cellGeometry", metric.cell, context);
-                    result->samplingCellGeometry = result->realArrays.back();
+                    result->Add("quadrature/cellCent", metric.cellCent, context);
+                    result->samplingCellCent = result->realArrays.back();
+                }
+                if (!result->samplingCellScale)
+                {
+                    result->Add("quadrature/cellScale", metric.cellScale, context);
+                    result->samplingCellScale = result->realArrays.back();
                 }
                 // Add retains immutable read leases with this publication;
                 // these handles also seed the PP/source placement memo.
                 const auto moments = result->samplingMoments->Read(context);
-                const auto cells = result->samplingCellGeometry->Read(context);
+                const auto cents = result->samplingCellCent->Read(context);
+                const auto scales = result->samplingCellScale->Read(context);
                 pointBasis.moments = moments.View<R::TableRows, false>();
-                pointBasis.cells = cells.View<R::FixedRows<8>, false>();
+                pointBasis.cellCent = cents.View<R::FixedRows<3>, false>();
+                pointBasis.cellScale = scales.View<R::FixedRows<1>, false>();
             }
         }
         if (options.mesh)
@@ -464,14 +501,23 @@ namespace DNDS::CFV
         DNDS_check_throw_info(_device->samplingMoments, "resident moments require direct-basis or arbitrary-point sampling placement");
         return *_device->samplingMoments;
     }
-    const R::Array<real> &VariationalReconstructionPlan::SamplingCellGeometry() const
+    const R::Array<real> &VariationalReconstructionPlan::SamplingCellCenters() const
     {
         Validate();
         if (!_device)
-            return _data->metrics._data->cell;
-        DNDS_check_throw_info(_device->samplingCellGeometry,
-                              "resident cell geometry requires direct-basis, metric or arbitrary-point sampling placement");
-        return *_device->samplingCellGeometry;
+            return _data->metrics._data->cellCent;
+        DNDS_check_throw_info(_device->samplingCellCent,
+                              "resident cell centers require direct-basis, metric or arbitrary-point sampling placement");
+        return *_device->samplingCellCent;
+    }
+    const R::Array<real> &VariationalReconstructionPlan::SamplingCellScales() const
+    {
+        Validate();
+        if (!_device)
+            return _data->metrics._data->cellScale;
+        DNDS_check_throw_info(_device->samplingCellScale,
+                              "resident cell scales require direct-basis, metric or arbitrary-point sampling placement");
+        return *_device->samplingCellScale;
     }
     R::Device VariationalReconstructionPlan::Device() const
     {

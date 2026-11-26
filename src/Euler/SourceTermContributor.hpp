@@ -81,7 +81,10 @@ namespace DNDS::Euler
             ret(I4) += massForce(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>)).dot(U(Seq123));
         }
         if (Mode == 2)
+        {
+            jac(Seq123, 0) -= massForce(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>));
             jac(I4, Seq123) -= massForce(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>));
+        }
     }
 
     /// Match the evaluator's state convention and negative-source Jacobian.
@@ -118,9 +121,11 @@ namespace DNDS::Euler
         if (Mode == 2)
         {
             TMat dmvolForceDrhov = Geom::CrossVecToMat(-2 * frame.vOmega())(Seq012, Seq012);
+            TVec dmvolForceDrho = (radiR * sqr(frame.Omega()))(Seq012);
+            jac(Seq123, 0) -= dmvolForceDrho;
             jac(Seq123, Seq123) -= dmvolForceDrhov;
-            jac(I4, Seq123) -= mvolForce + dmvolForceDrhov.transpose() * U(Seq123) / U(0);
-            jac(I4, 0) -= -mvolForce.dot(U(Seq123)) / sqr(U(0));
+            jac(I4, Seq123) -= (mvolForce + dmvolForceDrhov.transpose() * U(Seq123)) / U(0);
+            jac(I4, 0) -= (dmvolForceDrho.dot(U(Seq123)) * U(0) - mvolForce.dot(U(Seq123))) / sqr(U(0));
         }
 #endif
     }

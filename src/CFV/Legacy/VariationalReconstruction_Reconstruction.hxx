@@ -325,8 +325,15 @@ namespace DNDS
                     uRec[iCell] = grad.transpose();
                 }
             }
-            else if (method == 2) //! warning, periodic not implemented here
+            else if (method == 2)
             {
+                // Least-squares gradient aligned with native CFV::GradientPlan:
+                // rotates periodic neighbor states into the cell frame, uses
+                // boundary face-center displacement, and applies Cauchy's
+                // default inverse-distance weighting (distancePower = -3 => scale = len^(-1.5)).
+                // Note: method == 1 (Green-Gauss) retains legacy Euclidean
+                // barycenter-to-face-center interpolation weights lThis/(lThis+lThat),
+                // whereas native GradientPlan projects onto the face normal.
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
@@ -346,37 +353,37 @@ namespace DNDS
                         index iFace = c2f[ic2f];
                         index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
                         int if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                        auto faceID = mesh->GetFaceZone(iFace);
 
+                        Eigen::Vector<real, dim> disp;
+                        Eigen::RowVector<real, nVarsFixed> du;
                         if (iCellOther != UnInitIndex)
                         {
-                            dcs(ic2f, EigenAll) = (GetOtherCellBaryFromCell(iCell, iCellOther, iFace, if2c) - GetCellBary(iCell))(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>))
-                                                      .transpose();
-                            dus(ic2f, EigenAll) = (u[iCellOther] - u[iCell]).transpose();
+                            disp = (GetOtherCellBaryFromCell(iCell, iCellOther, iFace, if2c) - GetCellBary(iCell))(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>));
+                            Eigen::RowVector<real, nVarsFixed> uOther = u[iCellOther].transpose();
+                            this->ApplyPeriodicTransform(if2c, faceID, uOther);
+                            du = uOther - u[iCell].transpose();
                         }
                         else
                         {
-                            auto faceID = mesh->GetFaceZone(iFace);
                             DNDS_assert(FaceIDIsExternalBC(faceID));
 
-                            Eigen::Vector<real, nVarsFixed> uBL;
-                            uBL.setZero();
-                            uBL += u[iCell]; //! need fixing?
+                            const tPoint faceCent = this->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, -1);
+                            Eigen::Vector<real, nVarsFixed> uBL = u[iCell];
                             Eigen::Vector<real, nVarsFixed> uBV =
                                 FBoundary(
                                     uBL,
                                     u[iCell], iCell, iFace, -1,
                                     this->GetFaceNorm(iFace, -1),
-                                    this->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, -1), faceID);
-                            dus(ic2f, EigenAll) = (uBV - u[iCell]).transpose();
-
-                            dcs(ic2f, EigenAll) =
-                                ((GetCellBary(iCell) - GetFaceQuadraturePPhys(iFace, -1)).dot(GetFaceNorm(iFace, -1)) * (-2.) * GetFaceNorm(iFace, -1))(
-                                    Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>))
-                                    .transpose();
+                                    faceCent, faceID);
+                            du = (uBV - u[iCell]).transpose();
+                            disp = (faceCent - GetCellBary(iCell))(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>));
                         }
+                        const real length = disp.norm();
+                        const real scale = length > verySmallReal ? std::pow(length, -1.5) : 1.0;
+                        dcs(ic2f, EigenAll) = disp.transpose() * scale;
+                        dus(ic2f, EigenAll) = du * scale;
                     }
-                    // Eigen::MatrixXd m;
-                    // m.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve()
                     auto svd = dcs.template bdcSvd<Eigen::ComputeFullU | Eigen::ComputeFullV>();
                     grad = svd.solve(dus).transpose();
                     uRec[iCell] = grad.transpose();

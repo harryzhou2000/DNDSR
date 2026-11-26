@@ -97,7 +97,7 @@ TEST_CASE("Standalone gradients recover linear fields with physical boundary sam
                     for (I component = 0; component < 2; ++component)
                         for (I mode = 0; mode < n; ++mode)
                             CHECK(read.View()(iCell, component * n + mode) == doctest::Approx(
-                                                                                  mode < 2 ? expected[component * 2 + mode] * geometry.HostView().cells(iCell, 7) : 0)
+                                                                                  mode < 2 ? expected[component * 2 + mode] * geometry.HostView().GetCellScale(iCell) : 0)
                                                                                   .epsilon(1e-11));
             }
             const I modes = reconstruction.NRecDOF();
@@ -118,7 +118,7 @@ TEST_CASE("Standalone gradients recover linear fields with physical boundary sam
                     {
                         CHECK(read.View()(cell, m) == 42);
                         CHECK(read.View()(cell, modes + m) == doctest::Approx(
-                                                                  m < 2 ? expected[2 + m] * geometry.HostView().cells(cell, 7) : 0)
+                                                                  m < 2 ? expected[2 + m] * geometry.HostView().GetCellScale(cell) : 0)
                                                                   .epsilon(1e-11));
                     }
             }
