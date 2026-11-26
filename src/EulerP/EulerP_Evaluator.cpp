@@ -87,8 +87,21 @@ namespace DNDS::EulerP
                                     ssp<TUDof> uPrimNode,
                                     double t)
     {
-        MPI_Comm commDup = MPI_COMM_NULL;
-        MPI_Comm_dup(fv->mesh->getMPI().comm, &commDup);
+        struct ScopedCommDup
+        {
+            MPI_Comm comm = MPI_COMM_NULL;
+            explicit ScopedCommDup(MPI_Comm source)
+            {
+                DNDS_check_throw_info(MPI_Comm_dup(source, &comm) == MPI_SUCCESS, "EulerP PrintDataVTKHDF MPI_Comm_dup failed");
+            }
+            ScopedCommDup(const ScopedCommDup &) = delete;
+            ScopedCommDup &operator=(const ScopedCommDup &) = delete;
+            ~ScopedCommDup() noexcept
+            {
+                if (comm != MPI_COMM_NULL)
+                    (void)MPI_Comm_free(&comm);
+            }
+        } commDup(fv->mesh->getMPI().comm);
         DNDS_check_throw(arrCellCentScalar_names_in.size() == arrCellCentScalar.size());
         DNDS_check_throw(arrCellCentVec_names_in.size() == arrCellCentVec.size());
         DNDS_check_throw(arrNodeScalar_names_in.size() == arrNodeScalar.size());
@@ -187,8 +200,7 @@ namespace DNDS::EulerP
                            : arrNodeVec.at(i - arrNodeVec_offset)->father->operator[](iN)(iV);
             },
             t,
-            commDup);
-        MPI_Comm_free(&commDup);
+            commDup.comm);
     }
 
     /**

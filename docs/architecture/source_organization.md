@@ -106,12 +106,10 @@ Implementation headers live with their responsibility; all in-repository
 includes use those canonical paths. This stage changes includes/source lists,
 not public namespaces, storage formats or numerical algorithms.
 
-Historical includes live in the explicit `Compat/Include` overlay of each
-module. `dnds_compat_headers` is an INTERFACE include target, not a compiled
-library. `DNDS_ENABLE_LEGACY_INCLUDES=ON` exposes that overlay to existing
-project targets; switch it off to check canonical-only consumers. External
-users can opt in by linking the compatibility header target or adding those
-include roots. Old names keep the same class definitions and access contracts.
+All in-repository headers live at their canonical responsibility paths. The
+historical `Compat/Include/` forwarding shims and `DNDS_ENABLE_LEGACY_INCLUDES`
+overlay were retired after full migration to canonical includes; live non-header
+legacy bridges remain under each module's `Compat/` directory.
 
 | Group | Canonical responsibility |
 |---|---|

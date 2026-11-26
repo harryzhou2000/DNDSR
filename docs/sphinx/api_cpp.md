@@ -17,8 +17,10 @@ and SVG class diagrams), run `cmake --build build -t serve-doxygen`.
 :caption: Modules
 
 api_cpp_dnds
+api_cpp_physics
 api_cpp_geom
 api_cpp_cfv
+api_cpp_cauchy
 api_cpp_euler
 api_cpp_eulerp
 api_cpp_solver

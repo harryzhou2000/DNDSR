@@ -449,15 +449,15 @@ namespace DNDS::EulerP
                 {
                     real uIncPoint = uScalarGrad[iVar + iVarS].father[iCell].dot(p);
                     uIIncMax[iVarS] = std::max(uIIncMax[iVarS], uIncPoint);
-                    uIIncMin[iVarS] = std::max(uIIncMin[iVarS], uIncPoint);
+                    uIIncMin[iVarS] = std::min(uIIncMin[iVarS], uIncPoint);
                 }
                 if (iCellOther != UnInitIndex)
                 {
                     for (int iVarS = 0; iVarS < nCur; iVarS++)
                     {
-                        real uIncPoint = uScalar[iVar + iVarS](iCellOther);
-                        uOtherMax[iVarS] = std::max(uIIncMax[iVarS], uIncPoint);
-                        uOtherMin[iVarS] = std::min(uIIncMin[iVarS], uIncPoint);
+                        real uOtherVal = uScalar[iVar + iVarS](iCellOther);
+                        uOtherMax[iVarS] = std::max(uOtherMax[iVarS], uOtherVal);
+                        uOtherMin[iVarS] = std::min(uOtherMin[iVarS], uOtherVal);
                     }
                 }
             }
@@ -956,11 +956,11 @@ namespace DNDS::EulerP
 
             for (int iVarS = 0; iVarS < nVarsScalar; iVarS++)
             {
-                uScalarFL[iVarS](iFace) = uScalarGrad[iVarS][iCellL].dot(xrel_L);
+                uScalarFL[iVarS](iFace) = uScalar[iVarS](iCellL) + uScalarGrad[iVarS][iCellL].dot(xrel_L);
                 uScalarGradFF[iVarS][iFace] = uScalarGrad[iVarS][iCellL];
                 if (iCellR != UnInitIndex)
                 {
-                    uScalarFR[iVarS](iFace) = uScalarGrad[iVarS][iCellL].dot(xrel_L);
+                    uScalarFR[iVarS](iFace) = uScalar[iVarS](iCellR) + uScalarGrad[iVarS][iCellR].dot(xrel_R);
                     uScalarGradFF[iVarS][iFace].noalias() += uScalarGrad[iVarS][iCellR];
                     uScalarGradFF[iVarS][iFace] *= 0.5;
                     uScalarGradFF[iVarS][iFace].noalias() += faceNorm * (uScalarFR[iVarS](iFace) - uScalarFL[iVarS](iFace)) * (1. / faceLScale);

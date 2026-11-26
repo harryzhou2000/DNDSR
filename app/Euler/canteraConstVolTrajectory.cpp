@@ -187,13 +187,13 @@ int main(int argc, char **argv)
                   << " final abs Y=" << finalAbsY << '\n';
         std::cout << "midpoint ignition t_phys[dnds,cantera]=[" << tauDNDS << ',' << tauCantera
                   << "] delta=" << std::abs(tauDNDS - tauCantera) << '\n';
-        Cantera::appdelete();
+        DNDS::Euler::Reactive0D::cleanupCantera();
         return 0;
     }
     catch (const std::exception &e)
     {
         std::cerr << e.what() << std::endl;
-        Cantera::appdelete();
+        DNDS::Euler::Reactive0D::cleanupCantera();
         return 1;
     }
 }

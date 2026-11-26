@@ -111,6 +111,7 @@ _EXTERNAL_LIBS: Sequence[str] = [
     "libcgns.so",
     "libmetis.so",
     "libparmetis.so",
+    "libcantera_shared.so",
 ]
 
 _MODULE_LIBS: dict[str, Sequence[str]] = {

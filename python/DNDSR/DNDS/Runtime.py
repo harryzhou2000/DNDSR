@@ -105,10 +105,21 @@ class ArrayView:
             objects = np.empty(self.shape, dtype=object)
             objects[...] = value
             objects = objects.reshape(len(self._rows), len(self._columns))
+            # Validate and materialize all snapshots before mutating any element
+            # so a bad element cannot leave the Array partially updated.
+            prepared = []
             for i, row in enumerate(self._rows):
                 for j, column in enumerate(self._columns):
                     item = objects[i, j]
-                    self._base._write_object(row, column, item.snapshot() if isinstance(item, ElementRef) else item)
+                    if isinstance(item, ElementRef):
+                        item = item.snapshot()
+                    if not isinstance(item, self._base.element_type):
+                        raise TypeError(
+                            f"expected {self._base.element_type.__name__} for POD Array assignment, got {type(item).__name__}"
+                        )
+                    prepared.append((row, column, item))
+            for row, column, item in prepared:
+                self._base._write_object(row, column, item)
             return
         values = np.empty(self.shape, dtype=self.dtype)
         values[...] = value  # Validate/broadcast before taking a write lease.
@@ -228,6 +239,7 @@ class _PairRead:
             self._owned = self._stack.enter_context(pair.owned.read(stream))
             self._ghost = self._stack.enter_context(pair.ghost.read(stream))
             self._n_owned = pair.owned.layout.row_count
+            self._n_ghost = pair.ghost.layout.row_count
         except BaseException:
             self._stack.close()
             raise
@@ -240,6 +252,12 @@ class _PairRead:
 
     def __getitem__(self, index):
         row, column = index
+        total = self._n_owned + self._n_ghost
+        row = operator.index(row)
+        if row < 0:
+            row += total
+        if row < 0 or row >= total:
+            raise IndexError(f"ArrayPair row index {index[0]} out of range [0, {total})")
         if row < self._n_owned:
             return self._owned[row, column]
         return self._ghost[row - self._n_owned, column]

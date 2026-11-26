@@ -99,8 +99,8 @@ snapping and nonlinear checkpoints.
 | **Physics** | `src/Physics` | Shared thermodynamics, transport, chemistry and RANS kernels |
 | **Cauchy** | `src/Cauchy` | Native FV solver, domain orchestration and implicit operators |
 | **Euler**  | `src/Euler` | Compressible Navier-Stokes solvers (2D/3D, SA, k-omega)  |
-| **EulerP** | `src/EulerP`| Alternative evaluator with CUDA GPU support              |
-| **Solver** | `src/Solver`| ODE integrators and Krylov solvers (GMRES, PCG)          |
+| **EulerP** | `src/EulerP`| Legacy-experimental evaluator with CUDA GPU support      |
+| **Solver** | `src/Solver`| ODE integrators, Krylov solvers (GMRES, PCG), AggregationAMG |
 
 ## Quick Start
 

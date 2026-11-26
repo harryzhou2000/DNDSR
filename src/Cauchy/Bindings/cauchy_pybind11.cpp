@@ -108,6 +108,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
             py::init(
                 [](std::shared_ptr<DNDS::Geom::UnstructuredMesh> mesh, const std::string &json, const std::string &name)
     {
+        DNDS_check_throw_info(mesh != nullptr, "Python Domain constructor requires a non-null UnstructuredMesh");
         const auto mpi = mesh->getMPI();
         C::Json input;
         DNDS::MPI::LocalStage(mpi, [&]

@@ -97,105 +97,114 @@ namespace DNDS::EulerP
         Geom::t_index id,                                \
         BCStorageVecDeviceView<B> value, PhysicsDeviceView<B> &phy)
 
-    /// @brief Farfield BC implementation (TODO: not yet implemented).
+#ifdef __CUDA_ARCH__
+#    define DNDS_EULERP_UNIMPLEMENTED_BC(BCNAME) DNDS_HD_assert(false)
+#else
+#    define DNDS_EULERP_UNIMPLEMENTED_BC(BCNAME) \
+        DNDS_check_throw_info(false, "EulerP BC type " #BCNAME " is not implemented (legacy-experimental module)")
+#endif
+
+    /// @brief Farfield BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::Far>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(Far);
         }
     };
 
-    /// @brief No-slip viscous wall BC implementation (TODO: not yet implemented).
+    /// @brief No-slip viscous wall BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::Wall>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(Wall);
         }
     };
 
-    /// @brief Isothermal viscous wall BC implementation (TODO: not yet implemented).
+    /// @brief Isothermal viscous wall BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::WallIsothermal>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(WallIsothermal);
         }
     };
 
-    /// @brief Outflow BC implementation (TODO: not yet implemented).
+    /// @brief Outflow BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::Out>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(Out);
         }
     };
 
-    /// @brief Outflow with back-pressure BC implementation (TODO: not yet implemented).
+    /// @brief Outflow with back-pressure BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::OutP>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(OutP);
         }
     };
 
-    /// @brief Inflow with stagnation pressure/temperature BC implementation (TODO: not yet implemented).
+    /// @brief Inflow with stagnation pressure/temperature BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::InPsTs>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(InPsTs);
         }
     };
 
-    /// @brief Symmetry plane BC implementation (TODO: not yet implemented).
+    /// @brief Symmetry plane BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::Sym>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(Sym);
         }
     };
 
-    /// @brief Special-purpose BC implementation for benchmark cases (TODO: not yet implemented).
+    /// @brief Special-purpose BC implementation for benchmark cases (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::Special>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(Special);
         }
     };
 
-    /// @brief General inflow BC implementation (TODO: not yet implemented).
+    /// @brief General inflow BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::In>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(In);
         }
     };
 
-    /// @brief Inviscid (slip) wall BC implementation (TODO: not yet implemented).
+    /// @brief Inviscid (slip) wall BC implementation (not implemented in legacy-experimental EulerP).
     template <DeviceBackend B>
     struct BCFunc_Impl<B, BCType::WallInvis>
     {
         DNDS_EULERP_BC_INTERFACE_APPLY
         {
-            DNDS_HD_assert(false); // TODO
+            DNDS_EULERP_UNIMPLEMENTED_BC(WallInvis);
         }
     };
+
+#undef DNDS_EULERP_UNIMPLEMENTED_BC
 
     /**
      * @brief Device-callable view of a single boundary condition.
@@ -332,7 +341,7 @@ namespace DNDS::EulerP
         template <DeviceBackend B>
         t_deviceView<B> deviceView()
         {
-            DNDS_assert_info(values.device() == B || (B == DeviceBackend::Host || B == DeviceBackend::Unknown),
+            DNDS_assert_info(values.device() == B || (B == DeviceBackend::Host && values.device() == DeviceBackend::Unknown),
                              "not on this device: " + std::string(device_backend_name(B)));
             return t_deviceView<B>(values.deviceView<B, int32_t>(), id, type);
         }

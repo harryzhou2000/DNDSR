@@ -11,9 +11,9 @@ The reference is generated from a combination of:
 ```{note}
 To build this reference with full autodoc support:
 1. Build and install the pybind11 modules:
-   `cmake --build build -t dnds_pybind11 geom_pybind11 cfv_pybind11 eulerP_pybind11 -j32`
+   `cmake --build build -t dnds_pybind11 geom_pybind11 cfv_pybind11 cauchy_pybind11 eulerP_pybind11 -j32`
    `cmake --install build --component py`
-2. Install the package: `pip install -e .`
+2. Run with `PYTHONPATH=python` (or `pip install -e .`)
 3. Build docs: `cmake --build build -t docs`
 ```
 
@@ -21,13 +21,11 @@ To build this reference with full autodoc support:
 
 | Module | Purpose | Key Classes / Functions |
 |--------|---------|------------------------|
-| `DNDSR.DNDS` | MPI, arrays, serialization | `MPIInfo`, `Array`, `ArrayPair`, `SerializerFactory` |
+| `DNDSR.DNDS` | MPI, Runtime arrays, serialization | `MPIInfo`, `Runtime.Array`, `Runtime.ArrayPair`, `SerializerFactory` |
 | `DNDSR.Geom` | Mesh I/O and topology | `UnstructuredMesh`, `UnstructuredMeshSerialRW`, `ElemType`, `read_mesh`, `prepare_mesh` |
-| `DNDSR.CFV` | Finite volume and reconstruction | `FiniteVolume`, `VariationalReconstruction`, `ModelEvaluator` |
-| `DNDSR.EulerP` | GPU-enabled solver evaluator | `EulerPEvaluator`, `EulerP_Solver` |
-
-> **TODO:** Expand each module section below with detailed class and method
-documentation as the stub generation pipeline matures.
+| `DNDSR.CFV` | Finite volume and reconstruction | `FiniteVolume`, `FiniteVolumePlan`, `VariationalReconstruction` |
+| `DNDSR.Cauchy` | Native FV solver, domain and implicit operators | `Domain`, `Simulation`, `EquationDofs`, `FiniteVolumeOperators`, `LinearProblem`, `LinearExecutionStreams` |
+| `DNDSR.EulerP` | Legacy-experimental GPU evaluator | `EulerPEvaluator`, `EulerP_Solver` |
 
 ## DNDSR Package
 
@@ -40,6 +38,14 @@ documentation as the stub generation pipeline matures.
 ## DNDSR.DNDS
 
 ```{automodule} DNDSR.DNDS
+:members:
+:undoc-members:
+:show-inheritance:
+```
+
+### DNDSR.DNDS.Runtime
+
+```{automodule} DNDSR.DNDS.Runtime
 :members:
 :undoc-members:
 :show-inheritance:
@@ -77,7 +83,15 @@ documentation as the stub generation pipeline matures.
 :show-inheritance:
 ```
 
-## DNDSR.EulerP
+## DNDSR.Cauchy
+
+```{automodule} DNDSR.Cauchy
+:members:
+:undoc-members:
+:show-inheritance:
+```
+
+## DNDSR.EulerP (Legacy-Experimental)
 
 ```{automodule} DNDSR.EulerP
 :members:

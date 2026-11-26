@@ -94,9 +94,6 @@ namespace DNDS::EulerP::detail
         CUDA::SharedBuffer<real, bufferSize_val> &shared_buf_val,
         index iPnt, index iPntMax)
     {
-#    ifndef __CUDA_ARCH__
-        static_assert(local_stride_fixed > 0 && local_stride_fixed < 0);
-#    endif
         static_assert(local_stride_fixed > 0);
         static_assert(max_tid_fixed > 0);
         static_assert(bufferSize_idx >= max_tid_fixed);

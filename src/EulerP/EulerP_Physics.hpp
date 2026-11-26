@@ -44,7 +44,7 @@ namespace DNDS::EulerP
         int muModel = 0; ///< Viscosity model selector (0 = constant viscosity).
         DNDS_NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_ORDERED_AND_UNORDERED_JSON(
             PhysicsParams,
-            gamma, mu0, cp, Rg, TRef,
+            gamma, mu0, cp, cv, Rg, TRef,
             muModel);
     };
 
@@ -275,7 +275,7 @@ namespace DNDS::EulerP
         /**
          * @brief Computes temperature from the primitive state.
          *
-         * For a perfect gas: T = e / (rho * cp), where e = prim[I4] is internal energy.
+         * For a perfect gas: T = (rho * e) / (rho * cv), where prim[I4] is internal energy per unit volume.
          *
          * @tparam tUPrim Primitive state vector type (deduced).
          * @param UPrim Primitive state vector.
@@ -287,7 +287,7 @@ namespace DNDS::EulerP
             tUPrim &&UPrim, int nVars) const
         {
             //! perfect gas here
-            return UPrim(I4) / UPrim(0) / params.cp;
+            return UPrim(I4) / UPrim(0) / params.cv;
         }
 
         /**

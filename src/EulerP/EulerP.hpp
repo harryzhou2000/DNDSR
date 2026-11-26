@@ -2,6 +2,10 @@
  * @file EulerP.hpp
  * @brief Core type definitions and utilities for the EulerP alternative Navier-Stokes evaluator module.
  *
+ * @note **Legacy-experimental module:** EulerP is retained for historical comparison only
+ *       and is not recommended for new production work. Use the native @c Cauchy module
+ *       for supported CPU/CUDA finite-volume discretization and solvers.
+ *
  * The EulerP module is an alternative compressible Navier-Stokes evaluator with CUDA GPU support.
  * Unlike the Euler module (which uses Eigen compile-time nVars and template-heavy dispatch),
  * EulerP uses scalar loops, is device-callable, and supports both Host and CUDA backends

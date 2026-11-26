@@ -68,13 +68,18 @@ endif()
 # To regenerate stubs manually (e.g. after editing only Python code):
 #   PYTHONPATH=python ./scripts/generate-stubs.sh
 
-get_filename_component(_PYTHON_BIN_DIR "${Python_EXECUTABLE}" DIRECTORY)
+set(_DNDS_STUB_PYTHON "${Python_EXECUTABLE}")
+if(NOT _DNDS_STUB_PYTHON AND DEFINED Python3_EXECUTABLE)
+    set(_DNDS_STUB_PYTHON "${Python3_EXECUTABLE}")
+endif()
+get_filename_component(_PYTHON_BIN_DIR "${_DNDS_STUB_PYTHON}" DIRECTORY)
 
 install(CODE "
     message(STATUS \"Generating .pyi type stubs from pybind11 modules...\")
     execute_process(
         COMMAND \"${CMAKE_COMMAND}\" -E env
             \"PYTHONPATH=${PROJECT_SOURCE_DIR}/python\"
+            \"PYTHON_EXECUTABLE=${_DNDS_STUB_PYTHON}\"
             \"PATH=${_PYTHON_BIN_DIR}:\$ENV{PATH}\"
             bash \"${PROJECT_SOURCE_DIR}/scripts/generate-stubs.sh\"
         WORKING_DIRECTORY \"${PROJECT_SOURCE_DIR}\"
