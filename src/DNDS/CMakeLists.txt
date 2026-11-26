@@ -60,8 +60,6 @@ Runtime/Communication/NCCLTransfer.cpp
 Algebra/DofAlgebra.cpp
 Algebra/AmgXPreconditioner.cpp
 Algebra/AmgXDiagnostics.cpp
-../Solver/AggregationAMG_Structure.cpp
-../Solver/AggregationAMG.cpp
 Algebra/BatchedSVD.cpp
 Algebra/LocalProducts.cpp
 Diagnostics/Profiling.cpp
@@ -125,19 +123,21 @@ message(STATUS "DNDS_PCH_TARGETS ${DNDS_PCH_TARGETS}")
 message(STATUS "DNDS_PCH_TARGETS_FAST ${DNDS_PCH_TARGETS_FAST}")
 message(STATUS "CMAKE_DISABLE_PRECOMPILE_HEADERS ${CMAKE_DISABLE_PRECOMPILE_HEADERS}")
 
-dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
-    OFF ON ON)  # SHARED,FAST, EXCLUDE
-
-dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
-    ON ON ON)  # SHARED,FAST, EXCLUDE
+dnds_add_lib_pair(${LIBNAME} "${CPPS}" "${LINKS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
+    ON ON)  # FAST, EXCLUDE
+set(_dnds_compile_targets ${LIBNAME} ${LIBNAME}_shared)
+if(TARGET ${LIBNAME}_objects)
+    list(APPEND _dnds_compile_targets ${LIBNAME}_objects)
+endif()
 # MPI types and inline operations occur in public Runtime and algebra headers.
 target_link_libraries(dnds INTERFACE MPI::MPI_CXX)
 target_link_libraries(dnds_shared INTERFACE MPI::MPI_CXX)
 if(DNDS_USE_SYCL)
     target_link_options(dnds INTERFACE -fsycl ${DNDS_SYCL_KERNEL_FLAGS})
     target_link_options(dnds_shared PRIVATE -fsycl ${DNDS_SYCL_KERNEL_FLAGS})
-    target_compile_definitions(dnds PUBLIC DNDS_USE_SYCL)
-    target_compile_definitions(dnds_shared PUBLIC DNDS_USE_SYCL)
+    foreach(_target IN LISTS _dnds_compile_targets)
+        target_compile_definitions(${_target} PUBLIC DNDS_USE_SYCL)
+    endforeach()
     # DPC++ treats its own lib directory as implicit at link time. That
     # directory may be private to the user and absent from the system loader.
     get_filename_component(_dnds_sycl_libdir "${DNDS_SYCL_LIBRARY}" DIRECTORY)
@@ -146,14 +146,15 @@ if(DNDS_USE_SYCL)
     set_property(TARGET dnds_shared APPEND PROPERTY INSTALL_RPATH "${_dnds_sycl_libdir}")
 endif()
 if(DNDS_USE_CALIPER)
-    foreach(_target ${LIBNAME} ${LIBNAME}_shared)
+    foreach(_target IN LISTS _dnds_compile_targets)
         target_link_libraries(${_target} PRIVATE caliper)
         target_compile_definitions(${_target} PRIVATE DNDS_USE_CALIPER)
     endforeach()
 endif()
 if(DNDS_USE_CUDA)
-    target_link_libraries(${LIBNAME} PRIVATE CUDA::cusolver)
-    target_link_libraries(${LIBNAME}_shared PRIVATE CUDA::cusolver)
+    foreach(_target IN LISTS _dnds_compile_targets)
+        target_link_libraries(${_target} PRIVATE CUDA::cusolver)
+    endforeach()
     # Installed Python libraries must keep the toolkit selected at configure
     # time, including transitive AmgX libraries. The host may have several
     # same-soname CUDA releases in ldconfig; none is an implicit substitute.
@@ -166,8 +167,9 @@ if(DNDS_USE_AMGX)
     # include path. Use the selected provider's header only in its adapter TU.
     set_property(SOURCE Algebra/AmgXPreconditioner.cpp APPEND PROPERTY COMPILE_DEFINITIONS
         "DNDS_AMGX_C_HEADER=\"${DNDS_AMGX_INCLUDE_DIR}/amgx_block_inverse.h\"")
-    target_link_libraries(${LIBNAME} PRIVATE DNDS::AmgX)
-    target_link_libraries(${LIBNAME}_shared PRIVATE DNDS::AmgX)
+    foreach(_target IN LISTS _dnds_compile_targets)
+        target_link_libraries(${_target} PRIVATE DNDS::AmgX)
+    endforeach()
     get_filename_component(_DNDS_AMGX_LIBRARY_DIR "${DNDS_AMGX_LIBRARY}" DIRECTORY)
     # An ELF executable linking the shared Runtime resolves its indirect
     # libamgxsh dependency at link time too. Prefer the verified fork when an
@@ -180,10 +182,10 @@ endif()
 if(DNDS_USE_NCCL)
     # The static-library helper links dependencies INTERFACE-only. This source
     # also needs the provider headers while compiling the library itself.
-    target_link_libraries(${LIBNAME} PRIVATE DNDS_NCCL)
-    target_link_libraries(${LIBNAME}_shared PRIVATE DNDS_NCCL)
-    target_compile_definitions(${LIBNAME} PRIVATE DNDS_USE_NCCL)
-    target_compile_definitions(${LIBNAME}_shared PRIVATE DNDS_USE_NCCL)
+    foreach(_target IN LISTS _dnds_compile_targets)
+        target_link_libraries(${_target} PRIVATE DNDS_NCCL)
+        target_compile_definitions(${_target} PRIVATE DNDS_USE_NCCL)
+    endforeach()
     # NCCL is an explicit external dependency, not a copied Torch payload.
     # Preserve the configured runtime location for the locally installed Python
     # package too; installing strips the ordinary build-tree RPATH.

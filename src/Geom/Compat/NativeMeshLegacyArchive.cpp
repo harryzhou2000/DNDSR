@@ -292,7 +292,10 @@ namespace DNDS::Geom
                                                                                const std::string &name, S::ArrayGlobalOffset partition,
                                                                                int ghostLayers)
     {
-        return AssembleNativeMesh(mpi, ReadOwned(mpi, std::move(serializer), name, partition), ghostLayers);
+        auto state = AssembleNativeMesh(mpi, ReadOwned(mpi, std::move(serializer), name, partition), ghostLayers);
+        // Untrusted legacy archive ingress explicitly runs the global persistent-ID audit.
+        state->Audit(MeshAuditOptions{true, true, true});
+        return state;
     }
 
     std::shared_ptr<const UnstructuredMeshState> ReadCompatibleNativeMeshArchive(

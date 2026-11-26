@@ -460,45 +460,7 @@ namespace DNDS::Physics::RANS
      * @return A tuple (rhs_initial, rhs_final) giving the k-equation residual before and
      *         after the Newton iteration, for convergence diagnostics.
      */
-    template <int dim, class TU>
-    std::tuple<real, real> SolveZeroGradEquilibrium(TU &u, real muPhy, const RKEConfig &config) // this is tested to be not applicable!
-    {
-        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        static const auto I4 = dim + 1;
-        Eigen::Matrix<real, dim, 7> diffU;
-        diffU.setZero();
-
-        Eigen::Vector<real, Eigen::Dynamic> src = u;
-        Eigen::Vector<real, Eigen::Dynamic> uc = u;
-        src.setZero();
-
-        real distEps = std::sqrt(smallReal);
-        real distV = 1 + distEps;
-
-        auto getDE = [&](real re) -> real
-        {
-            uc(I4 + 2) = re;
-            GetSource_RealizableKe<dim>(uc, diffU, muPhy, 0, src, 0, config);
-            return src(I4 + 1);
-        };
-        std::cout << "Mu " << muPhy << std::endl;
-
-        real re = u(I4 + 2);
-        real rhs0{0}, rhs{0};
-        for (int i = 0; i < 1000; i++)
-        {
-            rhs = getDE(re);
-            real dRhsDRe = (getDE(re * distV) - rhs) / (re * distEps);
-            real ren = re - rhs / (dRhsDRe + verySmallReal);
-            re = std::max(ren, verySmallReal);
-            std::cout << rhs << std::endl;
-            if (i == 0)
-                rhs0 = rhs;
-        }
-        u(I4 + 2) = re;
-        return std::make_tuple(rhs0, rhs);
-    }
+    // Retired dead 1000-iteration std::cout SolveZeroGradEquilibrium loop (Plan 63-D / P3).
 
     /**
      * @brief Compute the analytical diagonal of the source Jacobian for the realizable k-epsilon model.

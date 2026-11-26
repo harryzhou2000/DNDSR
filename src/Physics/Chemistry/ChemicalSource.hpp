@@ -10,6 +10,7 @@
 #pragma once
 
 #include "DNDS/Core/Errors.hpp"
+#include "DNDS/Core/FormatSpec.hpp"
 #include "Physics/Thermodynamics/Properties.hpp"
 #include "Physics/Transport/Properties.hpp"
 #include "Physics/EvaluationStatus.hpp"
@@ -55,40 +56,13 @@ namespace DNDS::Physics::Chemistry
 template <>
 struct fmt::formatter<DNDS::Physics::Chemistry::ConstSpeciesBufferView>
 {
-    char type = 'g';
-    int precision = 6;
+    DNDS::Format::FloatSpec spec{};
     std::string fmtSpec = "{:.6g}";
 
     auto parse(fmt::format_parse_context &ctx)
     {
-        auto it = ctx.begin(), end = ctx.end();
-        while (it != end && *it != '}')
-        {
-            switch (*it)
-            {
-            case 'e':
-            case 'E':
-            case 'f':
-            case 'F':
-            case 'g':
-            case 'G':
-                type = *it++;
-                break;
-            case '.':
-            {
-                it++;
-                std::string v;
-                while (it != end && *it >= '0' && *it <= '9')
-                    v.push_back(*it++);
-                if (!v.empty())
-                    precision = std::stoi(v);
-                break;
-            }
-            default:
-                ++it;
-            }
-        }
-        fmtSpec = fmt::format(FMT_STRING("{{:.{}{}}}"), precision, type);
+        auto it = DNDS::Format::ParseFloatSpec(ctx.begin(), ctx.end(), spec, false);
+        fmtSpec = spec.ToFormatString(false);
         return it;
     }
 

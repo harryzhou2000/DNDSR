@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "DNDS/Core/Algorithm.hpp"
 #include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy
@@ -24,8 +25,7 @@ namespace DNDS::Cauchy
                 forceZones.push_back(std::stoi(zone));
                 hasInterfaces = hasInterfaces || condition.kind == "interface";
             }
-            std::sort(forceZones.begin(), forceZones.end());
-            forceZones.erase(std::unique(forceZones.begin(), forceZones.end()), forceZones.end());
+            DNDS::SortUnique(forceZones);
             for (index i = 0; i < index(forceZones.size()); ++i)
             {
                 forceSlots.emplace(forceZones[i], i);
@@ -33,12 +33,12 @@ namespace DNDS::Cauchy
             }
             const index interiorCondition = index(boundaryConditions.size());
             boundaryConditions.emplace_back();
+            offsets[owned] = OMP::ExclusivePrefixRows(
+                owned,
+                [&](index iCell) -> index { return index(topology.CellFaces(iCell).size()); },
+                [&](index iCell, index start) { offsets[iCell] = start; });
             for (index iCell = 0; iCell < owned; ++iCell)
-            {
-                const auto row = topology.CellFaces(iCell);
-                maximumGradientPoints = std::max(maximumGradientPoints, index(row.size()));
-                offsets[iCell + 1] = offsets[iCell] + index(row.size());
-            }
+                maximumGradientPoints = std::max(maximumGradientPoints, index(topology.CellFaces(iCell).size()));
             // Prefixes and boundary numbering stay in canonical cell order.
             // Every worker owns one preallocated incidence range; no concurrent
             // append, Array lease acquisition or MPI occurs in the fill.
@@ -48,8 +48,7 @@ namespace DNDS::Cauchy
                 const auto row = topology.CellFaces(iCell);
                 std::copy(row.begin(), row.end(), activeFaces.begin() + offsets[iCell]);
             });
-            std::sort(activeFaces.begin(), activeFaces.end());
-            activeFaces.erase(std::unique(activeFaces.begin(), activeFaces.end()), activeFaces.end());
+            DNDS::SortUnique(activeFaces);
             stencil.routing = R::Array<FaceRouting>(R::RowLayout::Dense(faces, 1));
             stencil.columns = R::Array<index>(R::RowLayout::Dense(faces, 2));
             stencil.viscousDistance = R::Array<real>(R::RowLayout::Dense(metric.faceOffsets(faces, 0), 1));
@@ -138,19 +137,14 @@ namespace DNDS::Cauchy
                     if (other != UnInitIndex && other != iCell)
                         row.push_back(other);
                 }
-                std::sort(row.begin(), row.end());
-                row.erase(std::unique(row.begin(), row.end()), row.end());
+                DNDS::SortUnique(row);
                 for (rowsize slot = 0; slot < rowsize(cellFaces.size()); ++slot)
                 {
                     const auto iFace = cellFaces[slot];
                     const int side = topology.CellIsFaceBack(iCell, iFace, slot) ? 0 : 1;
                     const auto other = topology.CellFaceOther(iCell, iFace, slot);
                     if (other != UnInitIndex && other != iCell)
-                    {
-                        const auto found = std::lower_bound(row.begin(), row.end(), other);
-                        DNDS_check_throw_info(found != row.end() && *found == other, "stencil face neighbor missing from Jacobian row");
-                        slots(iFace, side) = index(found - row.begin());
-                    }
+                        slots(iFace, side) = DNDS::CheckedLowerBoundRow(row, other, "stencil face neighbor missing from Jacobian row");
                 }
             });
             jacobianColumns = std::make_shared<LinearPatternStorage>(columns,

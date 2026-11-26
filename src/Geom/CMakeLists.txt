@@ -70,11 +70,8 @@ if (DNDS_USE_CUDA)
 list(APPEND CPPS Periodic/PeriodicInfo.cu)
 endif()
 
-dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS}"
-    OFF ON ON)  # SHARED,FAST, EXCLUDE
-
-dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS_SHARED}" "${DNDS_PCH_TARGETS}"
-    ON ON ON)  # SHARED,FAST, EXCLUDE
+dnds_add_lib_pair(${LIBNAME} "${CPPS}" "${LINKS}" "${LINKS_SHARED}" "${DNDS_PCH_TARGETS}"
+    ON ON)  # FAST, EXCLUDE
 # Public headers and inline accessors expose the underlying native module.
 target_link_libraries(${LIBNAME}_shared INTERFACE dnds_shared)
 

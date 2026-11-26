@@ -3,6 +3,7 @@
 #include "Cauchy/Discretization/CUDA/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeGradientKernels.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
+#include "DNDS/Algebra/OperandChecks.hpp"
 #include "DNDS/Runtime/Execution/EagerArrayBatch.hpp"
 
 namespace DNDS::Cauchy
@@ -31,13 +32,7 @@ namespace DNDS::Cauchy
         }
         void CheckDisjoint(const std::vector<R::Array<real>> &inputs, const std::vector<R::Array<real>> &outputs)
         {
-            for (index i = 0; i < index(outputs.size()); ++i)
-            {
-                for (const auto &input : inputs)
-                    DNDS_check_throw_info(!outputs[i].Storage().Overlaps(input.Storage()), "gradient output aliases a read operand");
-                for (index j = 0; j < i; ++j)
-                    DNDS_check_throw_info(!outputs[i].Storage().Overlaps(outputs[j].Storage()), "gradient outputs overlap");
-            }
+            Algebra::Detail::RequirePairwiseDisjointArrays(outputs, inputs, "gradient output aliases an operand");
         }
         std::vector<Algebra::DofComponentColumn<const real>> MeanColumns(
             SpanView<const ReadRows> reads, const std::vector<std::array<index, 2>> &slots,

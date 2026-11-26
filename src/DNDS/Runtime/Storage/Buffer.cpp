@@ -2,6 +2,7 @@
 #include "DNDS/Runtime/Storage/BufferAlias.hpp"
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 #include "DNDS/Runtime/Storage/AllocationResource.hpp"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 #ifdef DNDS_USE_SYCL
 #    include "DNDS/Runtime/Execution/SYCLExecution.hpp"
 #endif
@@ -38,22 +39,7 @@ namespace DNDS::Runtime
             DNDS_check_throw_info(status == cudaSuccess, cudaGetErrorString(status));
         }
 
-        class DeviceScope
-        {
-            int _previous = -1;
-
-        public:
-            explicit DeviceScope(int ordinal)
-            {
-                CheckCUDA(cudaGetDevice(&_previous));
-                CheckCUDA(cudaSetDevice(ordinal));
-            }
-            ~DeviceScope()
-            {
-                if (cudaSetDevice(_previous) != cudaSuccess)
-                    std::terminate();
-            }
-        };
+        using DeviceScope = DNDS::Device::CUDADeviceScope;
 
         void ValidateStream(ExecutionContext context)
         {

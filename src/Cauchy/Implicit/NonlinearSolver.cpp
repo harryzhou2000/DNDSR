@@ -274,8 +274,8 @@ namespace DNDS::Cauchy
             if (positivity && settings.positivity.rhsFPPMode != "none")
             {
                 DNDS_check_throw_info(statistics.limited >= 0 && std::isfinite(statistics.minimum) &&
-                                      statistics.minimum >= 0 && statistics.minimum <= 1 &&
-                                      (statistics.limited ? statistics.minimum < 1 : statistics.minimum == 1),
+                                          statistics.minimum >= 0 && statistics.minimum <= 1 &&
+                                          (statistics.limited ? statistics.minimum < 1 : statistics.minimum == 1),
                                       "invalid global RHS positivity statistics");
                 if (cellRHSAlpha && statistics.minimum < 1)
                     Stage([&]
@@ -297,7 +297,65 @@ namespace DNDS::Cauchy
                 return {};
             auto engine = stream.LockEngine();
             return NonlinearDetail::NormalizeMeanStateScales(operators.MeasureMeanState(engine, stream, state, NormSlot(5, state.ComponentNumber() + 1)),
-                                                         state.ComponentNumber(), flowFirst);
+                                                             state.ComponentNumber(), flowFirst);
+        }
+
+        static std::shared_ptr<Data> Create(
+            const FiniteVolume &discrete, EquationDofs &state,
+            std::shared_ptr<FiniteVolume::ReconstructionState> reconstruction,
+            std::shared_ptr<FiniteVolume::Workspace> workspace, Runtime::EagerEngine &engine, Runtime::ExecutionStream stream,
+            const DomainSettings &settings, const Algebra::ComponentSelection &residualSelection,
+            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+            std::shared_ptr<const real> pressureGauge)
+        {
+            const MPIInfo mpi(discrete.Metrics().Communicator());
+            ImplicitSettings implicit = settings.implicit;
+            std::string serialized;
+            MPI::LocalStage(mpi, [&]
+                            {
+                implicit.residualComponents.clear();
+                index ordinal = 0;
+                for (const auto &block : state.Schema().blocks)
+                    for (const auto &component : block.components)
+                    {
+                        if (!residualSelection.All() && residualSelection.Includes(ordinal))
+                            implicit.residualComponents.push_back(block.name + "." + component.name);
+                        ++ordinal;
+                    }
+                DNDS_check_throw_info(residualSelection.All() || residualSelection.Indices().back() < state.ComponentNumber(), "equation residual selection exceeds its dimension");
+                implicit.ValidateComponents(state.ComponentNumber());
+                settings.numerics.ValidatePositivity();
+                DNDS_check_throw_info(reconstruction && workspace && (!implicit.roeDissipation || discrete.HasRoeJacobianKernel(*workspace)),
+                                      "equation nonlinear Roe profile is not connected yet");
+                DNDS_check_throw_info(!implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
+                                      "strict implicit VR acceptance requires a positive reconstructionTolerance");
+                DNDS_check_throw_info(reconstruction && workspace && stream.Context().device == state.Device() && discrete.Device() == state.Device(),
+                                      "equation implicit stage needs matching reconstruction, workspace and stream placement");
+                stream.Record().WaitHost();
+                state.RequireSchema(discrete.Equation().Schema());
+                discrete.ValidateWorkspace(state, *workspace);
+                DNDS_check_throw_info(state.Space().Same(discrete.Metrics().Space()) && discrete.Equation().HasMixture() == bool(workers), "equation nonlinear space/worker backend differs");
+                serialized = Json{{"implicit", implicit}, {"numerics", settings.numerics}, {"execution", settings.execution}}.dump();
+                DNDS_check_throw_info(serialized.size() <= size_t(INT_MAX), "equation implicit controls exceed MPI string range"); });
+            AgreeEquationBinding(state, mpi.comm);
+            NonlinearDetail::AgreeControls(mpi, serialized);
+            std::shared_ptr<Data> data;
+            MPI::LocalStage(mpi, [&]
+                            { data = std::make_shared<Data>(discrete, state, std::move(reconstruction), std::move(workspace), engine, std::move(stream), settings, std::move(implicit), std::move(workers)); });
+            MPI::LocalStage(mpi, [&]
+                            { data->ValidateMeans(state); });
+            if (discrete.Equation().IsACM() && !discrete.HasPressureBoundary() && !discrete.HasInterfaces())
+            {
+                if (!pressureGauge)
+                {
+                    const auto requested = settings.equation.acmPressureMean;
+                    pressureGauge = std::make_shared<real>(requested ? *requested : data->operators.PressureMean(engine, data->stream, state));
+                    if (requested)
+                        data->operators.ProjectPressureMean(engine, data->stream, state, *requested);
+                }
+                data->pressureGauge = std::move(pressureGauge);
+            }
+            return data;
         }
     };
 
@@ -307,55 +365,10 @@ namespace DNDS::Cauchy
                                      const DomainSettings &settings, const Algebra::ComponentSelection &residualSelection,
                                      std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                                      std::shared_ptr<const real> pressureGauge)
+        : _data(Data::Create(discrete, state, std::move(reconstruction), std::move(workspace),
+                             engine, std::move(stream), settings, residualSelection,
+                             std::move(workers), std::move(pressureGauge)))
     {
-        const MPIInfo mpi(discrete.Metrics().Communicator());
-        ImplicitSettings implicit = settings.implicit;
-        std::string serialized;
-        MPI::LocalStage(mpi, [&]
-                        {
-            implicit.residualComponents.clear();
-            index ordinal = 0;
-            for (const auto &block : state.Schema().blocks)
-                for (const auto &component : block.components)
-                {
-                    if (!residualSelection.All() && residualSelection.Includes(ordinal))
-                        implicit.residualComponents.push_back(block.name + "." + component.name);
-                    ++ordinal;
-                }
-            DNDS_check_throw_info(residualSelection.All() || residualSelection.Indices().back() < state.ComponentNumber(), "equation residual selection exceeds its dimension");
-            implicit.ValidateComponents(state.ComponentNumber());
-            settings.numerics.ValidatePositivity();
-            DNDS_check_throw_info(reconstruction && workspace && (!implicit.roeDissipation || discrete.HasRoeJacobianKernel(*workspace)),
-                                  "equation nonlinear Roe profile is not connected yet");
-            DNDS_check_throw_info(!implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
-                                  "strict implicit VR acceptance requires a positive reconstructionTolerance");
-            DNDS_check_throw_info(reconstruction && workspace && stream.Context().device == state.Device() && discrete.Device() == state.Device(),
-                                  "equation implicit stage needs matching reconstruction, workspace and stream placement");
-            stream.Record().WaitHost();
-            state.RequireSchema(discrete.Equation().Schema());
-            discrete.ValidateWorkspace(state, *workspace);
-            DNDS_check_throw_info(state.Space().Same(discrete.Metrics().Space()) && discrete.Equation().HasMixture() == bool(workers), "equation nonlinear space/worker backend differs");
-            serialized = Json{{"implicit", implicit}, {"numerics", settings.numerics}, {"execution", settings.execution}}.dump();
-            DNDS_check_throw_info(serialized.size() <= size_t(INT_MAX), "equation implicit controls exceed MPI string range"); });
-        AgreeEquationBinding(state, mpi.comm);
-        NonlinearDetail::AgreeControls(mpi, serialized);
-        MPI::LocalStage(mpi, [&]
-                        { _data = std::make_shared<Data>(discrete, state, std::move(reconstruction), std::move(workspace), engine, std::move(stream), settings, std::move(implicit), std::move(workers)); });
-        MPI::LocalStage(mpi, [&]
-                        { _data->ValidateMeans(state); });
-        // A frozen interface trace supplies pressure during the local solve.
-        // Simulation validates the reference across domains before the first exchange.
-        if (discrete.Equation().IsACM() && !discrete.HasPressureBoundary() && !discrete.HasInterfaces())
-        {
-            if (!pressureGauge)
-            {
-                const auto requested = settings.equation.acmPressureMean;
-                pressureGauge = std::make_shared<real>(requested ? *requested : _data->operators.PressureMean(engine, _data->stream, state));
-                if (requested)
-                    _data->operators.ProjectPressureMean(engine, _data->stream, state, *requested);
-            }
-            _data->pressureGauge = std::move(pressureGauge);
-        }
         _data->PrepareLinear(state, settings.execution.overlap);
     }
 
@@ -366,10 +379,9 @@ namespace DNDS::Cauchy
         DomainExecutionContext context, const DomainSettings &settings,
         const Algebra::ComponentSelection &residualSelection,
         std::shared_ptr<const real> pressureGauge)
-        : NonlinearSolver(discrete, state, std::move(reconstruction),
-                          std::move(workspace), context.Engine(),
-                          context.ComputeStream(), settings, residualSelection,
-                          context.ChemicalWorkers(), std::move(pressureGauge))
+        : _data(Data::Create(discrete, state, std::move(reconstruction), std::move(workspace),
+                             context.Engine(), context.ComputeStream(), settings, residualSelection,
+                             context.ChemicalWorkers(), std::move(pressureGauge)))
     {
         if (!settings.implicit.immediateNumericalChecks && settings.implicit.linear.method == "jacobi" &&
             settings.implicit.linear.stopping == "fixedCount" && !settings.implicit.multigrid.levels && !_data->positivity)

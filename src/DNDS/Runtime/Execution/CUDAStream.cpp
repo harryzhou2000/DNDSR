@@ -1,4 +1,5 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 
 #ifdef DNDS_USE_CUDA
 namespace DNDS::Runtime
@@ -6,22 +7,7 @@ namespace DNDS::Runtime
     namespace
     {
         void CheckStream(cudaError_t code) { DNDS_check_throw_info(code == cudaSuccess, cudaGetErrorString(code)); }
-        class DeviceScope
-        {
-            int _previous = -1;
-
-        public:
-            explicit DeviceScope(int ordinal)
-            {
-                CheckStream(cudaGetDevice(&_previous));
-                CheckStream(cudaSetDevice(ordinal));
-            }
-            ~DeviceScope()
-            {
-                if (cudaSetDevice(_previous) != cudaSuccess)
-                    std::terminate();
-            }
-        };
+        using DeviceScope = DNDS::Device::CUDADeviceScope;
         void ValidateNativeStream(int ordinal, cudaStream_t stream)
         {
             DeviceScope scope(ordinal);

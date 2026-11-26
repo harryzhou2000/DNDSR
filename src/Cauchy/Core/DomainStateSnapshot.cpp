@@ -108,41 +108,6 @@ namespace DNDS::Cauchy
             domain._execution.ComputeStream().Context());
     }
 
-    DomainStateSnapshot DomainStateSnapshot::DetachedHost(Runtime::ExecutionContext context) const
-    {
-        const auto destination = Runtime::Device::Host();
-        const auto &source = *_data;
-        const EquationSnapshotOptions allocation{source.means.Device().space == Runtime::MemorySpace::CUDA};
-        std::optional<EquationDofs> reconstruction, previous;
-        std::optional<Runtime::Array<real>> limitedVR;
-        auto means = EquationDofOperations::CopyOwnedTo(source.means, destination, context, allocation);
-        means.Fields().SetName(source.name + "/outputSnapshot/means", DNDS_ALLOCATION_SITE());
-        if (source.reconstruction)
-        {
-            reconstruction.emplace(EquationDofOperations::CopyOwnedTo(*source.reconstruction, destination, context, allocation));
-            reconstruction->Fields().SetName(source.name + "/outputSnapshot/reconstruction", DNDS_ALLOCATION_SITE());
-        }
-        if (source.previous)
-        {
-            previous.emplace(EquationDofOperations::CopyOwnedTo(*source.previous, destination, context, allocation));
-            previous->Fields().SetName(source.name + "/outputSnapshot/history", DNDS_ALLOCATION_SITE());
-        }
-        if (source.limitedVR)
-        {
-            const auto layout = source.limitedVR->Layout();
-            limitedVR.emplace(allocation.pinnedHost
-                                  ? Runtime::Array<real>::FromStorage(layout, Runtime::Buffer::AllocatePinnedHost(
-                                                                                  CheckedSize::Multiply(layout.Elements(), sizeof(real))))
-                                  : Runtime::Array<real>(layout, destination));
-            limitedVR->CopyFrom(*source.limitedVR, context).Wait();
-            limitedVR->SetName(source.name + "/outputSnapshot/limitedVR", DNDS_ALLOCATION_SITE());
-        }
-        return DomainStateSnapshot(std::make_shared<Data>(source.name, std::move(means),
-                                                          std::move(reconstruction), std::move(limitedVR), std::move(previous), source.time,
-                                                          source.lastAcceptedDt, source.previousDt, source.epoch, source.method, source.nonlinear,
-                                                          source.updatePolicy, source.sourceStrang, source.pressureGauge, Runtime::ExecutionContext::Host()));
-    }
-
     const std::string &DomainStateSnapshot::Name() const { return _data->name; }
     const EquationDofs &DomainStateSnapshot::Means() const { return _data->means; }
     std::optional<real> DomainStateSnapshot::PressureGauge() const { return _data->pressureGauge; }

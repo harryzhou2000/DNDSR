@@ -12,6 +12,7 @@
 #include "DNDS/Support/PCH/EigenPCH.hpp"
 
 #include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/FormatSpec.hpp"
 
 #include <fmt/core.h>
 #include <fmt/ostream.h>
@@ -115,66 +116,13 @@ struct fmt::formatter<T, Char,
 {
     // using TMat = Eigen::Matrix<DNDS::real, M, N, options, max_m, max_n>;
     using TMat = std::remove_cv_t<T>;
-    char align = '>';
-    char sign = ' ';
-    int width = -1;
-    int precision = 16;
-    char type = 'g';
+    DNDS::Format::FloatSpec spec{'>', ' ', -1, 16, 'g'};
     std::string formatSpecC = "{}";
 
     auto parse(fmt::format_parse_context &ctx)
     {
-        auto it = ctx.begin(), end = ctx.end();
-        bool afterDot = false;
-        while (it != end && *it != '}')
-        { // a home-cooked version of float point format parser
-            switch (*it)
-            {
-            case '<':
-            case '>':
-            case '^':
-                align = *it++;
-                break;
-            case '+':
-            case '-':
-            case ' ':
-                sign = *it++;
-                break;
-            case 'e':
-            case 'E':
-            case 'f':
-            case 'F':
-            case 'g':
-            case 'G':
-                type = *it++;
-                break;
-            case '.':
-                afterDot = true;
-                it++;
-                break;
-            default:
-            {
-                if (*it >= '0' && *it <= '9')
-                {
-                    std::string v;
-                    v.reserve(20);
-                    while (it != end && *it >= '0' && *it <= '9')
-                        v.push_back(*it++);
-                    if (afterDot)
-                        precision = std::stoi(v);
-                    else
-                        width = std::stoi(v);
-                }
-                else
-                    DNDS_assert_info(false, fmt::format("invalid char {}", *it));
-            }
-            break;
-            }
-        }
-        if (width == -1)
-            formatSpecC = fmt::format(FMT_STRING("{{:{0}{1}.{3}{4}}}"), align, sign, width, precision, type);
-        else
-            formatSpecC = fmt::format(FMT_STRING("{{:{0}{1}{2}.{3}{4}}}"), align, sign, width, precision, type);
+        auto it = DNDS::Format::ParseFloatSpec(ctx.begin(), ctx.end(), spec, true);
+        formatSpecC = spec.ToFormatString(true);
         return it;
     }
 

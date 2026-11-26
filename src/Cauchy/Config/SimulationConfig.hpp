@@ -494,7 +494,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(fill, "Local ILU stencil expansion 0..5, or -1 for complete LU");
             DNDS_FIELD(preconditionerCorrections, "Fixed zero-started ILU defect corrections per GMRES preconditioner call; corrections after the first exchange the iterate halo. Stationary ILU instead uses linear.iterations");
             DNDS_FIELD(coreFirst, "Order core before dependent cells before symbolic fill");
-            DNDS_FIELD(ordering, "Rank-local factor ordering: natural or rcm (CorrectRCM), followed by optional stable core grouping; does not reorder mesh/DOFs");
+            DNDS_FIELD(ordering, "Rank-local factor ordering: natural, rcm (CorrectRCM), boostRcm, boostMmd, or metis (METIS_NodeND), followed by optional stable core grouping; does not reorder mesh/DOFs");
         }
     };
     struct ImplicitPositivitySettings

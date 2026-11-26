@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DNDS/Core/Permutation.hpp"
 #include "Geom/Transition/ReorderPlan.hpp"
 #include "DNDS/Runtime/Array/Field.hpp"
 #include "DNDS/Runtime/Communication/Exchange.hpp"
@@ -74,17 +75,13 @@ namespace DNDS::Geom
             receive.resize(mpi.size);
             if (transfer.isLocalOnly)
             {
-                DNDS_check_throw_info(transfer.localOld2New.size() == rows, "invalid native local permutation extent");
-                std::vector<bool> seen(rows, false);
+                DNDS::ValidatePermutation(transfer.localOld2New, rows, "invalid native local permutation");
                 send[mpi.rank].reserve(rows);
                 receive[mpi.rank].reserve(rows);
                 for (index i = 0; i < rows; ++i)
                 {
-                    const auto target = transfer.localOld2New[i];
-                    DNDS_check_throw_info(target >= 0 && size_t(target) < rows && !seen[size_t(target)], "invalid native local permutation");
-                    seen[size_t(target)] = true;
                     send[mpi.rank].push_back(i);
-                    receive[mpi.rank].push_back(target);
+                    receive[mpi.rank].push_back(transfer.localOld2New[i]);
                 }
                 destinationRows = rows;
             }

@@ -3,6 +3,8 @@
 #include "CFV/Detail/ReconstructionAMGKernels.hpp"
 #include "CFV/CPU/ReconstructionAMGKernels.hpp"
 #include "CFV/Math/ReconstructionMatrixAccess.hpp"
+#include "DNDS/Algebra/OperandChecks.hpp"
+#include "DNDS/Core/Algorithm.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include <climits>
 
@@ -73,8 +75,7 @@ namespace DNDS::CFV
                     DNDS_check_throw_info(other >= 0 && other < rows, "VR AMG requires truly local neighbor columns");
                     row.push_back(int(other));
                 }
-            std::sort(row.begin(), row.end());
-            row.erase(std::unique(row.begin(), row.end()), row.end());
+            DNDS::SortUnique(row);
             DNDS_check_throw_info(row.size() <= size_t(INT_MAX - rowOffsets[size_t(iCell)]), "VR AMG nonzeros exceed int32");
             rowOffsets[size_t(iCell + 1)] = rowOffsets[size_t(iCell)] + int(row.size());
         }
@@ -198,16 +199,10 @@ namespace DNDS::CFV
         for (const auto *array : operands)
             DNDS_check_throw_info(array->GetDevice() == data->device && array->Layout().Kind() == R::RowLayoutKind::Table,
                                   "VR AMG requires resident AoS fields/scratch");
-        const std::array<const R::Array<real> *, 3> scratch{&work.defect, &work.packedDefect, &work.packedCorrection};
-        for (index i = 0; i < index(scratch.size()); ++i)
-        {
-            for (index j = 0; j < i; ++j)
-                DNDS_check_throw_info(!scratch[size_t(i)]->Storage().Overlaps(scratch[size_t(j)]->Storage()), "VR AMG scratch aliases");
-            const std::array<const R::Array<real> *, 5> inputs{
-                &mean.Owned(), &input.Owned(), &output.Owned(), &boundary.values, &data->values};
-            for (const auto *array : inputs)
-                DNDS_check_throw_info(!scratch[size_t(i)]->Storage().Overlaps(array->Storage()), "VR AMG scratch aliases an operand");
-        }
+        Algebra::Detail::RequirePairwiseDisjoint(
+            {&output.Owned(), &work.defect, &work.packedDefect, &work.packedCorrection},
+            {&mean.Owned(), &input.Owned(), &boundary.values, &data->values},
+            "VR AMG output/scratch aliases an operand");
         R::SubmitArrays(engine, stream, [data](R::ExecutionContext context, auto means, auto values, auto bc, auto defect)
                         { Detail::BuildReconstructionAMGDefect(context, data->geometry, means, values, bc, defect); }, R::Read(mean.Owned()), R::Read(input.Owned()), R::Read(boundary.values), R::Write(work.defect));
         // TODO(LVR_AMGX, deferred): the true gated residual is

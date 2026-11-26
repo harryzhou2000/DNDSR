@@ -1,5 +1,6 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 #include "DNDS/Algebra/AmgXPreconditioner.hpp"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 #include "DNDS/Runtime/Array/Array.hpp"
 #include <cmath>
 #include <chrono>
@@ -85,20 +86,7 @@ namespace DNDS::Algebra
             output.cudaPoolUsedPeak = info.cuda_pool_used_peak_bytes;
             output.cudaPoolReservedPeak = info.cuda_pool_reserved_peak_bytes;
         }
-        struct DeviceScope
-        {
-            int previous = -1;
-            explicit DeviceScope(int ordinal)
-            {
-                CheckCUDA(cudaGetDevice(&previous));
-                CheckCUDA(cudaSetDevice(ordinal));
-            }
-            ~DeviceScope()
-            {
-                if (cudaSetDevice(previous) != cudaSuccess)
-                    std::abort();
-            }
-        };
+        using DeviceScope = DNDS::Device::CUDADeviceScope;
         std::string Configuration(const AmgXSettings &s)
         {
             // NOSOLVER uses fixed coarsest_sweeps of the same Jacobi smoother.

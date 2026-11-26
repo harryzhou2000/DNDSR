@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/CellQuadratureOffsets.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/Core/OMP.hpp"
 
@@ -19,24 +20,15 @@ namespace DNDS::Cauchy
         const int order = settings.numerics.RHSIntegrationOrder();
         const index owned = metrics.NumCell();
         Detail::ModalPositivityQuadrature prepared;
-        std::vector<index> volumeOffsets(size_t(owned + 1), 0);
-        std::vector<int> preparedTypes;
+        const auto volumeLayout = Detail::BuildCellQuadratureOffsets(owned, topology, order);
+        const auto &volumeOffsets = volumeLayout.offsets;
         for (index iCell = 0; iCell < owned; ++iCell)
         {
-            const auto element = topology.GetCellElement(iCell);
-            const Geom::Elem::Quadrature rule(element, order);
-            volumeOffsets[iCell + 1] = volumeOffsets[iCell] + rule.GetNumPoints();
-            index points = rule.GetNumPoints();
+            index points = volumeOffsets[size_t(iCell) + 1] - volumeOffsets[size_t(iCell)];
             for (const auto iFace : topology.CellFaces(iCell))
                 points += metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace);
             prepared.rows += points;
             prepared.maximumCellPoints = std::max(prepared.maximumCellPoints, points);
-            if (std::find(preparedTypes.begin(), preparedTypes.end(), int(element.type)) == preparedTypes.end())
-            {
-                for (int iQ = 0; iQ < rule.GetNumPoints(); ++iQ)
-                    (void)Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
-                preparedTypes.push_back(int(element.type));
-            }
         }
         maximumPositivityPoints = prepared.maximumCellPoints;
         if (quadrature.source && quadrature.source->sampling)

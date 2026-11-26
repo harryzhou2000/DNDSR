@@ -2576,7 +2576,11 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
             {
-                CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+                // Default Evaluate uses the unified face-owned Equation kernel;
+                // AcquireRHSOperator exercises the legacy cell-centered FixedFlow5
+                // leaf whose face-summation order can differ by rounding ULP.
+                CHECK(std::abs(a.View()(iCell, j) - b.View()(iCell, j)) <=
+                      8 * std::numeric_limits<DNDS::real>::epsilon() * std::max(1., std::abs(b.View()(iCell, j))));
                 CHECK(b.View()(iCell, j) == c.View()(iCell, j));
                 // Inline EOS evaluation can round differently from the cached
                 // property kernel. Keep exact checks for the same operands.

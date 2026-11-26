@@ -18,7 +18,9 @@
 #include <algorithm>
 #include <tuple>
 
+#include "DNDS/Core/Algorithm.hpp"
 #include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/Offsets.hpp"
 #include "DNDS/MPI/MPI.hpp"
 #include "DNDS/Core/CheckedSize.hpp"
 
@@ -210,9 +212,7 @@ namespace DNDS
               mainSize(nmainSize)
         {
             ///*make sorted and unique!
-            std::sort(pullingIndexGlobal.begin(), pullingIndexGlobal.end());
-            auto last = std::unique(pullingIndexGlobal.begin(), pullingIndexGlobal.end());
-            pullingIndexGlobal.erase(last, pullingIndexGlobal.end());
+            SortUnique(pullingIndexGlobal);
             pullingIndexGlobal.shrink_to_fit();
             ///
 
@@ -228,10 +228,7 @@ namespace DNDS
                 ghostSizes[rank]++;
             }
 
-            ghostStart.resize(ghostSizes.size() + 1);
-            ghostStart[0] = 0;
-            for (typename decltype(ghostSizes)::size_type i = 0; i < ghostSizes.size(); i++)
-                ghostStart[i + 1] = signedIntSafeAdd<mapIndex>(ghostStart[i], ghostSizes[i]);
+            ghostStart = ExclusiveOffsets<mapIndex>(ghostSizes);
             ghostIndex.reserve(ghostStart[ghostSizes.size()]);
             for (auto i : pullingIndexGlobal)
             {
@@ -307,10 +304,7 @@ namespace DNDS
 
             ghostSizes.assign(mpi.size, 0);
             MPI::Alltoall(pushIndexSizes.data(), 1, MPI_INT, ghostSizes.data(), 1, MPI_INT, mpi.comm); // inverse to the normal pulling
-            ghostStart.resize(ghostSizes.size() + 1);
-            ghostStart[0] = 0;
-            for (size_t i = 0; i < ghostSizes.size(); i++)
-                ghostStart[i + 1] = ghostStart[i] + ghostSizes[i];
+            ghostStart = ExclusiveOffsets<mapIndex>(ghostSizes);
             ghostIndex.resize(ghostStart[ghostSizes.size()]);
             MPI::Alltoallv(pushingIndexGlobal.data(), pushIndexSizes.data(), pushIndexStarts.data(), DNDS_MPI_INDEX,
                            ghostIndex.data(), ghostSizes.data(), ghostStart.data(), DNDS_MPI_INDEX,

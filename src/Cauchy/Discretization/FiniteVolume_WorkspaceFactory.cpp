@@ -148,8 +148,11 @@ namespace DNDS::Cauchy
             result->PrepareReconstructionNorm();
         result->BindHalos(state);
         result->genericFluxOracle = options.rhsKernel == RHSKernelPolicy::Generic;
+        const bool needsFixedFlow5 = (n.positivity && n.positivityReconstruction == "Segment") ||
+                                     (_data->equation.Viscous() && n.viscousGradient != "polynomial");
         if (flow5Profile && state.Device() == R::Device::Host() &&
-            (options.rhsKernel == RHSKernelPolicy::FixedFlow5 || options.rhsKernel == RHSKernelPolicy::Auto))
+            (options.rhsKernel == RHSKernelPolicy::FixedFlow5 ||
+             (options.rhsKernel == RHSKernelPolicy::Auto && needsFixedFlow5)))
             result->fixedFlowRHS.emplace(AcquireRHSOperator());
         auto request = CompleteRHSAuxiliaryRequest({});
         request.meanThermodynamics = request.meanThermodynamics || request.cellWaveJump || request.cellPressureMinimum;

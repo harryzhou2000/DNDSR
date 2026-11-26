@@ -208,7 +208,9 @@ TEST_CASE("Native publication rejects persistent cell IDs owned on multiple rank
         if (mpi.rank < 2)
             write.View()(0, 0) = 8000000000000LL;
     }
-    CHECK_THROWS(NativeMeshState::FromNative(mpi, std::move(input.data), input.spaces, input.ids, MeshReadRequirements::Primary()));
+    input.data.audit.globalOwnedIds = true;
+    CHECK_THROWS(NativeMeshState::FromNative(mpi, std::move(input.data), input.spaces, input.ids,
+                                             MeshReadRequirements::Primary()));
     CHECK_NOTHROW(cellIds.Write());
     CHECK(input.spaces.at(EntityKind::Cell).Valid());
 }
@@ -669,7 +671,9 @@ TEST_CASE("Publication identity diagnostics detect cross-rank duplicate and owne
             auto write = corrupt.at(EntityKind::Cell).Write();
             write.View()(0, 0) = 731;
         }
+        input.data.audit.globalOwnedIds = true;
         CHECK_THROWS(NativeMeshState::FromNative(mpi, input.data, input.spaces, corrupt, MeshReadRequirements::Primary()));
+        input.data.audit.globalOwnedIds = false;
         input.data.audit.persistentIdentity = false;
         auto trusted = NativeMeshState::FromNative(mpi, input.data, input.spaces, corrupt, MeshReadRequirements::Primary());
         CHECK_THROWS(trusted->Audit());

@@ -383,7 +383,10 @@ TEST_CASE("Copy-free local AmgX consumes native int32 unsorted row-major blocks"
     A::DofSpace space(communication, rows, 0, "native int32 local AMG");
     std::vector<std::vector<I>> columns(rows);
     for (I iCell = 0; iCell < rows; ++iCell)
+    {
         columns[iCell] = {(iCell + 1) % rows, (iCell + rows - 1) % rows};
+        std::sort(columns[iCell].begin(), columns[iCell].end());
+    }
     std::vector<I> core(rows);
     std::iota(core.begin(), core.end(), I(0));
     for (const int n : {4, 5, 6, 7})

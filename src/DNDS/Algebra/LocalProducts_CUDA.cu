@@ -1,7 +1,8 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 #include "DNDS/Algebra/LocalProducts.hpp"
+#include "DNDS/Algebra/DeviceReduction.cuh"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
-#include "DNDS/Device/ReductionCompletion.hpp"
 #include <cuda_runtime.h>
 #include <cmath>
 
@@ -31,18 +32,10 @@ namespace DNDS::Algebra::Detail
                 }
             }
             tree[threadIdx.x] = value;
-            __syncthreads();
-            for (int width = Threads / 2; width > 0; width /= 2)
-            {
-                if (threadIdx.x < width)
-                {
-                    if constexpr (Finite)
-                        tree[threadIdx.x] = tree[threadIdx.x] && tree[threadIdx.x + width];
-                    else
-                        tree[threadIdx.x] += tree[threadIdx.x + width];
-                }
-                __syncthreads();
-            }
+            if constexpr (Finite)
+                BlockTreeReduce<Threads>(tree, FiniteAndMerge{});
+            else
+                BlockTreeReduce<Threads>(tree, SumMerge{});
             if (!threadIdx.x)
             {
                 output(blockIdx.x, 0) = tree[0];
@@ -54,20 +47,11 @@ namespace DNDS::Algebra::Detail
             // Acquire/release election plus this block's barrier makes every
             // partial visible. Fixed indices preserve the original tail tree;
             // no floating sum depends on block arrival order.
-            tree[threadIdx.x] = threadIdx.x < output.RowCount() ? output(threadIdx.x, 0) : Finite ? 1
-                                                                                                  : 0;
-            __syncthreads();
-            for (int width = Threads / 2; width > 0; width /= 2)
-            {
-                if (threadIdx.x < width)
-                {
-                    if constexpr (Finite)
-                        tree[threadIdx.x] = tree[threadIdx.x] && tree[threadIdx.x + width];
-                    else
-                        tree[threadIdx.x] += tree[threadIdx.x + width];
-                }
-                __syncthreads();
-            }
+            tree[threadIdx.x] = threadIdx.x < output.RowCount() ? output(threadIdx.x, 0) : (Finite ? 1 : 0);
+            if constexpr (Finite)
+                BlockTreeReduce<Threads>(tree, FiniteAndMerge{});
+            else
+                BlockTreeReduce<Threads>(tree, SumMerge{});
             if (!threadIdx.x)
                 result(slot, 0) = tree[0];
         }
@@ -81,6 +65,7 @@ namespace DNDS::Algebra::Detail
                                   partial.RowCount() >= 1 && partial.RowCount() <= Threads && partial.Width() == 1 &&
                                   result.Width() == 1 && slot >= 0 && slot < result.RowCount() && completed.RowCount() == 1,
                               "invalid CUDA local reduction views");
+        Device::CUDADeviceScope deviceScope(context.device.ordinal);
         R::ValidateViewDevices(context.device, x, y, scales, partial, result, completed);
         for (const auto input : {x, y, scales})
             DNDS_check_throw_info(!input.data || (input.data != partial.data && input.data != result.data), "CUDA local reduction aliases input");

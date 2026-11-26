@@ -26,15 +26,6 @@ namespace DNDS::Cauchy
         friend class Domain;
 
     public:
-        /// Deep immutable host snapshot for output workers. Copies owned means,
-        /// requested reconstruction/history and their matching control metadata.
-        /// The source snapshot pins its epoch throughout the synchronous copy;
-        /// no MPI or file operation is performed. CPU input is also copied.
-        /// Device input uses accounted page-locked host payloads and requires
-        /// its ordered copy context. After this returns,
-        /// releasing the source snapshot permits solver mutation independently
-        /// of the detached result's lifetime. Ghost values are not preserved.
-        DomainStateSnapshot DetachedHost(Runtime::ExecutionContext context) const;
         const std::string &Name() const;
         const EquationDofs &Means() const;
         OptionalRef<const EquationDofs> Reconstruction() const;

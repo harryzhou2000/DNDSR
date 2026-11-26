@@ -76,9 +76,6 @@ namespace DNDS::Cauchy
         /// transport here; CPU MPI uses it for checked access ordering while
         /// controller progress remains explicit.
         const Runtime::ExecutionStream &CommunicationStream() const;
-        /// @brief Context-owned snapshot/copy lane. Producers and subsequent
-        /// writers order their dependencies explicitly; this is not a host sync.
-        const Runtime::ExecutionStream &CopyStream() const;
         /// Collective setup shared by every stage and pMG level of this domain.
         std::shared_ptr<Runtime::CommunicationContext> ReductionContext(const std::shared_ptr<Runtime::CommunicationContext> &parent) const;
         const Runtime::ExecutionStream &ReductionStream() const;

@@ -1,4 +1,6 @@
 #include "CFV/Detail/ReconstructionData.hpp"
+#include "CFV/Math/ReconstructionMatrixAccess.hpp"
+#include "DNDS/Core/Permutation.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/Core/OMP.hpp"
@@ -42,7 +44,7 @@ namespace DNDS::CFV
             else if (triangle)
                 for (index i = 0; i < n; ++i)
                     for (index j = 0; j <= i; ++j)
-                        target(row, i * (i + 1) / 2 + j) = Scalar(matrix(i, j));
+                        target(row, Math::SymmetricTriangleEntry(i, j)) = Scalar(matrix(i, j));
             else
                 for (index j = 0; j < n; ++j)
                     for (index i = 0; i < n; ++i)
@@ -121,13 +123,10 @@ namespace DNDS::CFV
             for (int part = 0; part < parts; ++part)
                 workers.push_back(geometry->mesh->LocalPartRanges(part));
             data->hostWorkers = R::MetadataBuffer<WorkerRowRanges>(std::move(workers));
-            data->coreFirstPosition.resize(nCell);
-            index position = 0;
-            for (auto iCell : data->workPartition->Core())
-                data->coreFirstPosition[iCell] = position++;
-            for (auto iCell : data->workPartition->HaloDependent())
-                data->coreFirstPosition[iCell] = position++;
-            DNDS_check_throw_info(position == nCell, "reconstruction work partition does not cover owned cells");
+            data->coreFirstPosition = DNDS::BuildPermutationFromRanges(
+                                          nCell, data->workPartition->Core(), data->workPartition->HaloDependent(),
+                                          "reconstruction work partition does not cover owned cells")
+                                          .second;
             auto centRead = geometry->cellCent.Read();
             auto baryRead = geometry->cellBary.Read();
             auto scaleRead = geometry->cellScale.Read();

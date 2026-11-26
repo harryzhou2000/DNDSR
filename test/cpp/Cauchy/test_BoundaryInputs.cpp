@@ -429,7 +429,7 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
         reference.PublishInterfaceDonor(equationA, *reconstructionA, *workA, false));
     const std::weak_ptr<const C::InterfaceDonorPublication> retainedDonor = source.localDonor;
     const auto sampledMeanVersions = source.localDonor->MeanVersions();
-    coupled.PublishBoundaryInputs(incoming, time, {0, 1, 2, 0, 0, 0},
+    coupled.PublishBoundaryInputs(incoming, time, {0, 1, 2, 0},
                                   {source});
     source.localDonor.reset();
     CHECK_FALSE(retainedDonor.expired());

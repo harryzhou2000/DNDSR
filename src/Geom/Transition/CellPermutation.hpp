@@ -7,6 +7,7 @@
 
 #include "DNDS/Core/Defines.hpp"
 #include "DNDS/Core/OMP.hpp"
+#include "DNDS/Core/Permutation.hpp"
 #include "DNDS/Core/RowRanges.hpp"
 #include "Geom/Transition/SerialAdjReordering.hpp"
 
@@ -196,16 +197,7 @@ namespace DNDS::Geom::detail
         }
 
         // Build inverse permutation
-        {
-            std::vector<bool> seen(nCell, false);
-            for (index i = 0; i < nCell; i++)
-            {
-                DNDS_assert(result.cellNew2Old[i] >= 0 && result.cellNew2Old[i] < nCell);
-                DNDS_assert(!seen[result.cellNew2Old[i]]);
-                seen[result.cellNew2Old[i]] = true;
-                result.cellOld2New.at(result.cellNew2Old[i]) = i;
-            }
-        }
+        result.cellOld2New = DNDS::InvertPermutationChecked(result.cellNew2Old, "invalid cell permutation");
         return result;
     }
 

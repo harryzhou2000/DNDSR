@@ -1,4 +1,5 @@
 #include "Cauchy/IO/StateArchive.hpp"
+#include "DNDS/Core/Ranges.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
@@ -83,16 +84,7 @@ namespace DNDS::Cauchy
                 if (fields[iField].Layout().IsVariable() || fields[iField].RowCount() != fields[0].RowCount() ||
                     fields[iField].Layout().Width() != storage.at("widths").at(iField).get<index>())
                     return false;
-                auto &segments = ranges[iField];
-                std::sort(segments.begin(), segments.end());
-                index end = 0;
-                for (const auto &segment : segments)
-                {
-                    if (segment.first != end)
-                        return false;
-                    end = segment.second;
-                }
-                if (end != fields[iField].Layout().Width())
+                if (!DNDS::ValidateContiguousRanges(ranges[iField], fields[iField].Layout().Width(), false))
                     return false;
             }
             return true;

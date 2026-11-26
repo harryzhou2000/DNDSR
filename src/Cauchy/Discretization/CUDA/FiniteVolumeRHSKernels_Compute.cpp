@@ -5,6 +5,7 @@ namespace DNDS::Cauchy::CUDA::Detail
     void LaunchComputeFluxFaces(Runtime::ExecutionContext context, const RHSGeometryPublication &geometry,
                                 RHSComputeParametersView parameters, RHSKernelControls controls, RHSFields fields, RHSFaceOutputs output, RHSIndices selected)
     {
+#ifdef DNDS_CAUCHY_CUDA_REDUCED_PRECISION
         using P = DNDS::Math::ComputePrecision;
         const auto precision = controls.polynomialPrecision != P::FP64 ? controls.polynomialPrecision : controls.fluxPrecision != P::FP64 ? controls.fluxPrecision
                                                                                                                                           : controls.dissipationPrecision;
@@ -17,7 +18,7 @@ namespace DNDS::Cauchy::CUDA::Detail
             else
                 LaunchFP32PolynomialFluxFaces(context, geometry, parameters, controls, fields, output, selected);
         }
-#ifdef DNDS_USE_CCCL_COMPUTE
+#    ifdef DNDS_USE_CCCL_COMPUTE
         else if (precision == P::FloatFloat)
         {
             if (controls.fluxPrecision != P::FP64)
@@ -27,8 +28,18 @@ namespace DNDS::Cauchy::CUDA::Detail
             else
                 LaunchFloatFloatPolynomialFluxFaces(context, geometry, parameters, controls, fields, output, selected);
         }
-#endif
+#    endif
         else
             DNDS_check_throw_info(false, "CUDA RHS compute precision is unavailable");
+#else
+        (void)context;
+        (void)geometry;
+        (void)parameters;
+        (void)controls;
+        (void)fields;
+        (void)output;
+        (void)selected;
+        DNDS_check_throw_info(false, "CUDA RHS reduced-precision kernels were disabled at configure time (DNDS_CAUCHY_CUDA_REDUCED_PRECISION=OFF)");
+#endif
     }
 }

@@ -1,5 +1,6 @@
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 #include "DNDS/Diagnostics/Timeline.hpp"
 #include <atomic>
 #include <condition_variable>
@@ -16,22 +17,7 @@ namespace DNDS::Runtime
     namespace
     {
         void Check(cudaError_t status) { DNDS_check_throw_info(status == cudaSuccess, cudaGetErrorString(status)); }
-        class DeviceScope
-        {
-            int _previous = -1;
-
-        public:
-            explicit DeviceScope(int ordinal)
-            {
-                Check(cudaGetDevice(&_previous));
-                Check(cudaSetDevice(ordinal));
-            }
-            ~DeviceScope()
-            {
-                if (cudaSetDevice(_previous) != cudaSuccess)
-                    std::terminate();
-            }
-        };
+        using DeviceScope = DNDS::Device::CUDADeviceScope;
         using NativeStream = StreamResource;
         struct RetainedCommand
         {

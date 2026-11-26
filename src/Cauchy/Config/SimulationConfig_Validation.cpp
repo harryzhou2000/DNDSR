@@ -267,7 +267,7 @@ namespace DNDS::Cauchy
                                   (linear.stopping == "residual" || (linear.stopping == "fixedCount" && linear.method != "gmres")) &&
                                   linear.iterations > 0 && linear.residualCheckInterval > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
                                   nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 && ilu.preconditionerCorrections > 0 &&
-                                  (ilu.ordering == "natural" || ilu.ordering == "rcm") &&
+                                  (ilu.ordering == "natural" || ilu.ordering == "rcm" || ilu.ordering == "boostRcm" || ilu.ordering == "boostMmd" || ilu.ordering == "metis") &&
                                   (!sgs.exchangeBetweenSweeps || EffectiveLinearProvider(linear) == "sgs"),
                               "invalid implicit linear/SGS/ILU controls");
         DNDS_check_throw_info((positivity.rhsFPPMode == "none" || positivity.rhsFPPMode == "rhs" || positivity.rhsFPPMode == "dTau") &&

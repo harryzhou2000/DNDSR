@@ -91,12 +91,14 @@ file(GLOB EXPLICIT_INST_CPP_FILES CONFIGURE_DEPENDS "Legacy/ExplicitInstantiatio
 
 list(APPEND CPPS ${EXPLICIT_INST_CPP_FILES})
 
-dnds_add_lib(${LIBNAME}        "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
-            OFF ON ON) # SHARED, FAST, EXCLUDE
-
-dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS_SHARED}" "${DNDS_PCH_TARGETS_FAST}"
-            ON ON ON) # SHARED, FAST, EXCLUDE
-foreach(_target IN ITEMS cfv cfv_shared)
+dnds_add_lib_pair(${LIBNAME} "${CPPS}" "${LINKS}" "${LINKS_SHARED}" "${DNDS_PCH_TARGETS_FAST}"
+    ON ON) # FAST, EXCLUDE
+set(_cfv_compile_targets cfv cfv_shared)
+if(TARGET cfv_objects)
+    list(APPEND _cfv_compile_targets cfv_objects)
+    target_link_libraries(cfv_objects PRIVATE DNDS::ComputeScalar)
+endif()
+foreach(_target IN LISTS _cfv_compile_targets)
     target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
     if(DNDS_USE_CUDA AND DNDS_CFV_CUDA_ENABLE_V1_KERNELS)
         target_compile_definitions(${_target} PUBLIC DNDS_CFV_CUDA_ENABLE_V1_KERNELS)

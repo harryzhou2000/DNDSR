@@ -160,8 +160,6 @@ namespace DNDS::Cauchy
         result->trialEpoch.stage = epoch.at("stage").get<uint64_t>();
         result->trialEpoch.coupledStage = epoch.at("coupled_stage").get<uint64_t>();
         result->trialEpoch.couplingIteration = epoch.at("coupling_iteration").get<uint64_t>();
-        result->trialEpoch.geometry = epoch.at("geometry").get<uint64_t>();
-        result->trialEpoch.schema = epoch.at("schema").get<uint64_t>();
         result->trialDt = metadata.at("trial_dt").get<real>();
         result->progressTime = metadata.at("progress_time").get<real>();
         serializer->CloseFile();

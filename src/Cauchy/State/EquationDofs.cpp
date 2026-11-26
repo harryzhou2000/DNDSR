@@ -1,4 +1,5 @@
 #include "Cauchy/State/EquationDofs.hpp"
+#include "DNDS/Core/Ranges.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include <limits>
 #include <algorithm>
@@ -85,17 +86,8 @@ namespace DNDS::Cauchy
                 intervals[iField].emplace_back(binding.first, binding.first + width);
             }
             for (index iField = 0; iField < index(fields.size()); ++iField)
-            {
-                auto &ranges = intervals[iField];
-                std::sort(ranges.begin(), ranges.end());
-                index end = 0;
-                for (const auto &range : ranges)
-                {
-                    DNDS_check_throw_info(range.first == end, "equation DOF coverage overlaps or leaves a gap");
-                    end = range.second;
-                }
-                DNDS_check_throw_info(end == widths[iField], "equation DOF coverage omits physical components");
-            }
+                DNDS::ValidateContiguousRanges(intervals[iField], widths[iField], true,
+                                               "equation DOF coverage overlaps, leaves a gap, or omits physical components");
             coupled = fields.size() == 1;
             index first = 0;
             for (const auto &block : blocks)

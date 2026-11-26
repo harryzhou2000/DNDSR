@@ -226,6 +226,8 @@ add_dependencies(all_unit_tests dnds_unit_tests geom_unit_tests)
 # DNDS core tests
 # ===================================================================
 dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
+dnds_add_unit_test(core_algorithms "DNDS/test_CoreAlgorithms.cpp" "dnds")
+add_dependencies(dnds_unit_tests dnds_test_core_algorithms)
 dnds_add_unit_test(runtime "DNDS/test_Runtime.cpp" "dnds")
 dnds_add_unit_test(runtime_array "DNDS/test_RuntimeArray.cpp" "dnds")
 dnds_add_unit_test(runtime_element_schema "DNDS/test_RuntimeElementSchema.cpp" "dnds")
@@ -1067,7 +1069,7 @@ function(solver_add_mpi_test TEST_NAME SRC_FILE LIBS)
     endforeach()
 endfunction()
 
-solver_add_unit_test(aggregation_amg "Solver/test_AggregationAMG.cpp" "dnds")
+solver_add_unit_test(aggregation_amg "Solver/test_AggregationAMG.cpp" "solver;dnds")
 set_property(TEST solver_aggregation_amg APPEND PROPERTY ENVIRONMENT
     "DNDS_DIST_OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS}")
 solver_add_unit_test(ode "Solver/test_ODE.cpp" "dnds")

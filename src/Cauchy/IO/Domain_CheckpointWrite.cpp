@@ -140,9 +140,7 @@ namespace DNDS::Cauchy
                               {"trial", _state.trialEpoch.trial},
                               {"stage", _state.trialEpoch.stage},
                               {"coupled_stage", _state.trialEpoch.coupledStage},
-                              {"coupling_iteration", _state.trialEpoch.couplingIteration},
-                              {"geometry", _state.trialEpoch.geometry},
-                              {"schema", _state.trialEpoch.schema}};
+                              {"coupling_iteration", _state.trialEpoch.couplingIteration}};
         Json metadata{{"schema_version", 1},
                       {"mesh_envelope", 3},
                       {"flow", EquationMetadata(_problem.equation)},

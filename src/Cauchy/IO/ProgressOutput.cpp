@@ -1,7 +1,7 @@
 #include "Cauchy/IO/ProgressOutput.hpp"
 
 #include "DNDS/IO/OutputDir.hpp"
-#include "DNDS/Errors.hpp"
+#include "DNDS/Core/Errors.hpp"
 #include <fmt/format.h>
 
 #include <spdlog/logger.h>

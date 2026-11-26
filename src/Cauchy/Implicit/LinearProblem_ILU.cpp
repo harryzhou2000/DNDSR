@@ -1,10 +1,13 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "DNDS/Core/Algorithm.hpp"
+#include "DNDS/Core/Permutation.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include "Solver/NativeBlockLU.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "Geom/Transition/CorrectRCM.hpp"
+#include "Geom/Transition/SerialAdjReordering.hpp"
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -35,7 +38,8 @@ namespace DNDS::Cauchy
     {
         ValidateMatrix();
         DNDS_check_throw_info(fill >= -1 && fill <= 5 && _space.Distributed(), "ILU structure needs a domain communicator and fill -1..5");
-        DNDS_check_throw_info(ordering == "natural" || ordering == "rcm", "ILU ordering must be natural or rcm");
+        DNDS_check_throw_info(ordering == "natural" || ordering == "rcm" || ordering == "boostRcm" || ordering == "boostMmd" || ordering == "metis",
+                              "ILU ordering must be natural, rcm, boostRcm, boostMmd, or metis");
         auto prepared = std::make_shared<ILUState>();
         const auto patternRead = _pattern->rows.Read();
         const auto pattern = patternRead.View();
@@ -57,20 +61,15 @@ namespace DNDS::Cauchy
                         adjacency[column].push_back(iCell);
                     }
         for (auto &row : adjacency)
-        {
-            std::sort(row.begin(), row.end());
-            row.erase(std::unique(row.begin(), row.end()), row.end());
-        }
+            DNDS::SortUnique(row);
         prepared->symbolic = std::make_shared<Direct::SerialSymLUStructure>(MPIInfo(_space.Communicator()), rows);
-        if (ordering == "rcm")
+        if (ordering != "natural")
         {
             auto &oldToNew = prepared->symbolic->localFillOrderingOld2New;
             auto &newToOld = prepared->symbolic->localFillOrderingNew2Old;
             oldToNew.resize(rows);
             newToOld.resize(rows);
-            // Factor ordering owns only a rank-local induced graph. Use the
-            // same header-only CorrectRCM algorithm as Euler, without mesh or
-            // legacy storage. Independent local parts may never intermix.
+            // Factor ordering owns only a rank-local induced graph. Independent local parts never intermix.
             for (index part = 0; part + 1 < index(parts.size()); ++part)
             {
                 const index first = parts[part], count = parts[part + 1] - first;
@@ -79,22 +78,43 @@ namespace DNDS::Cauchy
                 std::vector<std::vector<index>> local(count);
                 for (index iCell = 0; iCell < count; ++iCell)
                     for (auto other : adjacency[first + iCell])
-                        local[iCell].push_back(other - first);
-                const auto row = [&](index iCell)
-                { return R::RowSpan<const index>{local[iCell].data(), index(local[iCell].size())}; };
-                auto graph = CorrectRCM::UndirectedGraphProxy(row, count);
-                (void)graph.CheckAdj();
-                std::vector<index> cm(count);
-                CorrectRCM::CuthillMcKeeOrdering(graph, [&](index iCell) -> index &
-                                                 { return cm[iCell]; }, index(0));
-                std::vector<uint8_t> seen(count, 0);
+                        if (other != first + iCell)
+                            local[iCell].push_back(other - first);
+                std::vector<index> localOld2New, localNew2Old;
+                if (ordering == "rcm")
+                {
+                    const auto row = [&](index iCell)
+                    { return R::RowSpan<const index>{local[iCell].data(), index(local[iCell].size())}; };
+                    auto graph = CorrectRCM::UndirectedGraphProxy(row, count);
+                    (void)graph.CheckAdj();
+                    std::vector<index> cm(count);
+                    CorrectRCM::CuthillMcKeeOrdering(graph, [&](index iCell) -> index &
+                                                     { return cm[iCell]; }, index(0));
+                    localOld2New.resize(count);
+                    for (index iCell = 0; iCell < count; ++iCell)
+                        localOld2New[iCell] = count - 1 - cm[iCell];
+                    localNew2Old = DNDS::InvertPermutationChecked(localOld2New, "invalid CorrectRCM factor permutation");
+                }
+                else if (ordering == "boostRcm")
+                {
+                    index bwOld = 0, bwNew = 0;
+                    std::tie(localNew2Old, localOld2New) = Geom::ReorderSerialAdj_BoostRCM(local, bwOld, bwNew);
+                    DNDS::ValidatePermutation(localOld2New, count, "invalid BoostRCM factor permutation");
+                }
+                else if (ordering == "boostMmd")
+                {
+                    std::tie(localNew2Old, localOld2New) = Geom::ReorderSerialAdj_BoostMMD(local);
+                    DNDS::ValidatePermutation(localOld2New, count, "invalid BoostMMD factor permutation");
+                }
+                else if (ordering == "metis")
+                {
+                    std::tie(localNew2Old, localOld2New) = Geom::ReorderSerialAdj_Metis(local);
+                    DNDS::ValidatePermutation(localOld2New, count, "invalid METIS factor permutation");
+                }
                 for (index iCell = 0; iCell < count; ++iCell)
                 {
-                    const index position = count - 1 - cm[iCell];
-                    DNDS_check_throw_info(position >= 0 && position < count && !seen[position], "invalid CorrectRCM factor permutation");
-                    seen[position] = 1;
-                    oldToNew[first + iCell] = first + position;
-                    newToOld[first + position] = first + iCell;
+                    oldToNew[first + iCell] = first + localOld2New[iCell];
+                    newToOld[first + iCell] = first + localNew2Old[iCell];
                 }
             }
         }
@@ -113,8 +133,8 @@ namespace DNDS::Cauchy
             for (const auto *columns : {&lower, &upper})
                 for (const auto column : *columns)
                 {
-                    const auto found = std::find(source.begin(), source.end(), column);
-                    slots.push_back(found == source.end() ? UnInitIndex : index(found - source.begin()));
+                    const auto found = std::lower_bound(source.begin(), source.end(), column);
+                    slots.push_back((found != source.end() && *found == column) ? index(found - source.begin()) : UnInitIndex);
                 }
         }
         if (fill >= 0)

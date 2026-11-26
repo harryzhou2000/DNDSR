@@ -75,7 +75,7 @@ namespace DNDS::Cauchy
     {
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         Runtime::EagerEngine engine;
-        Runtime::ExecutionStream compute, communication, copy, reduction;
+        Runtime::ExecutionStream compute, communication, reduction;
         bool ncclReduction;
         std::shared_ptr<IterationChecks> checks;
         std::shared_ptr<Runtime::CommunicationContext> reductionContext;
@@ -92,7 +92,6 @@ namespace DNDS::Cauchy
                          : nullptr),
               compute(CreateDomainStream(engine, settings)),
               communication(CreateDomainStream(engine, settings)),
-              copy(CreateDomainStream(engine, settings)),
               reduction(settings.device == "cuda" && settings.nonlinearReduction == "mpi" ? engine.CreateCPUStream() : communication),
               ncclReduction(settings.nonlinearReduction == "nccl")
         {
@@ -166,12 +165,6 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(_data, "empty domain execution context");
         return _data->communication;
-    }
-
-    const Runtime::ExecutionStream &DomainExecutionContext::CopyStream() const
-    {
-        DNDS_check_throw_info(_data, "empty domain execution context");
-        return _data->copy;
     }
 
     const std::optional<Physics::Chemistry::ChemicalWorkerPool> &

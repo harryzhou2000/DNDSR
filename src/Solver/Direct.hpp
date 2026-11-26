@@ -9,6 +9,7 @@
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
 #include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/Permutation.hpp"
 // #ifdef __DNDS_REALLY_COMPILING__HEADER_ON__
 // #undef __DNDS_REALLY_COMPILING__
 // #endif
@@ -92,36 +93,29 @@ namespace DNDS::Direct
                                   "invalid local parts for core ordering");
             DNDS_check_throw_info(localFillOrderingNew2Old.empty() || index(localFillOrderingNew2Old.size()) == N,
                                   "invalid existing factor permutation size");
-            std::vector<unsigned char> selected(N, 0), seen(N, 0);
+            std::vector<unsigned char> selected(size_t(N), 0);
             for (auto iCell : core)
             {
-                DNDS_check_throw_info(iCell >= 0 && iCell < N && !selected[iCell], "invalid or duplicate core cell");
-                selected[iCell] = 1;
+                DNDS_check_throw_info(iCell >= 0 && iCell < N && !selected[size_t(iCell)], "invalid or duplicate core cell");
+                selected[size_t(iCell)] = 1;
             }
-            std::vector<index> order, ends;
-            order.reserve(N);
+            std::vector<index> order(static_cast<size_t>(N));
+            for (index pos = 0; pos < N; ++pos)
+                order[size_t(pos)] = FillingReorderNew2Old(pos);
+            std::vector<index> ends;
+            ends.reserve(parts.size() - 1);
             for (index part = 0; part + 1 < index(parts.size()); ++part)
             {
-                for (int group = 1; group >= 0; --group)
-                {
-                    for (index pos = parts[part]; pos < parts[part + 1]; ++pos)
-                    {
-                        const index iCell = FillingReorderNew2Old(pos);
-                        DNDS_check_throw_info(iCell >= parts[part] && iCell < parts[part + 1], "permutation crosses local part");
-                        if (selected[iCell] == group)
-                        {
-                            DNDS_check_throw_info(!seen[iCell], "duplicate cell in factor permutation");
-                            seen[iCell] = 1;
-                            order.push_back(iCell);
-                        }
-                    }
-                    if (group == 1)
-                        ends.push_back(index(order.size()));
-                }
+                const index first = parts[size_t(part)], last = parts[size_t(part + 1)];
+                for (index pos = first; pos < last; ++pos)
+                    DNDS_check_throw_info(order[size_t(pos)] >= first && order[size_t(pos)] < last, "permutation crosses local part");
+                const auto mid = std::stable_partition(
+                    order.begin() + first, order.begin() + last,
+                    [&](index iCell)
+                    { return selected[size_t(iCell)] != 0; });
+                ends.push_back(index(mid - order.begin()));
             }
-            std::vector<index> inverse(N);
-            for (index pos = 0; pos < N; ++pos)
-                inverse[order[pos]] = pos;
+            auto inverse = DNDS::InvertPermutationChecked(order, "duplicate cell in factor permutation");
             localFillOrderingNew2Old = std::move(order);
             localFillOrderingOld2New = std::move(inverse);
             localPartStarts = std::move(parts);

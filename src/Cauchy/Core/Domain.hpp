@@ -2,7 +2,6 @@
 
 #include "Cauchy/Core/StepResult.hpp"
 #include "Cauchy/Core/DomainComponents.hpp"
-#include "Cauchy/Core/CoordinatedSchedule.hpp"
 #include "Cauchy/Core/DomainStateSnapshot.hpp"
 #include "Cauchy/Physics/PhysicsResources.hpp"
 #include "Cauchy/State/RANSState.hpp"

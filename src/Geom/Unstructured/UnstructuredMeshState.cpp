@@ -49,58 +49,60 @@ namespace DNDS::Geom
                                                      std::forward<F>(action), "native mesh publication failed validation on another rank");
         }
 
-        void CheckPersistentIds(const MPIInfo &mpi, const EntitySpace &space, const Runtime::Array<index> &ids)
+        void CheckPersistentIds(const MPIInfo &mpi, const EntitySpace &space, const Runtime::Array<index> &ids, bool checkGlobalOwned)
         {
-            // Hash partition owner IDs, never allocate by the numeric ID range.
-            // A peer stores only contributions routed to it. Full IDs, rather
-            // than their hashes, decide uniqueness (hash collisions are benign).
             auto read = ids.Read();
-            std::vector<std::vector<index>> buckets(size_t(mpi.size));
-            for (index row = 0; row < space.NumOwned(); ++row)
-            {
-                const index id = read.View()(size_t(row), 0);
-                uint64_t hash = uint64_t(id) + 0x9e3779b97f4a7c15ULL;
-                hash = (hash ^ (hash >> 30)) * 0xbf58476d1ce4e5b9ULL;
-                hash = (hash ^ (hash >> 27)) * 0x94d049bb133111ebULL;
-                hash ^= hash >> 31;
-                buckets[hash % uint64_t(mpi.size)].push_back(id);
-            }
-            Runtime::RowBuilder builder(size_t(mpi.size), sizeof(index));
-            std::vector<int> presence(size_t(mpi.size)), incoming(size_t(mpi.size));
-            for (int peer = 0; peer < mpi.size; ++peer)
-            {
-                builder.ResizeRow(size_t(peer), buckets[size_t(peer)].size());
-                auto row = builder.Row<index>(size_t(peer));
-                for (size_t slot = 0; slot < buckets[size_t(peer)].size(); ++slot)
-                    row[slot] = buckets[size_t(peer)][slot];
-                presence[size_t(peer)] = !buckets[size_t(peer)].empty();
-            }
-            auto outgoing = Runtime::Array<index>::FromSharedStorage(builder.Commit());
-            MPI_Alltoall(presence.data(), 1, MPI_INT, incoming.data(), 1, MPI_INT, mpi.comm);
-            std::vector<std::vector<index>> send(size_t(mpi.size)), receive(size_t(mpi.size));
-            for (int peer = 0; peer < mpi.size; ++peer)
-            {
-                if (presence[size_t(peer)])
-                    send[size_t(peer)].push_back(index(peer));
-                if (incoming[size_t(peer)])
-                    receive[size_t(peer)].push_back(index(peer));
-            }
             auto context = space.Communication() ? space.Communication() : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
-            auto route = Runtime::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size), std::move(send), std::move(receive));
-            Runtime::Array<index> received(route.DestinationLayout(outgoing.Layout()));
             Runtime::TransferOptions options{Runtime::TransferMode::Transient, context, 0};
-            Runtime::PayloadPlan(route, outgoing.Layout(), received.Layout(), Runtime::ElementSchema::Arithmetic<index>())
-                .Bind(outgoing, received, Runtime::TransferTransport::Direct, options)
-                .Begin()
-                .Wait();
-            PublicationStage(mpi, space.Communication(), [&]
-                             {
-                std::unordered_set<index> unique;
-                auto values = received.Read();
-                for (size_t row = 0; row < values.View().RowCount(); ++row)
-                    for (size_t slot = 0; slot < values.View().RowSize(row); ++slot)
-                        DNDS_check_throw_info(unique.insert(values.View()(row, slot)).second,
-                                              "duplicate persistent ID owned by different ranks"); });
+            if (checkGlobalOwned)
+            {
+                // Opt-in global owned-ID hash partition uniqueness audit.
+                std::vector<std::vector<index>> buckets(size_t(mpi.size));
+                for (index row = 0; row < space.NumOwned(); ++row)
+                {
+                    const index id = read.View()(size_t(row), 0);
+                    uint64_t hash = uint64_t(id) + 0x9e3779b97f4a7c15ULL;
+                    hash = (hash ^ (hash >> 30)) * 0xbf58476d1ce4e5b9ULL;
+                    hash = (hash ^ (hash >> 27)) * 0x94d049bb133111ebULL;
+                    hash ^= hash >> 31;
+                    buckets[hash % uint64_t(mpi.size)].push_back(id);
+                }
+                Runtime::RowBuilder builder(size_t(mpi.size), sizeof(index));
+                std::vector<int> presence(size_t(mpi.size)), incoming(size_t(mpi.size));
+                for (int peer = 0; peer < mpi.size; ++peer)
+                {
+                    builder.ResizeRow(size_t(peer), buckets[size_t(peer)].size());
+                    auto row = builder.Row<index>(size_t(peer));
+                    for (size_t slot = 0; slot < buckets[size_t(peer)].size(); ++slot)
+                        row[slot] = buckets[size_t(peer)][slot];
+                    presence[size_t(peer)] = !buckets[size_t(peer)].empty();
+                }
+                auto outgoing = Runtime::Array<index>::FromSharedStorage(builder.Commit());
+                MPI_Alltoall(presence.data(), 1, MPI_INT, incoming.data(), 1, MPI_INT, mpi.comm);
+                std::vector<std::vector<index>> send(size_t(mpi.size)), receive(size_t(mpi.size));
+                for (int peer = 0; peer < mpi.size; ++peer)
+                {
+                    if (presence[size_t(peer)])
+                        send[size_t(peer)].push_back(index(peer));
+                    if (incoming[size_t(peer)])
+                        receive[size_t(peer)].push_back(index(peer));
+                }
+                auto route = Runtime::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size), std::move(send), std::move(receive));
+                Runtime::Array<index> received(route.DestinationLayout(outgoing.Layout()));
+                Runtime::PayloadPlan(route, outgoing.Layout(), received.Layout(), Runtime::ElementSchema::Arithmetic<index>())
+                    .Bind(outgoing, received, Runtime::TransferTransport::Direct, options)
+                    .Begin()
+                    .Wait();
+                PublicationStage(mpi, space.Communication(), [&]
+                                 {
+                    std::unordered_set<index> unique;
+                    auto values = received.Read();
+                    for (size_t row = 0; row < values.View().RowCount(); ++row)
+                        for (size_t slot = 0; slot < values.View().RowSize(row); ++slot)
+                            DNDS_check_throw_info(unique.insert(values.View()(row, slot)).second,
+                                                  "duplicate persistent ID owned by different ranks"); });
+            }
+            // Sparse O(NumGhost) ghost-vs-owner consistency check.
             std::vector<Runtime::RowRequest> requests;
             for (index row = 0; row < space.NumGhost(); ++row)
             {
@@ -289,7 +291,7 @@ namespace DNDS::Geom
                          { DNDS_check_throw_info(schedule == expected, "named relation definitions differ between ranks"); });
         if (result->_audit.persistentIdentity)
             for (const auto &[kind, values] : result->_originalIds)
-                CheckPersistentIds(mpi, result->_spaces.at(kind).identity, values);
+                CheckPersistentIds(mpi, result->_spaces.at(kind).identity, values, result->_audit.globalOwnedIds);
         std::map<EntityKind, index> localMaxima;
         PublicationStage(mpi, communication, [&]
                          {
@@ -336,7 +338,7 @@ namespace DNDS::Geom
             _hostRead->Validate(_requirements, options); });
         if (options.persistentIdentity)
             for (const auto &[kind, values] : _originalIds)
-                CheckPersistentIds(mpi, _spaces.at(kind).identity, values);
+                CheckPersistentIds(mpi, _spaces.at(kind).identity, values, true);
     }
 
     std::shared_ptr<const UnstructuredMeshState> UnstructuredMeshState::BindEpoch(Runtime::VersionTracker versions) const

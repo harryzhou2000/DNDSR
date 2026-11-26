@@ -1,5 +1,5 @@
 #include "DNDS/Algebra/AmgXPreconditioner.hpp"
-#include "Solver/ScaledBlockInverse.hpp"
+#include "DNDS/Algebra/ScaledBlockInverse.hpp"
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <vector>

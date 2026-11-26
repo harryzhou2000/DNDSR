@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FlowErrorOperator.hpp"
+#include "Cauchy/Discretization/CellQuadratureOffsets.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
@@ -36,20 +37,8 @@ namespace DNDS::Cauchy
             const auto mesh = meshRead.HostView();
             const index rows = plan.Metrics().NumCell();
             constexpr int order = Geom::Elem::INT_ORDER_MAX;
-            std::vector<index> starts(size_t(rows + 1), 0);
-            std::vector<int> prepared;
-            for (index iCell = 0; iCell < rows; ++iCell)
-            {
-                const auto element = mesh.GetCellElement(iCell);
-                const Geom::Elem::Quadrature quadrature(element, order);
-                starts[iCell + 1] = starts[iCell] + quadrature.GetNumPoints();
-                if (std::find(prepared.begin(), prepared.end(), int(element.type)) == prepared.end())
-                {
-                    for (int iPoint = 0; iPoint < quadrature.GetNumPoints(); ++iPoint)
-                        (void)Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iPoint);
-                    prepared.push_back(int(element.type));
-                }
-            }
+            const auto layout = Detail::BuildCellQuadratureOffsets(rows, mesh, order);
+            const auto &starts = layout.offsets;
             R::Array<index> hostOffsets(R::RowLayout::Dense(rows + 1, 1));
             R::Array<real> hostPoints(R::RowLayout::Dense(starts.back(), 4));
             {

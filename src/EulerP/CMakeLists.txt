@@ -31,11 +31,8 @@ endif()
 # file(GLOB EXPLICIT_INST_CPP_FILES "_explicit_instantiation/*.cpp")
 # list(APPEND CPPS ${EXPLICIT_INST_CPP_FILES})
 
-dnds_add_lib(eulerP        "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
-            OFF ON ON) # SHARED, FAST, EXCLUDE
-
-dnds_add_lib(eulerP_shared "${CPPS}" "${LINKS_SHARED}" "${DNDS_PCH_TARGETS_FAST}"
-            ON ON ON) # SHARED, FAST, EXCLUDE
+dnds_add_lib_pair(eulerP "${CPPS}" "${LINKS}" "${LINKS_SHARED}" "${DNDS_PCH_TARGETS_FAST}"
+    ON ON) # FAST, EXCLUDE
 
 install(TARGETS eulerP_shared
     LIBRARY DESTINATION "DNDSR/lib"

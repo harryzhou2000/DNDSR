@@ -183,25 +183,6 @@ TEST_CASE("Shared VTK mesh reuses topology after coordinate motion and points ac
     MPI_Barrier(mpi.comm);
 }
 
-TEST_CASE("Detached host snapshots retain accepted values after the domain mutates")
-{
-    C::DomainSettings settings;
-    C::Domain domain("detached", CauchyTest::PeriodicQuads(mpi, 3), settings);
-    Initialize(domain);
-    const auto detached = domain.CaptureStateSnapshot().DetachedHost(R::ExecutionContext::Host());
-    CHECK(detached.Means().PhysicalField(0).Owned().SharedStorage() != domain.Dofs().PhysicalField(0).Owned().SharedStorage());
-    C::EquationDofOperations::Fill(domain.Dofs(), 17);
-    const auto read = detached.Means().ReadOwned();
-    for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
-    {
-        const auto expected = Wave(domain, iCell);
-        for (int j = 0; j < 5; ++j)
-            CHECK(read.Block("flow")(iCell, j) == expected[j]);
-    }
-    CHECK(detached.Epoch().acceptedStep == 0);
-    CHECK(detached.Time() == 0);
-}
-
 TEST_CASE("Asynchronous HDF output snapshots survive foreground field mutation and MPI")
 {
     const auto prefix = Path("cauchy-async-");

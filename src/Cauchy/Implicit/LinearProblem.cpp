@@ -1,4 +1,5 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "DNDS/Core/Permutation.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include "Cauchy/Implicit/CPU/LinearProblemKernels.hpp"
@@ -57,10 +58,10 @@ namespace DNDS::Cauchy
         }
         for (index iCell = 0; iCell < rows; ++iCell)
         {
-            auto sorted = columns[iCell];
-            std::sort(sorted.begin(), sorted.end());
-            DNDS_check_throw_info(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "duplicate linear stencil column");
-            for (auto column : sorted)
+            const auto &row = columns[iCell];
+            DNDS_check_throw_info(std::is_sorted(row.begin(), row.end()), "linear stencil columns must be sorted in ascending order");
+            DNDS_check_throw_info(std::adjacent_find(row.begin(), row.end()) == row.end(), "duplicate linear stencil column");
+            for (auto column : row)
             {
                 DNDS_check_throw_info(column >= 0 && column < allRows && column != iCell && (!isCore[iCell] || column < rows),
                                       "invalid linear stencil column or core ghost dependency");
@@ -69,11 +70,7 @@ namespace DNDS::Cauchy
             if (!isCore[iCell])
                 dependent.push_back(iCell);
         }
-        order = core;
-        order.insert(order.end(), dependent.begin(), dependent.end());
-        position.resize(rows);
-        for (index i = 0; i < rows; ++i)
-            position[order[i]] = i;
+        std::tie(order, position) = DNDS::BuildPermutationFromRanges(rows, core, dependent, "linear core/dependent rows do not form a permutation");
         data->rows = LinearPatternStorage(columns, order, position, core, dependent, indices);
         return data;
     }

@@ -76,8 +76,11 @@ namespace DNDS::Algebra
         };
         void ApplyCUDA(Runtime::ExecutionContext, Pointwise, Runtime::ArrayView<float>, Runtime::ArrayView<const float>, Runtime::ArrayView<const float>, double, double);
         void ApplyCUDA(Runtime::ExecutionContext, Pointwise, Runtime::ArrayView<double>, Runtime::ArrayView<const double>, Runtime::ArrayView<const double>, double, double);
+        size_t ReduceCUDABlockCount(Reduction, size_t rows, size_t width);
         void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const float>, Runtime::ArrayView<const float>, Runtime::ArrayView<double>);
         void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const double>, Runtime::ArrayView<const double>, Runtime::ArrayView<double>);
+        void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const float>, Runtime::ArrayView<const float>, Runtime::ArrayView<double>, Runtime::ArrayView<double>, Runtime::ArrayView<unsigned int>);
+        void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const double>, Runtime::ArrayView<const double>, Runtime::ArrayView<double>, Runtime::ArrayView<double>, Runtime::ArrayView<unsigned int>);
 
 #ifdef DNDS_USE_SYCL
         template <class T>
@@ -366,8 +369,17 @@ namespace DNDS::Algebra
         Detail::Check(x, stream);
         Detail::Pair(x, y);
         Runtime::Array<double, Runtime::TableRows> result(Runtime::RowLayout::Dense(1, 1), x.Device());
-        Runtime::SubmitArrays(engine, stream, [partition = x.Space().Pin()](Runtime::ExecutionContext context, auto a, auto b, auto out)
-                              { Detail::Reduce(context, Detail::Reduction::Dot, a.DynamicView(), b.DynamicView(), out.DynamicView()); }, Runtime::Read(x.Owned()), Runtime::Read(y.Owned()), Runtime::Write(result));
+        if (x.Device().space == Runtime::MemorySpace::CUDA)
+        {
+            const size_t blocks = Detail::ReduceCUDABlockCount(Detail::Reduction::Dot, x.Owned().RowCount(), x.Width());
+            Runtime::Array<double, Runtime::TableRows> partials(Runtime::RowLayout::Dense(blocks, 1), x.Device());
+            Runtime::Array<unsigned int, Runtime::TableRows> completed(Runtime::RowLayout::Dense(1, 1), x.Device());
+            Runtime::SubmitArrays(engine, stream, [partition = x.Space().Pin()](Runtime::ExecutionContext context, auto a, auto b, auto out, auto p, auto c)
+                                  { Detail::ReduceCUDA(context, Detail::Reduction::Dot, a.DynamicView(), b.DynamicView(), out.DynamicView(), p.DynamicView(), c.DynamicView()); }, Runtime::Read(x.Owned()), Runtime::Read(y.Owned()), Runtime::Write(result), Runtime::Write(partials), Runtime::Write(completed));
+        }
+        else
+            Runtime::SubmitArrays(engine, stream, [partition = x.Space().Pin()](Runtime::ExecutionContext context, auto a, auto b, auto out)
+                                  { Detail::Reduce(context, Detail::Reduction::Dot, a.DynamicView(), b.DynamicView(), out.DynamicView()); }, Runtime::Read(x.Owned()), Runtime::Read(y.Owned()), Runtime::Write(result));
         return ScalarResult(ComponentResult(std::move(result), stream.Record()));
     }
     template <class T, size_t N>
@@ -383,8 +395,17 @@ namespace DNDS::Algebra
     {
         Detail::Check(x, stream);
         Runtime::Array<double, Runtime::TableRows> result(Runtime::RowLayout::Dense(1, x.Width()), x.Device());
-        Runtime::SubmitArrays(engine, stream, [partition = x.Space().Pin(), operation](Runtime::ExecutionContext context, auto a, auto out)
-                              { Detail::Reduce(context, operation, a.DynamicView(), {}, out.DynamicView()); }, Runtime::Read(x.Owned()), Runtime::Write(result));
+        if (x.Device().space == Runtime::MemorySpace::CUDA && (operation == Detail::Reduction::Sum || operation == Detail::Reduction::Squares))
+        {
+            const size_t blocks = Detail::ReduceCUDABlockCount(operation, x.Owned().RowCount(), x.Width());
+            Runtime::Array<double, Runtime::TableRows> partials(Runtime::RowLayout::Dense(blocks, x.Width()), x.Device());
+            Runtime::Array<unsigned int, Runtime::TableRows> completed(Runtime::RowLayout::Dense(x.Width(), 1), x.Device());
+            Runtime::SubmitArrays(engine, stream, [partition = x.Space().Pin(), operation](Runtime::ExecutionContext context, auto a, auto out, auto p, auto c)
+                                  { Detail::ReduceCUDA(context, operation, a.DynamicView(), {}, out.DynamicView(), p.DynamicView(), c.DynamicView()); }, Runtime::Read(x.Owned()), Runtime::Write(result), Runtime::Write(partials), Runtime::Write(completed));
+        }
+        else
+            Runtime::SubmitArrays(engine, stream, [partition = x.Space().Pin(), operation](Runtime::ExecutionContext context, auto a, auto out)
+                                  { Detail::Reduce(context, operation, a.DynamicView(), {}, out.DynamicView()); }, Runtime::Read(x.Owned()), Runtime::Write(result));
         return ComponentResult(std::move(result), stream.Record());
     }
     template <class T, size_t N>

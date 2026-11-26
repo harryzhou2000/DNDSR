@@ -763,6 +763,52 @@ TEST_CASE("Queued linear actions retain expired owners and reject a submitted st
     }
 }
 
+TEST_CASE("LinearProblemContext rejects unsorted columns and ILU supports all 5 ordering modes")
+{
+    auto comm = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD);
+    const A::DofSpace space(comm, 4, 0, "ilu-ordering-test");
+    // Unsorted off-diagonal columns must be rejected (Plan 63-1 K6).
+    CHECK_THROWS(C::LinearProblemContext(space, 5, {{1}, {2, 0}, {1, 3}, {2}}, {}, C::DiagonalStorage::Block));
+    CHECK_THROWS(C::LinearProblemContext(space, 5, {{1, 1}, {0, 2}, {1, 3}, {2}}, {}, C::DiagonalStorage::Block));
+
+    const std::vector<std::vector<DNDS::index>> columns{{1}, {0, 2}, {1, 3}, {2}};
+    C::LinearProblemContext problem(space, 5, columns, {}, C::DiagonalStorage::Block);
+    FillMatrix(problem);
+    problem.InvertDiagonal();
+
+    Field rhs(space, 5), baseline(space, 5);
+    {
+        auto b = rhs.Owned().Write();
+        for (DNDS::index i = 0; i < 4; ++i)
+            for (int j = 0; j < 5; ++j)
+                b.View()(i, j) = RightHandSide(0, i)[j];
+    }
+
+    // All 5 exposed orderings (natural, rcm, boostRcm, boostMmd, metis) must factor and solve
+    // the system exactly with complete LU (fill = -1) and precondition cleanly with ILU(0).
+    for (const std::string ordering : {"natural", "rcm", "boostRcm", "boostMmd", "metis"})
+    {
+        CAPTURE(ordering);
+        for (int fill : {-1, 0})
+        {
+            CAPTURE(fill);
+            problem.PrepareILUStructure(fill, false, {}, ordering);
+            problem.FactorizeILU();
+            Field forward(space, 5), sol(space, 5), residual(space, 5);
+            problem.ApplyILU(rhs, forward, sol);
+            problem.Apply(sol, residual);
+            const auto res = residual.Owned().Read(), b = rhs.Owned().Read();
+            const double tol = (fill == -1) ? 1e-12 : 1e-2;
+            for (DNDS::index i = 0; i < 4; ++i)
+                for (int j = 0; j < 5; ++j)
+                    CHECK(res.View()(i, j) == doctest::Approx(b.View()(i, j)).epsilon(tol));
+        }
+    }
+
+    // Unknown ordering must throw.
+    CHECK_THROWS(problem.PrepareILUStructure(0, false, {}, "bogus"));
+}
+
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

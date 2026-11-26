@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/CellQuadratureOffsets.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/Core/OMP.hpp"
 
@@ -16,22 +17,8 @@ namespace DNDS::Cauchy
         const auto geometry = metrics.AcquireRead();
         const auto metric = geometry.HostView();
         const int order = settings.numerics.RHSIntegrationOrder();
-        std::vector<index> offsets(size_t(metrics.NumCell()) + 1, 0);
-        std::vector<int> preparedTypes;
-        for (index iCell = 0; iCell < metrics.NumCell(); ++iCell)
-        {
-            const auto element = view.GetCellElement(iCell);
-            const Geom::Elem::Quadrature quadrature(element, order);
-            offsets[iCell + 1] = offsets[iCell] + quadrature.GetNumPoints();
-            // Populate lazy shape caches on the controller before parallel
-            // filling. The type registry is small local setup metadata.
-            if (std::find(preparedTypes.begin(), preparedTypes.end(), int(element.type)) == preparedTypes.end())
-            {
-                for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
-                    (void)Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
-                preparedTypes.push_back(int(element.type));
-            }
-        }
+        const auto layout = Detail::BuildCellQuadratureOffsets(metrics.NumCell(), view, order);
+        const auto &offsets = layout.offsets;
         const index count = offsets.back();
         R::Array<index> cells(R::RowLayout::Dense(count, 1));
         R::Array<real> points(R::RowLayout::Dense(count, 3));

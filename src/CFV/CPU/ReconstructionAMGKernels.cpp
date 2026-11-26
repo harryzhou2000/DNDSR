@@ -1,6 +1,8 @@
 #include "CFV/CPU/ReconstructionAMGKernels.hpp"
 #include "CFV/Math/ReconstructionMatrixAccess.hpp"
+#include "DNDS/Core/Algorithm.hpp"
 #include "DNDS/Core/OMP.hpp"
+#include "DNDS/Core/Span.hpp"
 #include <algorithm>
 
 namespace DNDS::CFV::CPU
@@ -20,13 +22,10 @@ namespace DNDS::CFV::CPU
             {
                 for (index k = 0; k < n * n; ++k) a(entry * n * n + k, 0) = 0;
             }
+            const SpanView<const int> rowCols{col.data + first, end - first};
             const auto ordinal = [&](index other)
             {
-                const auto *begin = col.data + first;
-                const auto *finish = col.data + end;
-                const auto *found = std::lower_bound(begin, finish, other);
-                DNDS_check_throw_info(found != finish && *found == other, "AMG neighbor column missing from sorted CSR row");
-                return first + index(found - begin);
+                return first + DNDS::CheckedLowerBoundRow(rowCols, int(other), "AMG neighbor column missing from sorted CSR row");
             };
             const index diagonal = ordinal(iCell);
             for (index i = 0; i < n; ++i) a(diagonal * n * n + i * n + i, 0) = 1;

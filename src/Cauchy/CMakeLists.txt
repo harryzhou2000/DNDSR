@@ -214,14 +214,16 @@ if(DNDS_USE_CUDA)
     if(DNDS_CAUCHY_ENABLE_COMPRESSIBLE)
         # Keep reduced-precision face kernels in bounded instantiation groups.
         # Their host dispatcher does not include the numerical kernel definitions.
-        list(APPEND CPPS
-            Discretization/CUDA/FiniteVolumeRHSKernels_Compute.cpp
-            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Polynomial.cu
-            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Dissipation.cu
-            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Flux.cu
-            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Polynomial.cu
-            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Dissipation.cu
-            Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Flux.cu)
+        list(APPEND CPPS Discretization/CUDA/FiniteVolumeRHSKernels_Compute.cpp)
+        if(DNDS_CAUCHY_CUDA_REDUCED_PRECISION)
+            list(APPEND CPPS
+                Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Polynomial.cu
+                Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Dissipation.cu
+                Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FP32_Flux.cu
+                Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Polynomial.cu
+                Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Dissipation.cu
+                Discretization/CUDA/FiniteVolumeRHSKernels_Compute_FloatFloat_Flux.cu)
+        endif()
     endif()
     list(APPEND CPPS Discretization/CUDA/FiniteVolumeRHSFacePackages.cpp Discretization/CUDA/FiniteVolumeRHSKernels_Segments.cu)
     # A 512-thread segment CTA has at most 128 registers per lane on the
@@ -271,35 +273,27 @@ if(DNDS_USE_CUDA)
     list(FILTER _cauchy_checked_kernel_sources INCLUDE REGEX "\\.cu$")
     dnds_cuda_kernel_assertions(${_cauchy_checked_kernel_sources})
 endif()
-# These internal generated kernels have no DLL export API. The two final
-# consumers keep separate CUDA device links and their existing library names.
-# PCH and DLL builds retain their target-specific compiler contracts.
-if(UNIX AND NOT DNDS_USE_PRECOMPILED_HEADER)
-    set(_flux_objects ${_cpu_flux_sources})
-    if(DNDS_USE_CUDA)
-        list(APPEND _flux_objects ${_rhs_sources})
-    endif()
-    add_library(cauchy_flux_objects OBJECT EXCLUDE_FROM_ALL ${_flux_objects})
-    set_target_properties(cauchy_flux_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    dnds_configure_library_compilation(cauchy_flux_objects "${DNDS_PCH_TARGETS_FAST}" ON)
-    target_link_libraries(cauchy_flux_objects PRIVATE DNDS::ComputeScalar)
-    target_include_directories(cauchy_flux_objects PRIVATE "${_cpu_flux_include}")
-    add_dependencies(cauchy_flux_objects ${_cpu_flux_codegen})
-    if(DNDS_USE_CUDA)
-        target_include_directories(cauchy_flux_objects PRIVATE "${_rhs_include}")
-        add_dependencies(cauchy_flux_objects ${_rhs_codegen})
-    endif()
-    list(REMOVE_ITEM CPPS ${_flux_objects})
-    list(APPEND CPPS $<TARGET_OBJECTS:cauchy_flux_objects>)
+dnds_add_lib_pair(cauchy "${CPPS}" "solver;physics;cfv;geom;dnds;${DNDS_EXTERNAL_LIBS}" "physics_shared;cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON)
+if(TARGET solver_objects)
+    target_sources(cauchy_shared PRIVATE $<TARGET_OBJECTS:solver_objects>)
+else()
+    target_link_libraries(cauchy_shared PRIVATE solver)
 endif()
-dnds_add_lib(cauchy "${CPPS}" "physics;cfv;geom;dnds;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
-dnds_add_lib(cauchy_shared "${CPPS}" "physics_shared;cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)
-foreach(_consumer cauchy cauchy_shared)
+set(_cauchy_compile_targets cauchy cauchy_shared)
+if(TARGET cauchy_objects)
+    list(APPEND _cauchy_compile_targets cauchy_objects)
+    target_link_libraries(cauchy_objects PRIVATE DNDS::ComputeScalar)
+    target_compile_definitions(cauchy_objects PRIVATE CT_USE_SYSTEM_FMT=1)
+endif()
+foreach(_consumer IN LISTS _cauchy_compile_targets)
     target_include_directories(${_consumer} PRIVATE "${_cpu_flux_include}")
     add_dependencies(${_consumer} ${_cpu_flux_codegen})
+    if(DNDS_USE_CUDA AND DNDS_CAUCHY_CUDA_REDUCED_PRECISION)
+        target_compile_definitions(${_consumer} PRIVATE DNDS_CAUCHY_CUDA_REDUCED_PRECISION)
+    endif()
 endforeach()
 if(DNDS_USE_CUDA)
-    foreach(_rhs_consumer cauchy cauchy_shared)
+    foreach(_rhs_consumer IN LISTS _cauchy_compile_targets)
         target_include_directories(${_rhs_consumer} PRIVATE "${_rhs_include}")
         add_dependencies(${_rhs_consumer} ${_rhs_codegen})
     endforeach()

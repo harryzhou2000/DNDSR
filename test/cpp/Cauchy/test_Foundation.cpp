@@ -1,6 +1,5 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Cauchy/Core/CoordinatedSchedule.hpp"
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
@@ -49,7 +48,6 @@ TEST_CASE("Domain execution contexts retain named lanes and backend lifetime")
             C::DomainExecutionContext context(settings);
             CHECK(context.Engine().Owns(context.ComputeStream()));
             CHECK(context.Engine().Owns(context.CommunicationStream()));
-            CHECK(context.Engine().Owns(context.CopyStream()));
             CHECK(context.Engine().ChecksAccess());
             retained.emplace(context);
         }
@@ -192,57 +190,6 @@ TEST_CASE("Cauchy domain placement preserves rank namespaces and isolates shared
     CHECK_THROWS(C::DomainPlacement(MPI_COMM_WORLD, {{"same", {0}}, {"same", {0}}}));
     if (size > 1)
         CHECK_THROWS(C::DomainPlacement(MPI_COMM_WORLD, {{rank == 0 ? "left" : "right", AllRanks()}}));
-}
-TEST_CASE("Frozen trace rounds give identical shared and disjoint rank numerical schemes")
-{
-    std::vector<int> even, odd;
-    for (int r = 0; r < size; ++r)
-        (r % 2 ? odd : even).push_back(r);
-    if (odd.empty())
-        odd = even;
-    C::DomainPlacement shared(MPI_COMM_WORLD, {{"a", AllRanks()}, {"b", AllRanks()}});
-    C::DomainPlacement split(MPI_COMM_WORLD, {{"a", even}, {"b", odd}});
-    C::CoordinatedSchedule first(shared), second(split);
-    for (int step = 0; step < 5; ++step)
-    {
-        // Independent oracle recurrence: a'=a+2b+1; b'=3a-b+2.
-        const auto before = first.Traces();
-        const std::vector<double> expected{before[0] + 2 * before[1] + 1, 3 * before[0] - before[1] + 2};
-        const auto advance = [&](C::CoordinatedSchedule &schedule, const C::DomainPlacement &placement)
-        {
-            schedule.Advance(.125, [&](I domain, const auto &trace, const auto &epoch)
-                             {
-                CHECK(epoch.acceptedStep == uint64_t(step));
-                double value = domain == 0 ? trace[0] + 2 * trace[1] + 1 : 3 * trace[0] - trace[1] + 2;
-                // Different local inner iteration counts, domain collectives
-                // only. Simulation control is entered once both domains finish.
-                for (I iteration = 0; iteration < domain + 1; ++iteration)
-                {
-                    double maximum;
-                    MPI_Allreduce(&value, &maximum, 1, MPI_DOUBLE, MPI_MAX, placement.Context(domain)->Communicator());
-                    value = maximum;
-                }
-                return value; });
-        };
-        advance(first, shared);
-        advance(second, split);
-        CHECK(first.Traces() == expected);
-        CHECK(second.Traces() == expected);
-        CHECK(first.Time() == doctest::Approx((step + 1) * .125));
-    }
-    for (I domain = 0; domain < split.DomainNumber(); ++domain)
-        if (split.DomainRank(domain) < 0)
-            CHECK_THROWS(split.Context(domain));
-    const auto before = second.Traces();
-    CHECK_THROWS(second.Advance(.125, [&](I, const auto &, const auto &) -> double
-                                { return rank == 0 ? std::numeric_limits<double>::quiet_NaN() : 7; }));
-    CHECK(second.Traces() == before);
-    CHECK(second.Epoch().acceptedStep == 5);
-    CHECK_THROWS(second.Advance(rank == 0 ? -1 : .125, [](I, const auto &, const auto &)
-                                { return 0.; }));
-    second.Advance(.125, [](I domain, const auto &, const auto &epoch)
-                   { DNDS_check_throw_info(epoch.trial == 7, "rejected trial epoch was reused"); return double(domain); });
-    CHECK(second.Traces() == std::vector<double>{0, 1});
 }
 TEST_CASE("Named coupled DOF blocks preserve layout independence subset algebra and owned norms")
 {

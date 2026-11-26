@@ -1,6 +1,7 @@
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "CFV/Detail/PolynomialSamplingKernels.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
+#include "DNDS/Algebra/OperandChecks.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 
@@ -14,9 +15,10 @@ namespace DNDS::CFV
         DNDS_check_throw_info(derivative >= 0 && derivative <= _maximumDerivative && output.GetDevice() == Device() &&
                                   !output.Layout().IsVariable() && output.RowCount() == Size() && output.Layout().Width() == index(mean.Width()),
                               "polynomial sample output shape/placement or derivative mismatch");
-        for (const auto *input : {&mean.Owned(), &mean.Ghost(), &coefficients.Owned(), &coefficients.Ghost()})
-            DNDS_check_throw_info(output.Identity() != input->Identity() && !Algebra::Detail::Overlaps(output.Storage(), input->Storage()),
-                                  "polynomial sample output overlaps an input");
+        Algebra::Detail::RequirePairwiseDisjoint(
+            {&output},
+            {&mean.Owned(), &mean.Ghost(), &coefficients.Owned(), &coefficients.Ghost()},
+            "polynomial sample output overlaps an input");
         if (Device().space == R::MemorySpace::CUDA)
         {
             for (const auto *array : {&mean.Owned(), &mean.Ghost(), &coefficients.Owned(), &coefficients.Ghost(), &output})
@@ -93,11 +95,11 @@ namespace DNDS::CFV
                 any = true;
                 DNDS_check_throw_info(i == 0 || i <= _dimension, "polynomial gradient direction is outside geometry dimension");
                 ValidateOutput(mean, coefficients, *arrays[i], i);
-                for (int j = 0; j < i; ++j)
-                    DNDS_check_throw_info(!arrays[j] || (arrays[j]->Identity() != arrays[i]->Identity() &&
-                                                         !Algebra::Detail::Overlaps(arrays[j]->Storage(), arrays[i]->Storage())),
-                                          "polynomial sample outputs overlap");
             }
+        Algebra::Detail::RequirePairwiseDisjoint<R::Array<real>>(
+            {arrays[0], arrays[1], arrays[2], arrays[3]},
+            {},
+            "polynomial sample outputs overlap");
         DNDS_check_throw_info(any, "polynomial sampling needs at least one output");
 #ifndef DNDS_USE_CUDA
         DNDS_check_throw_info(false, "CUDA polynomial sampling is not built");

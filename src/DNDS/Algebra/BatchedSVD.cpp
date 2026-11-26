@@ -1,5 +1,6 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 #include "DNDS/Algebra/BatchedSVD.hpp"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 #include <climits>
 #include <cstdlib>
 #include <limits>
@@ -42,20 +43,7 @@ namespace DNDS::Algebra
         {
             DNDS_check_throw_info(status == CUSOLVER_STATUS_SUCCESS, "cuSOLVER batched SVD host API failed: " + std::to_string(int(status)));
         }
-        struct DeviceScope
-        {
-            int previous = -1;
-            explicit DeviceScope(int ordinal)
-            {
-                DNDS_check_throw_info(cudaGetDevice(&previous) == cudaSuccess, "batched SVD cannot query CUDA device");
-                DNDS_check_throw_info(cudaSetDevice(ordinal) == cudaSuccess, "batched SVD cannot select CUDA device");
-            }
-            ~DeviceScope()
-            {
-                if (cudaSetDevice(previous) != cudaSuccess)
-                    std::abort();
-            }
-        };
+        using DeviceScope = DNDS::Device::CUDADeviceScope;
 #endif
     }
     struct BatchedSVD::Data

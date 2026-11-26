@@ -13,6 +13,7 @@ namespace DNDS::Algebra::Detail
         MPI_Query_thread(&thread);
         MPI_Is_thread_main(&main);
         DNDS_check_throw_info(main || thread == MPI_THREAD_MULTIPLE, "global algebra reduction called from an unsupported MPI thread");
+        const bool checkPreflight = retained.ChecksCollectivePreflight();
         GlobalSchema description{};
         std::exception_ptr failure;
         try
@@ -23,19 +24,35 @@ namespace DNDS::Algebra::Detail
         {
             failure = std::current_exception();
         }
-        int valid = !failure;
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, comm);
-        if (failure)
-            std::rethrow_exception(failure);
-        DNDS_check_throw_info(valid, "algebra global operand validation failed on a rank");
+        if (checkPreflight)
+        {
+            // Combine operand-validation status and schema min/max agreement into one collective.
+            const int64_t w = int64_t(description.width);
+            const int64_t fw = int64_t(description.fieldWidth);
+            const int64_t sb = int64_t(description.scalarBytes);
+            const int64_t op = int64_t(description.operation);
+            const int64_t proto = int64_t(description.protocol);
+            std::array<int64_t, 11> check{!failure ? 1 : 0, w, fw, sb, op, proto, -w, -fw, -sb, -op, -proto};
+            MPI_Allreduce(MPI_IN_PLACE, check.data(), int(check.size()), MPI_INT64_T, MPI_MIN, comm);
+            if (failure)
+                std::rethrow_exception(failure);
+            DNDS_check_throw_info(check[0] == 1, "algebra global operand validation failed on a rank");
+            const bool schemaAgreed = (check[1] == -check[6]) && (check[2] == -check[7]) &&
+                                      (check[3] == -check[8]) && (check[4] == -check[9]) && (check[5] == -check[10]);
+            DNDS_check_throw_info(schemaAgreed && description.width && description.width <= INT_MAX &&
+                                      description.operation >= 0 && description.operation <= 2,
+                                  "global algebra reduction schema differs between ranks or exceeds MPI range");
+        }
+        else
+        {
+            if (failure)
+                std::rethrow_exception(failure);
+            DNDS_check_throw_info(description.width && description.width <= INT_MAX &&
+                                      description.operation >= 0 && description.operation <= 2,
+                                  "global algebra reduction schema exceeds MPI range");
+        }
         const auto width = description.width;
         const auto operation = description.operation;
-        std::array<uint64_t, 5> schema{uint64_t(width), uint64_t(description.fieldWidth), uint64_t(description.scalarBytes), uint64_t(operation), uint64_t(description.protocol)};
-        auto minimum = schema, maximum = schema;
-        MPI_Allreduce(MPI_IN_PLACE, minimum.data(), int(minimum.size()), MPI_UINT64_T, MPI_MIN, comm);
-        MPI_Allreduce(MPI_IN_PLACE, maximum.data(), int(maximum.size()), MPI_UINT64_T, MPI_MAX, comm);
-        DNDS_check_throw_info(minimum == maximum && width && width <= INT_MAX && operation >= 0 && operation <= 2,
-                              "global algebra reduction schema differs between ranks or exceeds MPI range");
         std::vector<double> values;
         try
         {
@@ -46,11 +63,16 @@ namespace DNDS::Algebra::Detail
         {
             failure = std::current_exception();
         }
-        valid = !failure;
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, comm);
-        if (failure)
+        if (checkPreflight)
+        {
+            int valid = !failure;
+            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, comm);
+            if (failure)
+                std::rethrow_exception(failure);
+            DNDS_check_throw_info(valid, "local algebra reduction failed on a rank before MPI aggregation");
+        }
+        else if (failure)
             std::rethrow_exception(failure);
-        DNDS_check_throw_info(valid, "local algebra reduction failed on a rank before MPI aggregation");
         MPI_Allreduce(MPI_IN_PLACE, values.data(), int(width), MPI_DOUBLE,
                       operation == 0 ? MPI_SUM : operation == 1 ? MPI_MIN
                                                                 : MPI_MAX,
@@ -59,6 +81,7 @@ namespace DNDS::Algebra::Detail
     }
 
 #ifndef DNDS_USE_CUDA
+    size_t ReduceCUDABlockCount(Reduction, size_t, size_t) { return 1; }
     void ApplyCUDA(Runtime::ExecutionContext, Pointwise, Runtime::ArrayView<float>, Runtime::ArrayView<const float>, Runtime::ArrayView<const float>, double, double)
     {
         DNDS_check_throw_info(false, "CUDA algebra is unavailable in this build");
@@ -72,6 +95,14 @@ namespace DNDS::Algebra::Detail
         DNDS_check_throw_info(false, "CUDA algebra is unavailable in this build");
     }
     void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const double>, Runtime::ArrayView<const double>, Runtime::ArrayView<double>)
+    {
+        DNDS_check_throw_info(false, "CUDA algebra is unavailable in this build");
+    }
+    void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const float>, Runtime::ArrayView<const float>, Runtime::ArrayView<double>, Runtime::ArrayView<double>, Runtime::ArrayView<unsigned int>)
+    {
+        DNDS_check_throw_info(false, "CUDA algebra is unavailable in this build");
+    }
+    void ReduceCUDA(Runtime::ExecutionContext, Reduction, Runtime::ArrayView<const double>, Runtime::ArrayView<const double>, Runtime::ArrayView<double>, Runtime::ArrayView<double>, Runtime::ArrayView<unsigned int>)
     {
         DNDS_check_throw_info(false, "CUDA algebra is unavailable in this build");
     }

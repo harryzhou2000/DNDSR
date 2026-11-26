@@ -46,6 +46,11 @@ namespace DNDS::Geom
     {
         bool persistentIdentity = true;
         bool closure = true;
+        /// Opt-in O(P^2) global owned-ID hash-shuffle uniqueness check during
+        /// routine publication. Explicit UnstructuredMeshState::Audit() always
+        /// runs it when persistentIdentity is true; routine FromNative runs the
+        /// sparse O(NumGhost) ghost-vs-owner check unless this flag is set.
+        bool globalOwnedIds = false;
     };
 
     /// Host owner of a plain host/CUDA query view. This scope retains both value

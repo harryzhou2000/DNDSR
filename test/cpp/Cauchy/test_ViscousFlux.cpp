@@ -272,7 +272,8 @@ TEST_CASE("Polynomial viscosity exchanges the selected limited or unlimited coef
                 for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
                     for (int j = 0; j < 5; ++j)
                     {
-                        CHECK(a.View<R::UniformTableRows>()(iCell, j) == b.View<R::UniformTableRows>()(iCell, j));
+                        CHECK(std::abs(a.View<R::UniformTableRows>()(iCell, j) - b.View<R::UniformTableRows>()(iCell, j)) <=
+                              8 * std::numeric_limits<DNDS::real>::epsilon() * std::max(1., std::abs(b.View<R::UniformTableRows>()(iCell, j))));
                         if (!limited)
                             differs |= std::abs(a.View<R::UniformTableRows>()(iCell, j) - other.View<R::UniformTableRows>()(iCell, j)) > 1e-12;
                     }

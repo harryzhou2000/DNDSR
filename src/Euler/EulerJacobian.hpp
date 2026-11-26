@@ -20,46 +20,11 @@
 #include "DNDS/Legacy/ArrayDerived/ArrayEigenUniMatrixBatch.hpp"
 #include "DNDS/Math/HardEigen.hpp"
 #include "Solver/Direct.hpp"
+#include "Solver/BlockInverse.hpp"
 
 namespace DNDS::Euler
 {
-    /**
-     * @brief Try to invert a block using partial-pivot LU.
-     *
-     * Falls back to SVD pseudo-inverse (HardEigen) if the matrix is
-     * near-singular — @p rcond below 1e-10 — or if the solve produces
-     * NaN / inf.  PartialPivLU is ~2x faster than FullPivLU and avoids
-     * the expensive ComplexSchur decomposition.
-     *
-     * @return true on success (AI is a usable inverse), false if SVD
-     *         fallback or NaN/inf produced.
-     */
-    template <typename tMat>
-    static bool invertBlockPartialPivLU(const tMat &A, tMat &AI)
-    {
-        Eigen::PartialPivLU<tMat> lu(A);
-        if (lu.rcond() < 1e-7)
-            return false;
-        AI = lu.solve(tMat::Identity(A.rows(), A.cols()));
-        return AI.allFinite() && !AI.hasNaN();
-    }
-
-    template <typename tMat>
-    static void invertBlockSVD(const tMat &A, tMat &AI)
-    {
-        // HardEigen uses Eigen::MatrixXd (dynamic); fixed-size tMat
-        // (e.g. Matrix<double, 6, 6> for NS_SA) cannot bind to MatrixXd&.
-        Eigen::MatrixXd Ad = A;
-        Eigen::MatrixXd AId;
-        HardEigen::EigenLeastSquareInverse_Filtered(Ad, AId, 0, 0);
-        DNDS_assert_info(AId.allFinite() && !AId.hasNaN(), [&]()
-                         {
-            std::ostringstream oss;
-            oss << "invertBlockSVD produced NaN/inf.\n"
-                << "A = \n" << Ad << "\n\n";
-            return oss.str(); }());
-        AI = AId;
-    }
+    // Diagonal block inversion delegates to Direct::InvertDiagonalBlock (rcond = 1e-7, SVD fallback).
 
     /**
      * @brief Per-cell diagonal or block-diagonal Jacobian storage for implicit time stepping.
@@ -199,12 +164,7 @@ namespace DNDS::Euler
                 for (index iCell = 0; iCell < Size(); iCell++)
                     if (isBlock())
                     {
-                        DNDS_assert(_data[iCell].diagonal().array().abs().minCoeff() != 0);
-                        tComponent preCon = _data[iCell].diagonal().array().inverse().matrix().asDiagonal() * _data[iCell];
-                        tComponent AI;
-                        if (!invertBlockPartialPivLU(preCon, AI))
-                            invertBlockSVD(preCon, AI);
-                        _dataInvert[iCell] = AI * _data[iCell].diagonal().array().inverse().matrix().asDiagonal();
+                        _dataInvert[iCell] = Direct::InvertDiagonalBlock(_data[iCell]).value;
                     }
                     else
                     {
@@ -399,12 +359,7 @@ namespace DNDS::Euler
          */
         tComponent InvertDiag(const tComponent &v)
         {
-            tComponent AI;
-            DNDS_assert(v.diagonal().array().abs().minCoeff() != 0);
-            tComponent preCon = v.diagonal().array().inverse().matrix().asDiagonal() * v;
-            if (!invertBlockPartialPivLU(preCon, AI))
-                invertBlockSVD(preCon, AI);
-            return AI * v.diagonal().array().inverse().matrix().asDiagonal();
+            return Direct::InvertDiagonalBlock(v).value;
         }
     };
 
@@ -522,12 +477,7 @@ namespace DNDS::Euler
          */
         tComponent InvertDiag(const tComponent &v)
         {
-            tComponent AI;
-            DNDS_assert(v.diagonal().array().abs().minCoeff() != 0);
-            tComponent preCon = v.diagonal().array().inverse().matrix().asDiagonal() * v;
-            if (!invertBlockPartialPivLU(preCon, AI))
-                invertBlockSVD(preCon, AI);
-            return AI * v.diagonal().array().inverse().matrix().asDiagonal();
+            return Direct::InvertDiagonalBlock(v).value;
         }
     };
 }

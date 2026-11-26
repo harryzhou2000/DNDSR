@@ -36,6 +36,7 @@ namespace DNDS::Algebra
         const std::string &Name() const { return _partition->name; }
         bool Same(const DofSpace &other) const { return _partition == other._partition; }
         bool Distributed() const { return bool(_communication); }
+        bool ChecksCollectivePreflight() const { return !_communication || _communication->ChecksCollectivePreflight(); }
         MPI_Comm Communicator() const
         {
             DNDS_check_throw_info(_communication, "global algebra reduction needs a distributed DOF space");

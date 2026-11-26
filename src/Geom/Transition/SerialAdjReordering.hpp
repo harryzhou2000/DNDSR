@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DNDS/Core/Offsets.hpp"
+#include "DNDS/Core/Permutation.hpp"
 #include "Geom/Geometry/Geometric.hpp"
 
 #include "Geom/Transition/CorrectRCM.hpp"
@@ -7,7 +9,6 @@
 #include "Geom/IO/Metis.hpp"
 
 #include <array>
-#include <unordered_set>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/graph_utility.hpp>
 #include <boost/graph/minimum_degree_ordering.hpp>
@@ -17,6 +18,24 @@
 
 namespace DNDS::Geom
 {
+    /// Compute the half-bandwidth of an adjacency range under an optional old->new permutation.
+    inline index ComputeGraphBandwidth(
+        tLocalMatStruct::const_iterator mat_begin, tLocalMatStruct::const_iterator mat_end,
+        const std::vector<index> *old2New = nullptr, index offset = 0)
+    {
+        const index mat_size = size_t_to_signed<index>(mat_end - mat_begin);
+        index bandwidth = 0;
+        for (index iCell = 0; iCell < mat_size; ++iCell)
+        {
+            const index lhs = old2New ? (*old2New)[size_t(iCell)] : (iCell + offset);
+            for (auto iCOther : mat_begin[iCell])
+            {
+                const index rhs = old2New ? old2New->at(size_t(iCOther - offset)) : iCOther;
+                bandwidth = std::max(bandwidth, std::abs(lhs - rhs));
+            }
+        }
+        return bandwidth;
+    }
 
     /**
      * @brief Partition a (sub-)graph using Metis.
@@ -57,35 +76,20 @@ namespace DNDS::Geom
             // options[METIS_OPTION_DBGLVL] = METIS_DBG_TIME | METIS_DBG_IPART;
             // options[METIS_OPTION_DBGLVL] = METIS_DBG_TIME;
         }
-        auto &cell2cellFaceV = mat_begin;
-
         //! Build CSR with 0-based local indices: subtract ind_offset and skip
         //! entries outside [ind_offset, ind_offset + nCell) (cross-sub-graph edges).
-        std::vector<idx_t> adjncy, xadj;
-        xadj.resize(nCell + 1);
-        xadj[0] = 0;
-        for (idx_t iC = 0; iC < nCell; iC++)
-        {
-            idx_t count = 0;
-            for (auto iCOther : cell2cellFaceV[iC])
+        auto [xadj, adjncy] = BuildCSRFromRows<idx_t, idx_t>(
+            mat_begin, mat_end,
+            [&](index iCOther, idx_t &out)
             {
-                index iLocal = iCOther - ind_offset;
+                const index iLocal = iCOther - ind_offset;
                 if (iLocal >= 0 && iLocal < nCell)
-                    count++;
-            }
-            xadj[iC + 1] = xadj[iC] + count;
-        }
-        adjncy.resize(xadj.back());
-        for (idx_t iC = 0; iC < nCell; iC++)
-        {
-            idx_t pos = xadj[iC];
-            for (auto iCOther : cell2cellFaceV[iC])
-            {
-                index iLocal = iCOther - ind_offset;
-                if (iLocal >= 0 && iLocal < nCell)
-                    adjncy[pos++] = METIS::indexToIdx(iLocal);
-            }
-        }
+                {
+                    out = METIS::indexToIdx(iLocal);
+                    return true;
+                }
+                return false;
+            });
 
         // METIS rejects contiguous-part requests on disconnected input. Keep
         // the historical connected-graph option; local mesh subgraphs may
@@ -145,17 +149,14 @@ namespace DNDS::Geom
             options[METIS_OPTION_NUMBERING] = 0;
             // options[METIS_OPTION_DBGLVL] = METIS_DBG_TIME | METIS_DBG_IPART;
         }
-        const std::vector<std::vector<index>> &cell2cellFaceV = mat;
-        std::vector<idx_t> adjncy, xadj, perm, iPerm;
-        xadj.resize(nCell + 1);
-        xadj[0] = 0;
-        for (idx_t iC = 0; iC < nCell; iC++)
-            xadj[iC + 1] = signedIntSafeAdd<idx_t>(xadj[iC], size_t_to_signed<idx_t>(cell2cellFaceV[iC].size())); //! check overflow!
-        adjncy.resize(xadj.back());
-        for (idx_t iC = 0; iC < nCell; iC++)
-            std::copy(cell2cellFaceV[iC].begin(), cell2cellFaceV[iC].end(), adjncy.begin() + xadj[iC]);
-        perm.resize(nCell);
-        iPerm.resize(nCell);
+        auto [xadj, adjncy] = BuildCSRFromRows<idx_t, idx_t>(
+            mat,
+            [](index iCOther, idx_t &out)
+            {
+                out = METIS::indexToIdx(iCOther);
+                return true;
+            });
+        std::vector<idx_t> perm(static_cast<size_t>(nCell)), iPerm(static_cast<size_t>(nCell));
 
         int ret = METIS_NodeND(&nCell, xadj.data(), adjncy.data(), nullptr, options.data(), perm.data(), iPerm.data());
         DNDS_assert_info(ret == METIS_OK, fmt::format("Metis return not ok, [{}]", ret));
@@ -207,28 +208,17 @@ namespace DNDS::Geom
         // typedef graph_traits<Graph>::vertices_size_type size_type;
         Graph cell2cellG(mat.size());
         const std::vector<std::vector<index>> &cell2cellFaceV = mat;
-        bandWidthOld = 0;
+        bandWidthOld = ComputeGraphBandwidth(mat.begin(), mat.end());
         for (index iCell = 0; iCell < size_t_to_signed<index>(mat.size()); iCell++)
             for (auto iCOther : cell2cellFaceV[iCell])
-                add_edge(iCell, iCOther, cell2cellG), bandWidthOld = std::max(bandWidthOld, std::abs(iCell - iCOther));
+                add_edge(iCell, iCOther, cell2cellG);
         localFillOrderingNew2Old.resize(mat.size(), 0);
-        localFillOrderingOld2New.resize(mat.size(), 0);
         Vertex startVert = vertex(0, cell2cellG);
         cuthill_mckee_ordering(cell2cellG, startVert, localFillOrderingNew2Old.rbegin(),
                                get(vertex_color, cell2cellG), get(vertex_degree, cell2cellG));
-        std::unordered_set<index> _checkOrder;
-        for (auto v : localFillOrderingNew2Old)
-            DNDS_assert(v < mat.size() && v >= 0), _checkOrder.insert(v);
-        DNDS_assert_info(_checkOrder.size() == localFillOrderingNew2Old.size(), "The output of boost::cuthill_mckee_ordering is invalid!");
-
-        for (index iCell = 0; iCell < size_t_to_signed<index>(mat.size()); iCell++)
-            localFillOrderingOld2New[localFillOrderingNew2Old[iCell]] = iCell;
-        for (auto v : localFillOrderingOld2New)
-            DNDS_assert(v < size_t_to_signed<index>(mat.size()) && v >= 0);
-        bandWidthNew = 0;
-        for (index iCell = 0; iCell < size_t_to_signed<index>(mat.size()); iCell++)
-            for (auto iCOther : cell2cellFaceV[iCell])
-                bandWidthNew = std::max(bandWidthNew, std::abs(localFillOrderingOld2New[iCell] - localFillOrderingOld2New[iCOther]));
+        localFillOrderingOld2New = InvertPermutationChecked(
+            localFillOrderingNew2Old, "The output of boost::cuthill_mckee_ordering is invalid!");
+        bandWidthNew = ComputeGraphBandwidth(mat.begin(), mat.end(), &localFillOrderingOld2New);
 
         return {localFillOrderingNew2Old, localFillOrderingOld2New};
     }
@@ -320,12 +310,8 @@ namespace DNDS::Geom
         // }
 
         index mat_size = mat_end - mat_begin;
-        // std::cout << "HHH " << offset << "," << mat_size << std::endl;
-        for (index iCell = 0; iCell < size_t_to_signed<index>(mat_size); iCell++)
-            for (auto iCOther : mat_begin[iCell])
-                bandWidthOld = std::max(bandWidthOld, std::abs(iCell + offset - iCOther));
+        bandWidthOld = ComputeGraphBandwidth(mat_begin, mat_end, nullptr, offset);
 
-        localFillOrderingNew2Old.resize(mat_size, 0);
         localFillOrderingOld2New.resize(mat_size, 0);
         auto graphFunctor = [&](index i)
         {
@@ -334,6 +320,7 @@ namespace DNDS::Geom
         }; // todo: need improvement in CorrectRCM: can pass a temporary functor and store
         auto graph = CorrectRCM::UndirectedGraphProxy(graphFunctor, size_t_to_signed<int64_t>(mat_size));
         int ret = graph.CheckAdj();
+        (void)ret;
         CorrectRCM::CuthillMcKeeOrdering(
             graph,
             [&](index i) -> index &
@@ -342,24 +329,11 @@ namespace DNDS::Geom
             },
             0);
         for (auto &v : localFillOrderingOld2New)
-            v = localFillOrderingOld2New.size() - 1 - v;
+            v = size_t_to_signed<index>(localFillOrderingOld2New.size()) - 1 - v;
 
-        std::vector<uint8_t> _checkOrder(size_t(mat_size), 0);
-        for (auto v : localFillOrderingOld2New)
-        {
-            DNDS_assert(v < size_t_to_signed<index>(mat_size) && v >= 0);
-            DNDS_check_throw_info(!_checkOrder[size_t(v)], "The output of CorrectRCM::CuthillMcKeeOrdering is invalid!");
-            _checkOrder[size_t(v)] = 1;
-        }
-
-        for (index iCell = 0; iCell < size_t_to_signed<index>(mat_size); iCell++)
-            localFillOrderingNew2Old[localFillOrderingOld2New[iCell]] = iCell;
-        for (auto v : localFillOrderingNew2Old)
-            DNDS_assert(v < size_t_to_signed<index>(mat_size) && v >= 0);
-        bandWidthNew = 0;
-        for (index iCell = 0; iCell < size_t_to_signed<index>(mat_size); iCell++)
-            for (auto iCOther : mat_begin[iCell])
-                bandWidthNew = std::max(bandWidthNew, std::abs(localFillOrderingOld2New[iCell] - localFillOrderingOld2New.at(iCOther - offset)));
+        localFillOrderingNew2Old = InvertPermutationChecked(
+            localFillOrderingOld2New, "The output of CorrectRCM::CuthillMcKeeOrdering is invalid!");
+        bandWidthNew = ComputeGraphBandwidth(mat_begin, mat_end, &localFillOrderingOld2New, offset);
 
         return {localFillOrderingNew2Old, localFillOrderingOld2New};
     }

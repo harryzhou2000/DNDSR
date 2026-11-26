@@ -1,3 +1,4 @@
+#include "DNDS/Core/Algorithm.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/ConnectivityComposeRows.hpp"
@@ -42,9 +43,7 @@ namespace DNDS::Geom
                               "exact selection requires an explicit incidence/frame matcher");
         auto unique = [](std::vector<index> entries)
         {
-            entries.erase(std::remove(entries.begin(), entries.end(), UnInitIndex), entries.end());
-            std::sort(entries.begin(), entries.end());
-            entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+            DNDS::SortUniqueRemove(entries, UnInitIndex);
             return entries;
         };
         // Node support is revisited by every incident cell. Normalize each
@@ -132,10 +131,7 @@ namespace DNDS::Geom
                     }
                 }
                 OMP::ForSetupRows(0, index(support.size()), [&](index iRow)
-                                  {
-                    auto &entries = support[size_t(iRow)];
-                    std::sort(entries.begin(), entries.end());
-                    entries.erase(std::unique(entries.begin(), entries.end()), entries.end()); });
+                                  { DNDS::SortUnique(support[size_t(iRow)]); });
             }
             catch (...)
             {
@@ -235,10 +231,7 @@ namespace DNDS::Geom
         cone.Source().Preflight(valid, "inverse relation/communicator validation failed on a rank");
         DNDS_check_throw_info(valid, "inverse contribution payload contains an invalid row or source entity");
         OMP::ForSetupRows(0, index(support.size()), [&](index iRow)
-                          {
-            auto &entries = support[size_t(iRow)];
-            std::sort(entries.begin(), entries.end());
-            entries.erase(std::unique(entries.begin(), entries.end()), entries.end()); });
+                          { DNDS::SortUnique(support[size_t(iRow)]); });
         return MeshAdjacency(cone.Kind().Inverted(), cone.Target(), cone.Source(),
                              BuildNativeRows(support));
     }

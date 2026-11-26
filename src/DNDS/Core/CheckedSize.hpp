@@ -15,6 +15,18 @@ namespace DNDS::CheckedSize
         return a + b;
     }
 
+    template <class OutT, class InT>
+    OutT Cast(InT v)
+    {
+        static_assert(std::is_integral_v<OutT> && std::is_integral_v<InT>);
+        if constexpr (std::is_signed_v<InT>)
+            DNDS_check_throw_info(v >= 0, "negative size cast");
+        using WideU = std::common_type_t<std::make_unsigned_t<OutT>, std::make_unsigned_t<InT>>;
+        DNDS_check_throw_info(static_cast<WideU>(v) <= static_cast<WideU>(std::numeric_limits<OutT>::max()),
+                              "size cast overflow");
+        return static_cast<OutT>(v);
+    }
+
     template <class T>
     T Multiply(T a, T b)
     {
