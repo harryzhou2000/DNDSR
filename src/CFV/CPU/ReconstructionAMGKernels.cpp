@@ -1,6 +1,7 @@
 #include "CFV/CPU/ReconstructionAMGKernels.hpp"
 #include "CFV/Math/ReconstructionMatrixAccess.hpp"
 #include "DNDS/Core/OMP.hpp"
+#include <algorithm>
 
 namespace DNDS::CFV::CPU
 {
@@ -21,10 +22,11 @@ namespace DNDS::CFV::CPU
             }
             const auto ordinal = [&](index other)
             {
-                index position = first;
-                while (position < end && col(position, 0) != other) ++position;
-                DNDS_assert(position < end);
-                return position;
+                const auto *begin = col.data + first;
+                const auto *finish = col.data + end;
+                const auto *found = std::lower_bound(begin, finish, other);
+                DNDS_check_throw_info(found != finish && *found == other, "AMG neighbor column missing from sorted CSR row");
+                return first + index(found - begin);
             };
             const index diagonal = ordinal(iCell);
             for (index i = 0; i < n; ++i) a(diagonal * n * n + i * n + i, 0) = 1;

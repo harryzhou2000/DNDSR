@@ -73,6 +73,12 @@ namespace DNDS::Geom
             Step step(*this);
             std::forward<F>(implementation)();
         }
+        const Runtime::VersionTracker::Mutation &Underlying() const
+        {
+            DNDS_check_throw_info(!_closed && !_failed && std::this_thread::get_id() == _thread,
+                                  "invalid or closed mesh mutation capability");
+            return _mutation;
+        }
         void Commit()
         {
             DNDS_check_throw_info(!_closed && !_failed && !_depth && std::this_thread::get_id() == _thread,

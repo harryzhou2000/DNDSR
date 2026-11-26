@@ -528,3 +528,59 @@ TEST_CASE("ACM block Jacobi converges for the finite SUBOFF diagonal after 49 re
     for (int i = 0; i < width; ++i)
         CHECK(read.View()(i, 0) == doctest::Approx(exact[i]).epsilon(1e-6));
 }
+
+TEST_CASE("Robust ACM block inverse supports all accepted widths including 1..10 and 19")
+{
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    for (const int width : {1, 2, 3, 7, 10, 19})
+    {
+        CAPTURE(width);
+        constexpr int cells = 4;
+        R::Array<int> offsets(R::RowLayout::Dense(cells + 1, 1)), columns(R::RowLayout::Dense(cells, 1));
+        R::Array<double> values(R::RowLayout::Dense(cells * width * width, 1)), rhs(R::RowLayout::Dense(cells * width, 1));
+        auto exact = [&](int cell, int j)
+        { return 1.0 + 0.1 * cell + 0.05 * j; };
+        {
+            auto o = offsets.Write(), c = columns.Write();
+            auto a = values.Write(), b = rhs.Write();
+            for (int cell = 0; cell < cells; ++cell)
+            {
+                o.View()(cell, 0) = cell;
+                c.View()(cell, 0) = cell;
+                for (int i = 0; i < width; ++i)
+                {
+                    double sum = 0;
+                    for (int j = 0; j < width; ++j)
+                    {
+                        const double entry = i == j ? 4.0 + 0.1 * i : 0.01 * (i - j);
+                        a.View()((cell * width + i) * width + j, 0) = entry;
+                        sum += entry * exact(cell, j);
+                    }
+                    b.View()(cell * width + i, 0) = sum;
+                }
+            }
+            o.View()(cells, 0) = cells;
+        }
+        DNDS::Algebra::AmgXSettings settings;
+        settings.robustACMInverse = true;
+        settings.maxLevels = 1;
+        settings.coarseSweeps = 1;
+        settings.relaxation = 1;
+        DNDS::Algebra::AmgXPreconditioner provider(device, settings);
+        provider.SetPattern(offsets, columns, width);
+        auto a = values.To(device), b = rhs.To(device);
+        R::Array<double> x(rhs.Layout(), device);
+        {
+            auto ar = a.Read(context), br = b.Read(context);
+            auto xw = x.Write(context);
+            provider.UpdateValuesBorrowed(context, ar.View());
+            provider.ApplyBorrowed(context, br.View(), xw.View());
+        }
+        const auto host = x.To(R::Device::Host());
+        const auto xr = host.Read();
+        for (int cell = 0; cell < cells; ++cell)
+            for (int j = 0; j < width; ++j)
+                CHECK(xr.View()(cell * width + j, 0) == doctest::Approx(exact(cell, j)).epsilon(1e-10));
+    }
+}

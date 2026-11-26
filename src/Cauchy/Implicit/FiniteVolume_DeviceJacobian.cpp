@@ -90,7 +90,17 @@ namespace DNDS::Cauchy
             R::SubmitArrays(engine, lane, [](auto where, auto result)
                             { CUDA::ClearNumericalStatus(where, result); }, R::WriteAs<R::FixedRows<1>>(scratch->result));
             if (n > 4)
-                scratch->SubmitSource(work, engine, lane, state, output.Diagonal(), full, controls.residualScale);
+            {
+                R::SubmitArrays(engine, lane, [](R::ExecutionContext where, auto diagonal)
+                                { Algebra::ApplyRowViews(where, Algebra::PointwiseOperation::Fill, diagonal.DynamicView(), {}, {}, 0.0); }, R::WriteAs<R::UniformTableRows>(output.Diagonal()));
+                if (_data->settings.implicit.sourceJacobianMode == "rhsQuadrature")
+                {
+                    R::SubmitArrays(engine, lane, [n, full, rowMajor = output.RowMajorBlocks(), scale = controls.residualScale](auto where, auto source, auto diagonal)
+                                    { CUDA::ApplyVolumeSourceDerivative(where, source, diagonal, n, full, rowMajor, scale); }, R::ReadAs<R::TableRows>(*context.sourceDerivative), R::ReadWriteAs<R::UniformTableRows>(output.Diagonal()));
+                }
+                else
+                    scratch->SubmitSource(work, engine, lane, state, output.Diagonal(), full, controls.residualScale);
+            }
             auto blocks = output.OffDiagonal().Values();
             R::SubmitArrays(engine, lane, [scratch, physics, active, profile = ResolveEquationPhysicsProfile(_data->equation), scale = controls.residualScale, mass = controls.physicalMass, rowMajor = output.RowMajorBlocks(), frame = _data->motion.At(time).KernelParameters(), physicalBoundary = controls.scalarBoundaryDerivative](auto where, auto owned, auto ghost, auto tau, auto radius, auto incoming, auto offsets, auto diagonal, auto blocks, auto status)
                             {
@@ -182,13 +192,16 @@ namespace DNDS::Cauchy
                         { CUDA::InitializePerfectGasFluxJacobianDiagonal(context, scratch->metric.View().cells, tau, diagonal, status, cells,
                                                                          parameters.frame, controls.physicalMass, parameters.scale, parameters.components, full, rowMajorBlocks); }, R::ReadAs<R::TableRows>(inversePseudoTime), R::WriteAs<R::UniformTableRows>(output.Diagonal()), R::WriteAs<R::FixedRows<1>>(scratch->rowsStatus));
         scratch->AppendStatus(engine, stream, scratch->rowsStatus);
-        if (_data->settings.implicit.sourceJacobianMode == "rhsQuadrature")
+        if (_data->equation.HasRANS())
         {
-            R::SubmitArrays(engine, stream, [n, full, rowMajor = output.RowMajorBlocks(), scale = parameters.scale](auto where, auto source, auto diagonal)
-                            { CUDA::ApplyVolumeSourceDerivative(where, source, diagonal, n, full, rowMajor, scale); }, R::ReadAs<R::TableRows>(*context.sourceDerivative), R::ReadWriteAs<R::UniformTableRows>(output.Diagonal()));
+            if (_data->settings.implicit.sourceJacobianMode == "rhsQuadrature")
+            {
+                R::SubmitArrays(engine, stream, [n, full, rowMajor = output.RowMajorBlocks(), scale = parameters.scale](auto where, auto source, auto diagonal)
+                                { CUDA::ApplyVolumeSourceDerivative(where, source, diagonal, n, full, rowMajor, scale); }, R::ReadAs<R::TableRows>(*context.sourceDerivative), R::ReadWriteAs<R::UniformTableRows>(output.Diagonal()));
+            }
+            else
+                scratch->SubmitSource(work, engine, stream, state, output.Diagonal(), full, parameters.scale);
         }
-        else
-            scratch->SubmitSource(work, engine, stream, state, output.Diagonal(), full, parameters.scale);
 
         const auto freezeSignal = [&](const auto &input, R::Array<real> &target, const char *name)
         {
@@ -201,8 +214,7 @@ namespace DNDS::Cauchy
                             {
                                 // The approximate Jacobian uses only the AUSMPW+ minimum.
                                 owned.width = ghost.width = 1;
-                                CUDA::FreezeJacobianSignal(context, owned, ghost, output);
-                            }, R::ReadAs<R::TableRows>(input.Owned()), R::ReadAs<R::TableRows>(input.Ghost()), R::WriteAs<R::TableRows>(target));
+                                CUDA::FreezeJacobianSignal(context, owned, ghost, output); }, R::ReadAs<R::TableRows>(input.Owned()), R::ReadAs<R::TableRows>(input.Ghost()), R::WriteAs<R::TableRows>(target));
         };
         if (wave)
             freezeSignal(*auxiliary.cellWaveJump, scratch->waveJump, "Cauchy/Jacobian/waveJump");

@@ -663,6 +663,12 @@ TEST_CASE("Native direct ragged halo retains leases and reusable routing")
         operation.Wait();
     }
     binding.Begin().Wait();
+    {
+        auto poison = ghost.Write();
+        for (size_t i = 0; i < ghost.RowCount(); ++i)
+            for (size_t j = 0; j < ghost.Layout().Width(); ++j)
+                poison.View()(i, j) = -777.0;
+    }
     payload.Bind(owned, ghost, TransferTransport::HostPacked).Begin().Wait();
     CHECK(ghost.Read().At(0, 2) == next * 100 + 22);
     auto badShape = Array<double>(RowLayout::Dense(1, owned.Layout().Elements()));
@@ -846,9 +852,16 @@ TEST_CASE("Default inferred transfers preserve table stride padded capacity and 
             // Each MPI rank may select its local GPU with CUDA_VISIBLE_DEVICES.
             const auto context = ExecutionContext::CUDA(0);
             auto deviceSource = source.To(Device::CUDA(0), context);
-            auto deviceDestination = destination.To(Device::CUDA(0), context);
             for (auto mode : {TransferMode::Transient, TransferMode::Persistent})
             {
+                Array<int64_t> poisonedDestination(targetShape);
+                {
+                    auto write = poisonedDestination.Storage().Write();
+                    auto flat = write.View<int64_t>();
+                    for (size_t k = 0; k < targetShape.Elements(); ++k)
+                        flat[k] = -999;
+                }
+                auto deviceDestination = poisonedDestination.To(Device::CUDA(0), context);
                 payload.Bind(deviceSource, deviceDestination, TransferTransport::Direct, {mode}).Begin(context).Wait();
                 auto hostResult = deviceDestination.To(Device::Host(), context);
                 auto read = hostResult.Storage().Read();

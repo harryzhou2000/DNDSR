@@ -345,6 +345,13 @@ namespace DNDS::Geom
         result->BindPreparedEpoch(std::move(versions));
         return result;
     }
+    std::shared_ptr<const UnstructuredMeshState> UnstructuredMeshState::BindEpoch(
+        Runtime::VersionTracker versions, const Runtime::VersionTracker::Mutation &mutation) const
+    {
+        auto result = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*this));
+        result->BindPreparedEpoch(std::move(versions), mutation);
+        return result;
+    }
     void UnstructuredMeshState::BindPreparedEpoch(Runtime::VersionTracker versions)
     {
         _versions.RebindPrepared(versions);
@@ -352,6 +359,18 @@ namespace DNDS::Geom
         for (auto &[kind, space] : _spaces)
         {
             space.identity._stamp = _versions.Stamp(Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout);
+            space.identity._versions.RebindPrepared(_versions);
+        }
+    }
+    void UnstructuredMeshState::BindPreparedEpoch(Runtime::VersionTracker versions,
+                                                  const Runtime::VersionTracker::Mutation &mutation)
+    {
+        _versions.RebindPrepared(versions);
+        _epoch = mutation.NextStamp();
+        const auto spaceStamp = mutation.NextStamp(Runtime::Change::Topology | Runtime::Change::Distribution | Runtime::Change::Layout);
+        for (auto &[kind, space] : _spaces)
+        {
+            space.identity._stamp = spaceStamp;
             space.identity._versions.RebindPrepared(_versions);
         }
     }

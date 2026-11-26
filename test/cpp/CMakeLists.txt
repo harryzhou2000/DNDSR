@@ -607,7 +607,7 @@ if(DNDS_USE_CUDA)
         target_include_directories(dnds_benchmark_aggregation_amg PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
         target_link_libraries(dnds_benchmark_aggregation_amg PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
     endif()
-    dnds_add_mpi_test(array_dof_cuda "DNDS/test_ArrayDOF_CUDA.cu" "dnds")
+    dnds_add_unit_test(array_dof_cuda "DNDS/test_ArrayDOF_CUDA.cu" "dnds")
     add_dependencies(dnds_unit_tests dnds_test_array_dof_cuda)
 endif()
 
@@ -1228,15 +1228,42 @@ function(solver_add_unit_test TEST_NAME SRC_FILE LIBS)
         ENVIRONMENT "OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS}")
 endfunction()
 
+function(solver_add_mpi_test TEST_NAME SRC_FILE LIBS)
+    set(TARGET_NAME "solver_test_${TEST_NAME}")
+    add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
+    target_include_directories(${TARGET_NAME} PRIVATE
+        ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
+        ${DNDS_EXTERNAL_INCLUDES}
+        ${DNDS_INCLUDES})
+    target_link_libraries(${TARGET_NAME} PRIVATE ${LIBS} ${DNDS_EXTERNAL_LIBS})
+    if(DNDS_USE_CCACHE)
+        set_property(TARGET ${TARGET_NAME} PROPERTY CXX_COMPILER_LAUNCHER ${DNDS_CCACHE_EXEC})
+    endif()
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        EXCLUDE_FROM_ALL ON)
+    foreach(NP ${DNDS_TEST_NP_LIST})
+        _dnds_np_timeout(${NP} _TIMEOUT)
+        dnds_register_test(${TARGET_NAME} solver_${TEST_NAME}_np${NP}
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${NP}
+                    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:${TARGET_NAME}> ${MPIEXEC_POSTFLAGS})
+        _dnds_maybe_set_timeout(solver_${TEST_NAME}_np${NP} ${_TIMEOUT})
+        set_tests_properties(solver_${TEST_NAME}_np${NP} PROPERTIES
+            PROCESSORS ${NP}
+            ENVIRONMENT "OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS}")
+    endforeach()
+endfunction()
+
 solver_add_unit_test(aggregation_amg "Solver/test_AggregationAMG.cpp" "dnds")
 set_property(TEST solver_aggregation_amg APPEND PROPERTY ENVIRONMENT
     "DNDS_DIST_OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS}")
 solver_add_unit_test(ode "Solver/test_ODE.cpp" "dnds")
 solver_add_unit_test(linear "Solver/test_Linear.cpp" "dnds")
-solver_add_unit_test(field_gmres "Solver/test_FieldGMRES.cpp" "dnds")
+solver_add_mpi_test(field_gmres "Solver/test_FieldGMRES.cpp" "dnds")
 solver_add_unit_test(field_time_stepper "Solver/test_FieldTimeStepper.cpp" "dnds")
 solver_add_unit_test(fas "Solver/test_FAS.cpp" "dnds")
-solver_add_unit_test(direct "Solver/test_Direct.cpp" "dnds")
+solver_add_mpi_test(direct "Solver/test_Direct.cpp" "dnds")
 solver_add_unit_test(scalar "Solver/test_Scalar.cpp" "dnds")
 
 set(SOLVER_TEST_TARGETS

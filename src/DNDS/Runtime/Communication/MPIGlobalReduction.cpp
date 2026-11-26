@@ -145,11 +145,20 @@ namespace DNDS::Runtime
     std::shared_ptr<const GlobalReductionBinding> Detail::BindMPIAllreduceBuffers(
         std::shared_ptr<CommunicationContext> context, Buffer src, Buffer dst, const RowLayout &in, const RowLayout &out, ElementScalar scalar, Reduction op)
     {
+        DNDS_check_throw_info(context, "MPI allreduce requires a communication context");
         const auto comm = context->Communicator();
+        const size_t scalarBytes = scalar == ElementScalar::F32   ? 4
+                                   : scalar == ElementScalar::F64 ? 8
+                                   : scalar == ElementScalar::I32 ? 4
+                                   : scalar == ElementScalar::I64 ? 8
+                                                                  : 0;
+        const bool bytesMatch = scalarBytes != 0 && in.Elements() <= SIZE_MAX / scalarBytes &&
+                                src.Bytes() == in.Elements() * scalarBytes &&
+                                dst.Bytes() == out.Elements() * scalarBytes;
         const bool valid = src.Identity() && dst.Identity() && src.GetDevice() == Device::Host() && dst.GetDevice() == Device::Host() &&
                            in.Kind() == RowLayoutKind::Table && out.Kind() == RowLayoutKind::Table &&
                            in.Stride() == in.Width() && out.Stride() == out.Width() && in.Width() == out.Width() && in.Rows() == out.Rows() &&
-                           in.Elements() <= INT_MAX && (IndependentBuffers(src, dst) || SameBufferOperand(src, dst)) &&
+                           in.Elements() <= INT_MAX && bytesMatch && (IndependentBuffers(src, dst) || SameBufferOperand(src, dst)) &&
                            (op == Reduction::Sum || op == Reduction::Min || op == Reduction::Max);
         std::array<uint64_t, 5> descriptor{uint64_t(scalar), uint64_t(op), uint64_t(in.Rows()), uint64_t(in.Width()), uint64_t(Detail::SameBufferOperand(src, dst))};
         auto reference = descriptor;

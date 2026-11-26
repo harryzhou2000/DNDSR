@@ -132,6 +132,23 @@ namespace DNDS::Runtime
                 DNDS_check_throw_info(_state && uint32_t(changes) && !(uint32_t(changes) & ~uint32_t(Change::All)), "invalid nested mutation mask");
                 _changes = _changes | changes;
             }
+            /// Build the post-commit VersionStamp while this exclusive writer
+            /// lock is still held so newly published state can be bound and
+            /// installed before Commit() releases readers.
+            VersionStamp NextStamp(Change dependencies = Change::All) const
+            {
+                DNDS_check_throw_info(_state && uint32_t(dependencies) && !(uint32_t(dependencies) & ~uint32_t(Change::All)),
+                                      "invalid mutation next-stamp request");
+                std::lock_guard<std::mutex> lock(_state->mutex);
+                VersionStamp stamp;
+                stamp._state = _state;
+                stamp._generations = _state->generations;
+                for (size_t i = 0; i < stamp._generations.size(); ++i)
+                    if (uint32_t(_changes) & (1u << i))
+                        ++stamp._generations[i];
+                stamp._dependencies = dependencies;
+                return stamp;
+            }
             void Commit()
             {
                 DNDS_check_throw(_state);

@@ -63,7 +63,11 @@ namespace DNDS::Runtime
         public:
             explicit PythonCallbackError(const py::error_already_set &error)
                 : _objects(new Objects{error.type(), error.value().attr("args")}, [](Objects *p)
-                           { py::gil_scoped_acquire gil; delete p; }),
+                           {
+                               if (!Py_IsInitialized())
+                                   return;
+                               py::gil_scoped_acquire gil;
+                               delete p; }),
                   _message(error.what()) {}
             const char *what() const noexcept override { return _message.c_str(); }
             void Restore() const
@@ -632,7 +636,12 @@ namespace DNDS::Runtime
                      reducer.initialization = init;
                      struct Objects { py::dtype dtype; py::function combine; py::array seed; };
                      auto objects = std::shared_ptr<Objects>(new Objects{dtype, combine, seed}, [](Objects *p)
-                                                            { py::gil_scoped_acquire gil; delete p; });
+                                                            {
+                                                                if (!Py_IsInitialized())
+                                                                    return;
+                                                                py::gil_scoped_acquire gil;
+                                                                delete p;
+                                                            });
                      reducer.host = [objects, init](const void *input, void *output, const std::vector<Contribution> &groups, ExecutionContext)
                      {
                          py::gil_scoped_acquire gil;

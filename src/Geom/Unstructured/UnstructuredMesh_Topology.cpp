@@ -22,22 +22,25 @@ namespace DNDS::Geom
         const bool checks = !communication || communication->ChecksCollectivePreflight();
         Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
         CheckCollectiveMutationAvailable(checks);
+        std::shared_ptr<const UnstructuredMeshState> current;
         FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                        { DNDS_check_throw_info(_nativeState, "native topology preparation requires a native mesh"); });
+                                        {
+            current = _nativeState.Load();
+            DNDS_check_throw_info(current, "native topology preparation requires a native mesh"); });
         const auto stamp = versions.Stamp();
-        auto result = NativeMeshPreparation::PrepareTopology(*_nativeState, mpi, faces, edges, ghostLayers);
+        auto result = NativeMeshPreparation::PrepareTopology(*current, mpi, faces, edges, ghostLayers);
         std::shared_ptr<UnstructuredMeshState> prepared;
         FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             stamp.Validate();
             prepared = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*result)); });
         MeshMutationToken mutation(this, versions, Runtime::Change::Topology | Runtime::Change::Layout | Runtime::Change::Distribution | Runtime::Change::Allocation);
-        mutation.Commit();
-        prepared->BindPreparedEpoch(versions);
-        _nativeState = std::move(prepared);
-        _nativeSmoothing.reset();
+        prepared->BindPreparedEpoch(versions, mutation.Underlying());
+        _nativeState.Store(std::move(prepared));
+        _nativeSmoothing.Reset();
         node2bndNode.clear();
         node2parentNode.clear();
         cell2parentCell.clear();
+        mutation.Commit();
     }
 }

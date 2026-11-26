@@ -219,6 +219,8 @@ namespace DNDS::Geom
     }
     UnstructuredMeshSnapshot UnstructuredMeshSnapshot::FromRead(MeshReadAccess read)
     {
+        DNDS_check_throw_info(read._active && !read._completed && read._context.device == Runtime::Device::Host(),
+                              "UnstructuredMeshSnapshot::FromRead requires an active host MeshReadAccess");
         auto state = std::make_shared<State>();
         if (read._nativeOwner)
             state->audit = read._nativeOwner->AuditOptions();

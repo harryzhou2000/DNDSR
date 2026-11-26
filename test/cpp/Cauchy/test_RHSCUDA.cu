@@ -378,7 +378,7 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                     auto incoming = Rows(packet, width), meanAux = Rows(prepared, 2);
                     auto viscosity = Rows<real>({.1, .2, .3});
                     auto wave = Rows<real>({.03, .07}), waveg = Rows<real>({.09});
-                    auto pressure = Rows<real>({.7, .8}), pressureg = Rows<real>({.6});
+                    auto pressure = Rows<real>({.7, 1.1, .8, 1.2}, 2), pressureg = Rows<real>({.6, 1.0}, 2);
                     const auto polynomial = F::Math::TaylorBasis(dimension, degree).KernelParameters();
                     R::Array<real> moments(R::RowLayout::Dense(3, modes + 1)), cache(R::RowLayout::Dense(16, (dimension + 1) * modes));
                     {

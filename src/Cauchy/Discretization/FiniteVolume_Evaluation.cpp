@@ -746,9 +746,10 @@ namespace DNDS::Cauchy
             operations = schedule.BeginAfterCompute(work.directGradientHalo);
         std::vector<R::TransferOperation> unlimitedViscousOperations;
         if (separateViscous)
-            unlimitedViscousOperations = ransP1Overlay ? schedule.BeginAfterCompute(reconstruction.coefficientHalo)
-                                                       : schedule.Begin(reconstruction.coefficientHalo);
-        auto directViscousOperations = gradientAuxiliary && work.nativeDirectGradient ? std::vector<R::TransferOperation>{} : schedule.Begin(work.directViscousGradientHalo);
+            unlimitedViscousOperations = schedule.BeginAfterCompute(reconstruction.coefficientHalo);
+        auto directViscousOperations = gradientAuxiliary && work.nativeDirectGradient
+                                           ? std::vector<R::TransferOperation>{}
+                                           : schedule.BeginAfterCompute(work.directViscousGradientHalo);
         // Publish the direct physical gradients after limiter/PP, once per row.
         // The physical-gradient RHS itself never interprets coefficient data.
         work.SubmitDirectGradients(engine, stream, state, false);

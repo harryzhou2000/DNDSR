@@ -15,9 +15,9 @@ namespace DNDS::Cauchy
     std::shared_ptr<const BoundaryOutputGeometry> FiniteVolume::Data::PrepareBoundaryOutput() const
     {
         metrics.Validate();
+        std::lock_guard<std::mutex> lock(boundaryOutputMutex.mutex);
         if (boundaryOutputGeometry)
             return boundaryOutputGeometry;
-
         auto extracted = mesh->ExtractBoundary();
         const MPIInfo mpi(metrics.Communicator());
         R::Array<BoundaryOutputRow> rows;

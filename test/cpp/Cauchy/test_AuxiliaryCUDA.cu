@@ -326,7 +326,7 @@ TEST_CASE("CUDA face auxiliaries distinguish rotated neighbor physical boundary 
         input.quadrature.insert(input.quadrature.end(), metric);
     }
     CauchyTest::CompactStencilFixture geometry(std::move(input), context);
-    R::Array<real> spectral(R::RowLayout::Dense(3, 2), device), wave(R::RowLayout::Dense(3, 1), device), pressure(R::RowLayout::Dense(3, 1), device);
+    R::Array<real> spectral(R::RowLayout::Dense(3, 2), device), wave(R::RowLayout::Dense(3, 1), device), pressure(R::RowLayout::Dense(3, 2), device);
     R::Array<DNDS::NumericalStatus> status(R::RowLayout::Dense(3, 1), device);
     C::RigidFrameParameters frame;
     frame.moving = true;
@@ -368,7 +368,7 @@ TEST_CASE("CUDA face auxiliaries distinguish rotated neighbor physical boundary 
     auto hStatus = status.To(R::Device::Host());
     const auto l = hSpectral.Read(), w = hWave.Read(), p = hPressure.Read();
     const auto errors = hStatus.Read();
-    real sum = 0, maxJump = 0, minPressure = 1;
+    real sum = 0, maxJump = 0, minPressure = 1, maxPressure = 0;
     for (I iFace = 0; iFace < 3; ++iFace)
     {
         REQUIRE(bool(errors.View()(iFace, 0)));
@@ -385,15 +385,18 @@ TEST_CASE("CUDA face auxiliaries distinguish rotated neighbor physical boundary 
                                              std::abs(b.velocity[0] - gridSpeed) + b.soundSpeed);
         const real expectedJump = std::abs(b.velocity[0] - a.velocity[0]) + std::abs(b.soundSpeed - a.soundSpeed);
         const real expectedPressure = std::min(a.pressure, b.pressure);
+        const real expectedMaxPressure = std::max(a.pressure, b.pressure);
         CHECK(l.View()(iFace, 0) == doctest::Approx(expectedLambda));
         CHECK(l.View()(iFace, 1) == 0);
         CHECK(w.View()(iFace, 0) == doctest::Approx(expectedJump));
         CHECK(p.View()(iFace, 0) == doctest::Approx(expectedPressure));
+        CHECK(p.View()(iFace, 1) == doctest::Approx(expectedMaxPressure));
         sum += std::array<real, 3>{1., .8, 1.2}[iFace] * expectedLambda;
         maxJump = std::max(maxJump, expectedJump);
         minPressure = std::min(minPressure, expectedPressure);
+        maxPressure = std::max(maxPressure, expectedMaxPressure);
     }
-    R::Array<real> cellLambda(R::RowLayout::Dense(1, 1), device), cellJump(R::RowLayout::Dense(1, 1), device), cellPressure(R::RowLayout::Dense(1, 1), device);
+    R::Array<real> cellLambda(R::RowLayout::Dense(1, 1), device), cellJump(R::RowLayout::Dense(1, 1), device), cellPressure(R::RowLayout::Dense(1, 2), device);
     {
         auto selection = selectedCells.Read(context);
         auto lambda = spectral.Read(context), jump = wave.Read(context), minimum = pressure.Read(context);
@@ -410,4 +413,5 @@ TEST_CASE("CUDA face auxiliaries distinguish rotated neighbor physical boundary 
     CHECK(cl.Read().View()(0, 0) == doctest::Approx(sum + .2));
     CHECK(cj.Read().View()(0, 0) == doctest::Approx(maxJump));
     CHECK(cp.Read().View()(0, 0) == doctest::Approx(minPressure));
+    CHECK(cp.Read().View()(0, 1) == doctest::Approx(maxPressure));
 }

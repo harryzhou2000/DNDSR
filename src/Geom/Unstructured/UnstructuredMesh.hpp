@@ -4,6 +4,7 @@
 #include "Geom/Periodic/PeriodicInfo.hpp"
 #include "Geom/Math/RadialBasisFunction.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
+#include "DNDS/Core/LockedSharedPtr.hpp"
 #include "Geom/Transition/ReorderPlan.hpp"
 #include "Geom/Access/MeshAccess.hpp"
 #include "Geom/Compat/LegacyMeshRead.hpp"
@@ -41,18 +42,23 @@ namespace DNDS::Geom
     {
     private:
         std::shared_ptr<const uint8_t> _entityIdentity = std::make_shared<const uint8_t>(0);
-        std::shared_ptr<const UnstructuredMeshState> _nativeState;
+        LockedSharedPtr<const UnstructuredMeshState> _nativeState;
         // Keep the facade's raw MPIInfo handle alive independently of state
         // replacement, including replacement by a caller-managed publication.
         std::shared_ptr<Runtime::CommunicationContext> _mpiOwner;
-        std::shared_ptr<const NativeSmoothingWorkspace> _nativeSmoothing;
+        LockedSharedPtr<const NativeSmoothingWorkspace> _nativeSmoothing;
         friend class UnstructuredMeshState;
         friend class MeshEdit;
         friend class PreparedMeshTransition;
+        std::shared_ptr<const UnstructuredMeshState> RequireNative() const
+        {
+            auto state = _nativeState.Load();
+            DNDS_check_throw_info(state, "native mesh state is not published");
+            return state;
+        }
         const UnstructuredMeshState &Native() const
         {
-            DNDS_check_throw_info(_nativeState, "native mesh state is not published");
-            return *_nativeState;
+            return *RequireNative();
         }
         const UnstructuredMeshView &NativeBorrowedView(MeshRelation relation) const
         {
@@ -115,16 +121,18 @@ namespace DNDS::Geom
         UnstructuredMesh(const MPIInfo &mpi_, int dim_) : mpi(mpi_), dim(dim_) {}
         UnstructuredMesh(const UnstructuredMesh &) = delete;
         UnstructuredMesh &operator=(const UnstructuredMesh &) = delete;
-        bool HasNativeState() const { return bool(_nativeState); }
+        bool HasNativeState() const { return _nativeState.HasValue(); }
         /// Immutable setup metadata; no geometry validation, read lease or MPI.
         std::shared_ptr<Runtime::CommunicationContext> PreparationCommunication() const
         {
-            return _nativeState ? _nativeState->PreparationCommunication() : nullptr;
+            const auto state = _nativeState.Load();
+            return state ? state->PreparationCommunication() : nullptr;
         }
         std::shared_ptr<const UnstructuredMeshState> CurrentNativeState() const
         {
-            Native().Validate();
-            return _nativeState;
+            auto state = RequireNative();
+            state->Validate();
+            return state;
         }
         MeshReadRequirements CurrentNativeRequirements() const { return Native().Requirements(); }
         std::vector<AdjacencyDescriptor> AdjacencyKeys() const { return Native().RelationKeys(); }
@@ -154,9 +162,21 @@ namespace DNDS::Geom
             Runtime::CommunicationDetail::Preflight(versions.CanMutate(), mpi.comm, collectivePreflight,
                                                     "mesh mutation blocked by an active reader, writer or failed transition");
         }
-        int getDim() const { return _nativeState ? Native().BorrowHostView().Dimension() : dim; }
-        bool IsPeriodic() const { return _nativeState ? Native().BorrowHostView().IsPeriodic() : isPeriodic; }
-        const Periodicity &PeriodicMetadata() const { return _nativeState ? Native().BorrowHostView().Periodic() : periodicInfo; }
+        int getDim() const
+        {
+            const auto state = _nativeState.Load();
+            return state ? state->BorrowHostView().Dimension() : dim;
+        }
+        bool IsPeriodic() const
+        {
+            const auto state = _nativeState.Load();
+            return state ? state->BorrowHostView().IsPeriodic() : isPeriodic;
+        }
+        const Periodicity &PeriodicMetadata() const
+        {
+            const auto state = _nativeState.Load();
+            return state ? state->BorrowHostView().Periodic() : periodicInfo;
+        }
         const Periodicity &Periodic() const { return PeriodicMetadata(); }
         MPIInfo &getMPI() { return mpi; }
         const MPIInfo &getMPI() const { return mpi; }
@@ -293,8 +313,9 @@ namespace DNDS::Geom
         void ElevatedNodesSolveInternalSmoothV1Old();
         std::shared_ptr<const NativeSmoothingWorkspace> BoundarySmoothingWorkspace() const
         {
-            DNDS_check_throw_info(_nativeSmoothing, "prepare boundary smoothing workspace before diagnostics");
-            return _nativeSmoothing;
+            auto work = _nativeSmoothing.Load();
+            DNDS_check_throw_info(work, "prepare boundary smoothing workspace before diagnostics");
+            return work;
         }
         void ApplyGeometryTransform(const Eigen::Matrix3d &rotation, real scale);
         void ApplyAffineGeometryTransform(const Eigen::Matrix3d &, const tPoint &offset = tPoint::Zero());

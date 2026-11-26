@@ -271,7 +271,7 @@ namespace DNDS::Geom
                 for (const auto &field : fields)
                     result._attachmentStamps.push_back(field.attachment());
                 if (checkpoint) checkpoint("cloned"); });
-            auto moved = NativeMeshTransition::Build(*source._nativeState, mpi, input, ghostLayers);
+            auto moved = NativeMeshTransition::Build(*source.RequireNative(), mpi, input, ghostLayers);
             FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 result._next = UnstructuredMesh::FromNative(mpi, std::move(moved.state));
@@ -291,6 +291,8 @@ namespace DNDS::Geom
             if (input.follows.empty() && plan.reorderedKinds.count(EntityKind::Cell))
                 for (auto kind : {EntityKind::Node, EntityKind::Bnd})
                     plan.reorderedKinds.insert(kind);
+            for (const auto &[kind, permutation] : input.localPermutations)
+                plan.reorderedKinds.insert(kind);
             ReorderRegistry registry;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {

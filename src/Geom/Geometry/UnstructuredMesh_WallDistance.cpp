@@ -326,7 +326,7 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             wallGhost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(wallGhost.RowCount(), 3), wallGhost.Storage());
-            prepared = _nativeState->WithWallDistance({wallOwned, wallGhost}); });
+            prepared = RequireNative()->WithWallDistance({wallOwned, wallGhost}); });
         retained.reset();
         PublishNativeGeometry(std::move(prepared), stamp, Runtime::Change::Values | Runtime::Change::Interface | Runtime::Change::Allocation);
     }

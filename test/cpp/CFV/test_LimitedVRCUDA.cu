@@ -148,14 +148,21 @@ TEST_CASE("Limited CUDA Jacobi matches CPU relaxation and excludes neighbors for
     };
     compare();
     // Both implementations must omit *all* neighbor/BC contributions for alpha
-    // one, including NaN means. Current coefficients still have finite damping.
+    // one, including NaN owned and ghost means. Current coefficients still have finite damping.
     A::Fill(mean, std::numeric_limits<double>::quiet_NaN());
+    {
+        auto ghostWrite = mean.Ghost().Write();
+        for (I iRow = 0; iRow < ghostWrite.View().RowCount(); ++iRow)
+            for (I j = 0; j < ghostWrite.View().Width(); ++j)
+                ghostWrite.View()(iRow, j) = std::numeric_limits<double>::quiet_NaN();
+    }
     {
         auto write = alpha.Write();
         for (I iCell = 0; iCell < alpha.RowCount(); ++iCell)
             write.View()(iCell, 0) = 1;
     }
     dm.Owned().CopyFrom(mean.Owned(), context).Wait();
+    dm.Ghost().CopyFrom(mean.Ghost(), context).Wait();
     da.CopyFrom(alpha, context).Wait();
     compare();
     if (alpha.RowCount())

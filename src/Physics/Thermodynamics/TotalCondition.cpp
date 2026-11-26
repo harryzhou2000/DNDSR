@@ -1,4 +1,5 @@
 #include "Physics/Thermodynamics/TotalCondition.hpp"
+#include "DNDS/Math/Bisection.hpp"
 #include <algorithm>
 #include <cmath>
 #include <new>
@@ -24,24 +25,15 @@ namespace DNDS::Physics::Thermodynamics
             const real maxKinetic = std::max(0., .95 * (h0 - hMinimum));
             const real v2 = std::min(speedSquared, 2 * maxKinetic / scales.SpecificEnergy());
             const real target = h0 - .5 * v2 * scales.SpecificEnergy();
-            real low = minimum, high = t0, t = t0;
-            bool converged = false;
-            for (int iteration = 0; iteration < 60; ++iteration)
-            {
-                t = .5 * (low + high);
-                const real h = source.mixtureEnthalpy(t, fractions, p0);
-                if (std::abs(h - target) / std::max(std::abs(target), 1.) < 1e-10)
-                {
-                    converged = true;
-                    break;
-                }
-                if (h < target)
-                    low = t;
-                else
-                    high = t;
-            }
-            if (!converged)
+            const auto bisect = Math::BisectMonotone(
+                [&](real temperatureQuery)
+                { return source.mixtureEnthalpy(temperatureQuery, fractions, p0); },
+                minimum, t0, target, 60,
+                [&](real, real enthalpy, real, real)
+                { return std::abs(enthalpy - target) / std::max(std::abs(target), 1.) < 1e-10; });
+            if (!bisect.converged)
                 return NumericalStatus{NumericalError::InvalidState, 3, -1};
+            const real t = bisect.value;
             const real gasConstant = source.mixtureR(fractions);
             const real entropy = source.mixtureEntropy(t, fractions, p0);
             const real p = p0 * std::exp((entropy - s0) / std::max(gasConstant, 1e-30));

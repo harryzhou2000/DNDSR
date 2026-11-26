@@ -1,6 +1,7 @@
 #include "Cauchy/Core/NumericalReductions.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/EagerCopy.hpp"
+#include <mutex>
 
 namespace DNDS::Cauchy
 {
@@ -13,7 +14,9 @@ namespace DNDS::Cauchy
             R::Array<T> _source, _destination;
             R::Array<T> _hostInput, _hostOutput;
             std::shared_ptr<const R::GlobalReductionBinding> _mpi;
+            mutable std::once_flag _hostLaneOnce;
             mutable std::optional<R::ExecutionStream> _hostLane;
+
         public:
             StagedReduction(const std::shared_ptr<R::CommunicationContext> &comm, R::Array<T> source,
                             R::Array<T> destination, R::Reduction op)
@@ -24,8 +27,8 @@ namespace DNDS::Cauchy
 
             R::StreamEvent Submit(R::EagerEngine &engine, const R::ExecutionStream &stream) const override
             {
-                if (!_hostLane)
-                    _hostLane = engine.CreateCPUStream();
+                std::call_once(_hostLaneOnce, [&]
+                               { _hostLane = engine.CreateCPUStream(); });
                 auto input = _hostInput.Storage();
                 auto destination = _destination.Storage();
                 R::CopyAsync(engine, stream, _source.Storage(), input);
@@ -54,7 +57,8 @@ namespace DNDS::Cauchy
             }
             void Reduce(T *data, size_t count, R::Reduction op, R::EagerEngine &engine, const R::ExecutionStream &stream)
             {
-                const auto &binding = bindings[op == R::Reduction::Sum ? 0 : op == R::Reduction::Min ? 1 : 2];
+                const auto &binding = bindings[op == R::Reduction::Sum ? 0 : op == R::Reduction::Min ? 1
+                                                                                                     : 2];
                 while (count)
                 {
                     const size_t n = std::min(count, width);

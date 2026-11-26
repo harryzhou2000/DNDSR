@@ -88,7 +88,7 @@ namespace DNDS::Cauchy
                 retained->norms.resize(components + 1);
                 if (OMP::DistributedThreads() > 1)
                     retained->workerSums.resize(index(OMP::DistributedThreads()) * (components + 1));
-                R::SubmitArrayBatch(engine, stream, [retained, host](R::ExecutionContext, auto input, auto output)
+                R::SubmitArrayBatch(engine, stream, [retained, host = std::move(host)](R::ExecutionContext, auto input, auto output)
                                     { host(input, output, *retained); }, std::move(inputs), std::move(outputs));
                 if (checks)
                 {
@@ -124,7 +124,7 @@ namespace DNDS::Cauchy
 #ifdef DNDS_USE_CUDA
             if (checks)
             {
-                R::SubmitArrayBatch(engine, stream, [device](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
+                R::SubmitArrayBatch(engine, stream, [device = std::move(device)](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
                                     { device(where, input, output, scratch, value); }, std::move(inputs), std::move(outputs), std::make_tuple(R::WriteAs<R::FixedRows<1>>(partial), R::WriteAs<R::FixedRows<1>>(summary)));
                 auto status = R::Array<NumericalStatus>::FromStorage(R::RowLayout::Dense(1, 1),
                                                                      summary.Storage().Subspan(offsetof(CUDA::NonlinearSummary, status), sizeof(NumericalStatus)));
@@ -134,7 +134,7 @@ namespace DNDS::Cauchy
             }
             if (global)
             {
-                R::SubmitArrayBatch(engine, stream, [device](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
+                R::SubmitArrayBatch(engine, stream, [device = std::move(device)](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
                                     { device(where, input, output, scratch, value); }, std::move(inputs), std::move(outputs), std::make_tuple(R::WriteAs<R::FixedRows<1>>(partial), R::WriteAs<R::FixedRows<1>>(global->deviceSummary)));
                 static_assert(offsetof(CUDA::NonlinearSummary, norms) == 0);
                 auto destination = global->Local().Storage();
@@ -160,7 +160,7 @@ namespace DNDS::Cauchy
                 staging.SetName("nonlinear/reduction/hostSummary", DNDS_ALLOCATION_SITE());
                 stagedSummary = std::make_shared<R::Array<CUDA::NonlinearSummary>>(std::move(staging));
             }
-            R::SubmitArrayBatch(engine, stream, [device](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
+            R::SubmitArrayBatch(engine, stream, [device = std::move(device)](R::ExecutionContext where, auto input, auto output, auto scratch, auto value)
                                 { device(where, input, output, scratch, value); }, std::move(inputs), std::move(outputs), std::make_tuple(R::WriteAs<R::FixedRows<1>>(partial), R::WriteAs<R::FixedRows<1>>(summary)));
             if (reduceAlpha && limitedSum)
             {

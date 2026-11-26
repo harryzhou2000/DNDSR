@@ -705,6 +705,27 @@ TEST_CASE("Periodic parent-face flags use the published owner frame across ranks
         CHECK(remoteFaces > 0);
 }
 
+TEST_CASE("NativePeriodicFacialMatch handles repeated canonical vertex IDs across XOR frames")
+{
+    // 3D 1-cell-thick periodic probe: canonical vertex 10 repeats with frames 0 and 1.
+    // Under mask 3, other={(10,2),(10,3),(20,3),(40,0)} becomes {(10,1),(10,0),(20,0),(40,3)},
+    // which after re-sorting shares 3 vertices {(10,0),(10,1),(20,0)} with current.
+    const std::array<I, 4> currentVerts{10, 10, 20, 30};
+    const std::array<uint8_t, 4> currentFrames{0, 1, 0, 0};
+    const std::array<I, 4> otherVerts{10, 10, 20, 40};
+    const std::array<uint8_t, 4> otherFrames{2, 3, 3, 0};
+    CHECK(G::NativePeriodicFacialMatch(currentVerts.data(), currentFrames.data(), currentVerts.size(),
+                                       otherVerts.data(), otherFrames.data(), otherVerts.size(), 3));
+    // Mismatched frame on vertex 20 drops shared count to 2 (< 3).
+    const std::array<uint8_t, 4> badOtherFrames{2, 3, 1, 0};
+    CHECK_FALSE(G::NativePeriodicFacialMatch(currentVerts.data(), currentFrames.data(), currentVerts.size(),
+                                             otherVerts.data(), badOtherFrames.data(), otherVerts.size(), 3));
+    // Non-periodic intersection path.
+    const std::array<I, 4> a{1, 2, 3, 4}, b{2, 3, 4, 5};
+    CHECK(G::NativePeriodicFacialMatch(a.data(), nullptr, a.size(), b.data(), nullptr, b.size(), 3));
+    CHECK_FALSE(G::NativePeriodicFacialMatch(a.data(), nullptr, a.size(), b.data(), nullptr, b.size(), 4));
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

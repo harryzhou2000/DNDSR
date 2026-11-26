@@ -280,10 +280,9 @@ namespace DNDS::Runtime
         TransferOperation StartChecked(const ExecutionStream &stream, bool callerValid,
                                        bool observeProducer) const;
         TransferOperation StartManaged(const ExecutionStream &stream, bool checked,
-                                       bool callerValid, bool observeProducer) const;
+                                       bool callerValid, bool observeProducer,
+                                       EagerEngine *emptyEngine = nullptr) const;
         bool HasEmptyDirectPayload() const;
-        TransferOperation SubmitEmpty(EagerEngine &engine, const ExecutionStream &stream,
-                                      bool callerValid) const;
         TransferOperation Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0, bool callerValid = true) const;
 
     public:

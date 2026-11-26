@@ -50,6 +50,7 @@ namespace DNDS::Geom
 
         UnstructuredMeshState() = default;
         void BindPreparedEpoch(Runtime::VersionTracker versions);
+        void BindPreparedEpoch(Runtime::VersionTracker versions, const Runtime::VersionTracker::Mutation &mutation);
         static auto PlacementKey(Runtime::Device device)
         {
             return std::make_pair(device.space, device.ordinal);
@@ -68,6 +69,9 @@ namespace DNDS::Geom
             std::map<EntityKind, Runtime::Array<index>> ids, MeshReadRequirements requirements);
         /// Bind only after a successful publication transaction has committed.
         std::shared_ptr<const UnstructuredMeshState> BindEpoch(Runtime::VersionTracker versions) const;
+        /// Bind the exact post-commit epoch while an exclusive mutation token is still held.
+        std::shared_ptr<const UnstructuredMeshState> BindEpoch(Runtime::VersionTracker versions,
+                                                               const Runtime::VersionTracker::Mutation &mutation) const;
         std::shared_ptr<const UnstructuredMeshState> WithPlacement(Runtime::Device device, Runtime::ExecutionContext context) const;
         /// Setup metadata only: retain current part boundaries and owned local
         /// neighbors without changing entity order, buffers or their epochs.

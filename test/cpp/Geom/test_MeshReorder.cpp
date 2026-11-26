@@ -123,7 +123,7 @@ TEST_CASE("ReorderPlan::apply cell-only local permutation")
         { t.transferRows(cellInfo, m); },
         "cellInfo");
 
-    // Build plan: reverse cell permutation (all local)
+    // Build plan: all-self cell partition (identity local order)
     std::vector<MPI_int> cellPartition(nCell, mpi.rank);
     ReorderInput input;
     input.explicitMaps.push_back(EntityReorderMap{EntityKind::Cell, cellPartition});

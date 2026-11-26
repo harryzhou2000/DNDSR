@@ -2,6 +2,7 @@
 
 #include "Geom/Access/EntitySpace.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
+#include "DNDS/Core/LockedSharedPtr.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 
 namespace DNDS::Geom
@@ -43,7 +44,8 @@ namespace DNDS::Geom
         };
         struct Slot
         {
-            std::shared_ptr<State> current;
+            LockedSharedPtr<State> current;
+            explicit Slot(std::shared_ptr<State> initial) : current(std::move(initial)) {}
         };
         std::shared_ptr<Slot> _slot;
         static Runtime::VersionTracker::ReadLease Retain(const EntitySpace &space) { return space._versions.Read(); }
@@ -64,7 +66,7 @@ namespace DNDS::Geom
             {
                 next = std::make_shared<State>(space, std::move(values), schema, Runtime::ExecutionContext{device, nullptr});
             }
-            void Publish() noexcept override { destination->current.swap(next); }
+            void Publish() noexcept override { destination->current.Swap(next); }
         };
 
     public:
@@ -143,13 +145,17 @@ namespace DNDS::Geom
         }
         WriteScope Write(const EntitySpace &space)
         {
-            Validate(space);
-            return Write(space, _slot->current->HostContext());
+            const auto current = _slot ? _slot->current.Load() : nullptr;
+            DNDS_check_throw_info(current, "entity field was moved");
+            current->Validate(space);
+            return WriteScope(current, space, current->HostContext());
         }
         WriteScope Write(const EntitySpace &space, Runtime::ExecutionContext context)
         {
-            Validate(space);
-            return WriteScope(_slot->current, space, context);
+            const auto current = _slot ? _slot->current.Load() : nullptr;
+            DNDS_check_throw_info(current, "entity field was moved");
+            current->Validate(space);
+            return WriteScope(current, space, context);
         }
 
         class HaloRoute
@@ -179,7 +185,7 @@ namespace DNDS::Geom
                 {
                     Runtime::CommunicationDetail::LocalStage(_mpi.comm, _collectivePreflight, [&]
                                                              {
-                        DNDS_check_throw_info(_slot && _expected && _slot->current == _expected,
+                        DNDS_check_throw_info(_slot && _expected && _slot->current.Load() == _expected,
                                               "entity field halo binding is moved or predates field publication");
                         _expected->Validate(_expected->space); }, "entity field halo binding predates field publication");
                 }
@@ -218,7 +224,7 @@ namespace DNDS::Geom
                                   {
                     field.Validate(expected);
                     DNDS_check_throw_info(_space.SameOrder(expected), "entity field route belongs to another mesh/order"); });
-                auto state = field._slot->current;
+                auto state = field._slot->current.Load();
                 auto mesh = Retain(_space);
                 Runtime::PayloadPlan payload(_route, state->values.Layout(), state->schema, destinationLayout);
                 std::optional<Runtime::Array<T>> ghost;
@@ -232,11 +238,12 @@ namespace DNDS::Geom
         EntityField(EntitySpace space, Runtime::Array<T> values,
                     Runtime::ElementSchema schema = Runtime::ElementSchema::Arithmetic<T>(),
                     Runtime::ExecutionContext context = Runtime::ExecutionContext::Host())
-            : _slot(std::make_shared<Slot>(Slot{std::make_shared<State>(std::move(space), std::move(values), std::move(schema), context)})) {}
+            : _slot(std::make_shared<Slot>(std::make_shared<State>(std::move(space), std::move(values), std::move(schema), context))) {}
         void Validate(const EntitySpace &space) const
         {
-            DNDS_check_throw_info(_slot && _slot->current, "entity field was moved");
-            _slot->current->Validate(space);
+            const auto current = _slot ? _slot->current.Load() : nullptr;
+            DNDS_check_throw_info(current, "entity field was moved");
+            current->Validate(space);
         }
         ReadScope Read(const EntitySpace &space, const Runtime::ExecutionStream &stream) const
         {
@@ -247,13 +254,17 @@ namespace DNDS::Geom
         }
         ReadScope Read(const EntitySpace &space) const
         {
-            Validate(space);
-            return Read(space, _slot->current->HostContext());
+            const auto current = _slot ? _slot->current.Load() : nullptr;
+            DNDS_check_throw_info(current, "entity field was moved");
+            current->Validate(space);
+            return ReadScope(current, space, current->HostContext());
         }
         ReadScope Read(const EntitySpace &space, Runtime::ExecutionContext context) const
         {
-            Validate(space);
-            return ReadScope(_slot->current, space, context);
+            const auto current = _slot ? _slot->current.Load() : nullptr;
+            DNDS_check_throw_info(current, "entity field was moved");
+            current->Validate(space);
+            return ReadScope(current, space, context);
         }
         HaloRoute BuildHaloRoute(const EntitySpace &space) const
         {
@@ -265,8 +276,10 @@ namespace DNDS::Geom
         /// using it with arbitrary lower-level routes is a caller contract.
         Runtime::Array<T> UntypedValues(const EntitySpace &space) const
         {
-            Validate(space);
-            return _slot->current->values;
+            const auto current = _slot ? _slot->current.Load() : nullptr;
+            DNDS_check_throw_info(current, "entity field was moved");
+            current->Validate(space);
+            return current->values;
         }
 
         /// Register this association for detached migration. Compact CSR is the
@@ -275,9 +288,9 @@ namespace DNDS::Geom
         CompanionEntry Register(std::string name, Runtime::TransferLayout destinationLayout = {},
                                 std::optional<Runtime::ExecutionStream> stream = std::nullopt)
         {
-            DNDS_check_throw_info(_slot && _slot->current, "entity field registration requires a live field");
             auto slot = _slot;
-            auto state = slot->current;
+            auto state = slot ? slot->current.Load() : nullptr;
+            DNDS_check_throw_info(state, "entity field registration requires a live field");
             auto execution = stream ? std::make_shared<Runtime::ExecutionBorrow>(stream->BorrowContext()) : nullptr;
             const auto context = execution ? execution->Context() : state->HostContext();
             // Descriptor construction is local. Defer semantic checks to the
@@ -292,7 +305,7 @@ namespace DNDS::Geom
             };
             entry.attachment = [slot, state, execution, context]
             {
-                DNDS_check_throw_info(slot->current == state, "entity field registration predates publication");
+                DNDS_check_throw_info(slot->current.Load() == state, "entity field registration predates publication");
                 state->Validate(state->space);
                 auto read = state->values.Read(context);
                 return CompanionAttachment{state->schema.Identity() + ":" + Runtime::ElementSchema::TypeIdentity<T>() + ":entity-bound:" +
@@ -323,7 +336,7 @@ namespace DNDS::Geom
             entry.requiresEntityBinding = true;
             entry.validateSourceSpace = [slot, state](const EntitySpace &space)
             {
-                DNDS_check_throw_info(slot->current == state, "entity field registration changed");
+                DNDS_check_throw_info(slot->current.Load() == state, "entity field registration changed");
                 state->Validate(space);
             };
             entry.prepareUnchanged = [slot, state, execution, context]

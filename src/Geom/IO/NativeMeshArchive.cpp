@@ -260,9 +260,12 @@ namespace DNDS::Geom
     void UnstructuredMesh::WriteNativeArchive(S::SerializerBaseSSP serializer, const std::string &name) const
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native archive requires a communicator");
+        std::shared_ptr<const UnstructuredMeshState> state;
         ArchiveStage(mpi, [&]
-                     { DNDS_check_throw_info(_nativeState, "publish native mesh state before native archive write"); });
-        WriteNativeMeshArchive(*_nativeState, mpi, std::move(serializer), name);
+                     {
+                         state = _nativeState.Load();
+                         DNDS_check_throw_info(state, "publish native mesh state before native archive write"); });
+        WriteNativeMeshArchive(*state, mpi, std::move(serializer), name);
     }
 
     std::shared_ptr<UnstructuredMesh> UnstructuredMesh::ReadNativeArchive(

@@ -674,6 +674,42 @@ TEST_CASE("Sender partition ordering preserves strided companions through gather
         CHECK(original.View()(iNode, 0) == DNDS::real(3 * mpi.rank + iNode) + 0.25);
 }
 
+TEST_CASE("PreparedMeshTransition localPermutations reorders companion EntityField rows")
+{
+    const auto mpi = MPI();
+    constexpr I nCells = 3;
+    std::vector<std::vector<I>> cellNodes;
+    for (I c = 0; c < nCells; ++c)
+    {
+        const I base = 3 * (mpi.rank * nCells + c);
+        cellNodes.push_back({base, base + 1, base + 2});
+    }
+    auto input = Input(mpi, 3 * nCells, nCells, 0, std::move(cellNodes), {});
+    auto state = G::ConstructNativeMesh(input);
+    auto mesh = G::UnstructuredMesh::FromNative(mpi, state);
+    const auto oldSpace = mesh->CurrentNativeState()->Entities(G::EntityKind::Cell);
+    G::EntityField<DNDS::real> field(oldSpace, R::Array<DNDS::real>(R::RowLayout::Dense(size_t(nCells), 1)));
+    {
+        auto w = field.Write(oldSpace);
+        for (I c = 0; c < nCells; ++c)
+            w.View()(c, 0) = DNDS::real(100 * mpi.rank + c + 1);
+    }
+    G::MeshTransitionHandle handle(mesh);
+    G::ReorderInput reorder;
+    reorder.localPermutations[G::EntityKind::Cell] = {2, 1, 0};
+    auto prepared = G::PreparedMeshTransition::Prepare(handle, reorder, {field.Register("cell-tag")});
+    prepared.Publish();
+    const auto published = handle.Get();
+    const auto newSpace = published->CurrentNativeState()->Entities(G::EntityKind::Cell);
+    auto r = field.Read(newSpace);
+    for (I c = 0; c < nCells; ++c)
+    {
+        const I oldLocal = nCells - 1 - c;
+        CHECK(published->CurrentNativeState()->OriginalEntityId(G::EntityKind::Cell, c) == mpi.rank * nCells + oldLocal);
+        CHECK(r.View()(c, 0) == doctest::Approx(DNDS::real(100 * mpi.rank + oldLocal + 1)));
+    }
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

@@ -310,7 +310,8 @@ TEST_CASE("Numerical reductions on two GPUs use the selected transport")
             const auto result = destination.To(R::Device::Host());
             const auto read = result.Read();
             for (I i = 0; i < 3; ++i)
-                CHECK(read.View()(i, 0) == (op == R::Reduction::Min ? base + i - 1 : op == R::Reduction::Max ? base + i : 2 * (base + i) - 1));
+                CHECK(read.View()(i, 0) == (op == R::Reduction::Min ? base + i - 1 : op == R::Reduction::Max ? base + i
+                                                                                                             : 2 * (base + i) - 1));
         }
     }
 }
@@ -450,7 +451,8 @@ TEST_CASE("Copy-free local AmgX consumes native int32 unsorted row-major blocks"
                 CHECK_THROWS(problem.Diagonal().Write(stream.Context()));
             }
             A::AmgXSettings settings;
-            settings.maxLevels = 1;
+            settings.maxLevels = 4;
+            settings.minCoarseRows = 4;
             settings.coarseSweeps = 40;
             settings.relaxation = .9;
             C::LocalAMGPreconditioner preconditioner(problem, settings);
@@ -459,7 +461,7 @@ TEST_CASE("Copy-free local AmgX consumes native int32 unsorted row-major blocks"
             preconditioner.Update(engine, stream, problem);
             preconditioner.Apply(engine, stream, input, output);
             const auto memory = preconditioner.MemorySnapshot();
-            REQUIRE(!memory.levels.empty());
+            REQUIRE(memory.levels.size() >= 2);
             CHECK(memory.nativeStorage == native);
             CHECK(memory.levels.front().numericOwned >= (native ? 0 : uint64_t(3 * rows * n * n * sizeof(real))));
             if (native)
@@ -474,7 +476,7 @@ TEST_CASE("Copy-free local AmgX consumes native int32 unsorted row-major blocks"
             const auto read = host.Read();
             for (I iCell = 0; iCell < rows; ++iCell)
                 for (int j = 0; j < n; ++j)
-                    CHECK(read.View()(iCell, j) == doctest::Approx(exact(iCell, j)).epsilon(3e-11));
+                    CHECK(read.View()(iCell, j) == doctest::Approx(exact(iCell, j)).epsilon(1e-2));
             // The adapter must reject incompatible representation rather than
             // silently allocating a packed shadow matrix/vector.
             R::Array<real> padded(R::RowLayout::Dense(rows, n, n + 1), device);
@@ -519,6 +521,11 @@ TEST_CASE("Copy-free local AmgX consumes native int32 unsorted row-major blocks"
             CHECK(report.innerProductBatches == 0);
             CHECK_FALSE(report.converged);
             CHECK(std::isnan(report.trueResidual));
+            const auto solvedHost = fixed.Solution().CoupledField().Owned().To(R::Device::Host());
+            const auto solvedRead = solvedHost.Read();
+            for (I iCell = 0; iCell < rows; ++iCell)
+                for (int j = 0; j < n; ++j)
+                    CHECK(solvedRead.View()(iCell, j) == doctest::Approx(exact(iCell, j)).epsilon(1e-2));
             engine.Close();
         }
 }

@@ -48,15 +48,16 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             sourceStamp.Validate();
-            DNDS_check_throw_info(_nativeState && prepared, "native geometry publication requires source and destination");
+            DNDS_check_throw_info(_nativeState.HasValue() && prepared, "native geometry publication requires source and destination");
             prepared->Validate();
             next = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*prepared)); });
         MeshMutationToken mutation(this, versions, changes);
+        // No fallible array construction remains; bind post-commit generations
+        // and swap handles before releasing the writer lock via Commit().
+        next->BindPreparedEpoch(versions, mutation.Underlying());
+        _nativeState.Store(std::move(next));
+        _nativeSmoothing.Reset();
         mutation.Commit();
-        // No fallible array construction remains after committing generations.
-        next->BindPreparedEpoch(versions);
-        _nativeState = std::move(next);
-        _nativeSmoothing.reset();
     }
 
     void UnstructuredMesh::TransformNativeCoords(const std::function<tPoint(const tPoint &)> &transform)
@@ -69,7 +70,7 @@ namespace DNDS::Geom
         {
             std::optional<MeshReadAccess> sourceRead;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                            { sourceRead.emplace(AcquireRead(_nativeState->Requirements())); });
+                                            { sourceRead.emplace(AcquireRead(RequireNative()->Requirements())); });
             const auto view = sourceRead->HostView();
             std::optional<Runtime::Array<real>> coordinates;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
@@ -89,7 +90,7 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), 3), ghost.Storage());
-                prepared = _nativeState->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
+                prepared = RequireNative()->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
         }
         PublishNativeGeometry(std::move(prepared), stamp);
     }
@@ -115,7 +116,8 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(parameters == expected, "native geometry transform differs across ranks");
-            const auto view = _nativeState->BorrowHostView();
+            const auto current = RequireNative();
+            const auto view = current->BorrowHostView();
             const bool rotate = !(rotation.array() == Eigen::Matrix3d::Identity().array()).all();
             auto transform = [&](const tPoint &point) -> tPoint
             {
@@ -134,7 +136,7 @@ namespace DNDS::Geom
                 for (auto &r : frame.rotation) r.map() = (rotation * r.map() * rotation.transpose()).eval();
             for (auto &center : frame.rotationCenter) center.map() = transform(center.map());
             for (auto &translation : frame.translation) translation.map() = transform(translation.map());
-            prepared = _nativeState->WithGeometry(std::move(coordinates), std::move(walls), frame); });
+            prepared = current->WithGeometry(std::move(coordinates), std::move(walls), frame); });
         PublishNativeGeometry(std::move(prepared), stamp);
     }
 
@@ -165,7 +167,7 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 DNDS_check_throw_info(parameters == expected, "affine geometry transform differs across ranks");
-                sourceRead = std::make_unique<MeshReadAccess>(AcquireRead(_nativeState->Requirements()));
+                sourceRead = std::make_unique<MeshReadAccess>(AcquireRead(RequireNative()->Requirements()));
                 const auto view = sourceRead->HostView();
                 auto frame = view.Periodic();
                 for (size_t image = 0; image < frame.rotation.size(); ++image)
@@ -191,7 +193,7 @@ namespace DNDS::Geom
                 });
                 // General affine maps do not preserve nearest-wall directions or
                 // distances. Recompute wall geometry after this publication.
-                prepared = _nativeState->WithGeometry(std::move(coordinates), {}, frame); });
+                prepared = RequireNative()->WithGeometry(std::move(coordinates), {}, frame); });
         }
         PublishNativeGeometry(std::move(prepared), stamp);
     }
@@ -215,7 +217,7 @@ namespace DNDS::Geom
         {
             std::optional<MeshReadAccess> sourceRead;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                            { sourceRead.emplace(AcquireRead(_nativeState->Requirements())); });
+                                            { sourceRead.emplace(AcquireRead(RequireNative()->Requirements())); });
             const auto view = sourceRead->HostView();
             std::optional<Runtime::Array<real>> coordinates;
             int changed = 0;
@@ -247,7 +249,7 @@ namespace DNDS::Geom
             FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), 3), ghost.Storage());
-                prepared = _nativeState->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
+                prepared = RequireNative()->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
         }
         PublishNativeGeometry(std::move(prepared), stamp);
     }
@@ -267,7 +269,7 @@ namespace DNDS::Geom
         {
             std::optional<MeshReadAccess> sourceRead;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                            { sourceRead.emplace(AcquireRead(_nativeState->Requirements())); });
+                                            { sourceRead.emplace(AcquireRead(RequireNative()->Requirements())); });
             const auto view = sourceRead->HostView();
             int selectedMode = volumeBoundary ? 1 : 0, expectedMode = selectedMode;
             int selected = 0;
@@ -337,7 +339,7 @@ namespace DNDS::Geom
                         }
                     return point;
                 });
-                prepared = _nativeState->WithGeometry(std::move(coordinates), {}, view.Periodic()); });
+                prepared = RequireNative()->WithGeometry(std::move(coordinates), {}, view.Periodic()); });
         }
         PublishNativeGeometry(std::move(prepared), stamp);
     }

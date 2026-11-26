@@ -2,6 +2,7 @@
 #include "Geom/Transition/NativeMeshTransition.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Transition/CellPermutation.hpp"
@@ -227,81 +228,9 @@ namespace DNDS::Geom
                         continue;
                     const auto *other = vertices.data() + size_t(*neighbor) * maxVertices;
                     const size_t otherVertices = vertexCounts[size_t(*neighbor)];
-                    bool facial = false;
-                    if (!nodeBits)
-                    {
-                        size_t a = 0, b = 0, shared = 0;
-                        while (a < nVertices && b < otherVertices)
-                        {
-                            if (current[a] < other[b])
-                                ++a;
-                            else if (other[b] < current[a])
-                                ++b;
-                            else
-                            {
-                                ++shared;
-                                ++a;
-                                ++b;
-                            }
-                        }
-                        facial = shared >= size_t(source.dimension);
-                    }
-                    else
-                    {
-                        size_t rawA = 0, rawB = 0, rawShared = 0;
-                        while (rawA < nVertices && rawB < otherVertices)
-                        {
-                            if (current[rawA] < other[rawB])
-                                ++rawA;
-                            else if (other[rawB] < current[rawA])
-                                ++rawB;
-                            else
-                            {
-                                ++rawShared;
-                                ++rawA;
-                                ++rawB;
-                            }
-                        }
-                        if (rawShared < size_t(source.dimension))
-                            continue;
-                        const auto *currentFrames = frames.data() + size_t(cell) * maxVertices;
-                        const auto *otherFrames = frames.data() + size_t(*neighbor) * maxVertices;
-                        uint8_t tried = 0;
-                        for (size_t currentVertex = 0; currentVertex < nVertices && !facial; ++currentVertex)
-                        {
-                            for (size_t otherVertex = 0; otherVertex < otherVertices; ++otherVertex)
-                            {
-                                if (current[currentVertex] != other[otherVertex])
-                                    continue;
-                                const uint8_t mask = currentFrames[currentVertex] ^ otherFrames[otherVertex];
-                                if (tried & (uint8_t(1) << mask))
-                                    continue;
-                                tried |= uint8_t(1) << mask;
-                                size_t a = 0, b = 0, shared = 0;
-                                while (a < nVertices && b < otherVertices)
-                                {
-                                    const auto currentKey = std::pair(current[a], currentFrames[a]);
-                                    const auto otherKey = std::pair(other[b], uint8_t(otherFrames[b] ^ mask));
-                                    if (currentKey < otherKey)
-                                        ++a;
-                                    else if (otherKey < currentKey)
-                                        ++b;
-                                    else
-                                    {
-                                        ++shared;
-                                        ++a;
-                                        ++b;
-                                    }
-                                }
-                                if (shared >= size_t(source.dimension))
-                                {
-                                    facial = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if (facial)
+                    const uint8_t *currentFrames = nodeBits ? frames.data() + size_t(cell) * maxVertices : nullptr;
+                    const uint8_t *otherFrames = nodeBits ? frames.data() + size_t(*neighbor) * maxVertices : nullptr;
+                    if (NativePeriodicFacialMatch(current, currentFrames, nVertices, other, otherFrames, otherVertices, size_t(source.dimension)))
                         graph[size_t(cell)].push_back(*neighbor);
                 }
                 detail::CompactAdjacencyRow(graph[size_t(cell)]);

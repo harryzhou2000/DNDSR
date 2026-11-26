@@ -146,7 +146,11 @@ namespace DNDS::Cauchy
                     const int side = topology.CellIsFaceBack(iCell, iFace, slot) ? 0 : 1;
                     const auto other = topology.CellFaceOther(iCell, iFace, slot);
                     if (other != UnInitIndex && other != iCell)
-                        slots(iFace, side) = index(std::lower_bound(row.begin(), row.end(), other) - row.begin());
+                    {
+                        const auto found = std::lower_bound(row.begin(), row.end(), other);
+                        DNDS_check_throw_info(found != row.end() && *found == other, "stencil face neighbor missing from Jacobian row");
+                        slots(iFace, side) = index(found - row.begin());
+                    }
                 }
             });
             jacobianColumns = std::make_shared<LinearPatternStorage>(columns,

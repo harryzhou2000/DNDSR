@@ -67,9 +67,11 @@ namespace DNDS::Geom
             result._stamp = result._sourceRead->Stamp(); });
         FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                         {
-            const auto &state = mesh._nativeState->Snapshot(Runtime::Device::Host()).Live();
+            auto current = mesh._nativeState.Load();
+            DNDS_check_throw_info(current, "mesh edit requires native mesh authority");
+            const auto &state = current->Snapshot(Runtime::Device::Host()).Live();
             auto &data = result._nativeCandidate.emplace();
-            data.identity = {mesh._nativeState->MeshNamespace(), mesh._nativeState->IdHighWater()};
+            data.identity = {current->MeshNamespace(), current->IdHighWater()};
             data.dimension = state.semantics.dim;
             data.audit = mesh.CurrentNativeState()->AuditOptions();
             data.periodic = state.semantics.isPeriodic;
@@ -245,7 +247,9 @@ namespace DNDS::Geom
         }
         FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                         {
-            prepared = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*mesh._nativeState));
+            auto current = mesh._nativeState.Load();
+            DNDS_check_throw_info(current, "mesh edit commit requires native mesh authority");
+            prepared = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*current));
             // Only the explicit historical facade key is an authority alias.
             // Native sorted/set variants keep their own unchanged ordering.
             if ((changes & NeighborOrder) && prepared->_namedRelations.count(Adj::Cell2Cell))
@@ -276,24 +280,23 @@ namespace DNDS::Geom
         // This publishes an independent current-state candidate. It deliberately
         // never enters or reads the source's detached legacy edit workspace.
         MeshMutationToken mutation(&mesh, mesh.versions, mask);
-        mutation.Commit();
         try
         {
-            // Owner containers were allocated before mutation. Only stamp and
-            // shared-owner assignment remains after the generation commit.
+            // Owner containers were allocated before mutation. Bind exact
+            // post-commit generations and swap handles while exclusive lock holds.
             FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
-                                            { prepared->BindPreparedEpoch(mesh.versions); });
+                                            { prepared->BindPreparedEpoch(mesh.versions, mutation.Underlying()); });
         }
         catch (...)
         {
             MPI::AbortIfSolverFailure("mesh edit failed");
-            mesh._nativeState.reset();
-            mesh._nativeSmoothing.reset();
-            auto failed = mesh.versions.BeginMutation(Runtime::Change::All);
+            mesh._nativeState.Reset();
+            mesh._nativeSmoothing.Reset();
             throw;
         }
-        mesh._nativeState = std::move(prepared);
-        mesh._nativeSmoothing.reset();
+        mesh._nativeState.Store(std::move(prepared));
+        mesh._nativeSmoothing.Reset();
+        mutation.Commit();
         _nativeCandidate.reset();
     }
     void MeshEdit::Abort()

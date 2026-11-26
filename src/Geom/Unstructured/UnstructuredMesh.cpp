@@ -269,16 +269,16 @@ namespace DNDS::Geom
         // These vectors are setup-only compatibility caches. They do not
         // change the source query authority or invalidate retained reads.
         MeshMutationToken destination(&bMesh, bMesh.versions, Runtime::Change::All);
-        destination.Commit();
         bMesh._entityIdentity = nodes._identity;
         bMesh.isPeriodic = state->BorrowHostView().IsPeriodic();
         bMesh.periodicInfo = state->BorrowHostView().Periodic();
-        bMesh._nativeState = state->BindEpoch(bMesh.versions);
-        bMesh._nativeSmoothing.reset();
+        bMesh._nativeState.Store(state->BindEpoch(bMesh.versions, destination.Underlying()));
+        bMesh._nativeSmoothing.Reset();
         bMesh.node2parentNode.swap(boundaryToSource);
         bMesh.cell2parentCell.swap(cellParents);
         bMesh.node2bndNode.clear();
         node2bndNode.swap(sourceToBoundary);
+        destination.Commit();
     }
     void UnstructuredMesh::ObtainSymmetricSymbolicFactorization(Direct::SerialSymLUStructure &symLU, Direct::DirectPrecControl control) const
     {

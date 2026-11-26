@@ -14,11 +14,12 @@ namespace DNDS::Geom
     }
     MeshReadAccess UnstructuredMesh::AcquireRead(MeshReadRequirements requirements, Runtime::ExecutionContext context)
     {
-        DNDS_check_throw_info(_nativeState, "mesh read requires native authority");
         auto sourceRead = versions.Read();
-        _nativeState->CheckRequirements(requirements);
-        MeshReadAccess result(_nativeState->Snapshot(context.device), context, std::move(sourceRead), versions.Stamp());
-        result._nativeOwner = _nativeState;
+        auto state = _nativeState.Load();
+        DNDS_check_throw_info(state, "mesh read requires native authority");
+        state->CheckRequirements(requirements);
+        MeshReadAccess result(state->Snapshot(context.device), context, std::move(sourceRead), versions.Stamp());
+        result._nativeOwner = std::move(state);
         result.Restrict(requirements);
         return result;
     }
@@ -37,8 +38,8 @@ namespace DNDS::Geom
         result->_entityIdentity = nodes._identity;
         result->isPeriodic = state->BorrowHostView().IsPeriodic();
         result->periodicInfo = state->BorrowHostView().Periodic();
-        result->_nativeState = state->BindEpoch(result->versions);
-        result->_nativeSmoothing.reset();
+        result->_nativeState.Store(state->BindEpoch(result->versions));
+        result->_nativeSmoothing.Reset();
         return result;
     }
 
@@ -108,29 +109,31 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(signature == expected, "native setup source metadata differs across ranks"); });
         MeshMutationToken mutation(this, versions, Runtime::Change::All);
-        mutation.Commit();
-        // Refresh stamps after commit; these operations only rebind shared
-        // handles or clear existing storage and cannot allocate.
-        prepared->BindPreparedEpoch(versions);
+        // Bind post-commit generations and swap facade state while the
+        // exclusive writer lock is still held, then publish via Commit().
+        prepared->BindPreparedEpoch(versions, mutation.Underlying());
         _entityIdentity = std::move(identity);
         isPeriodic = nextPeriodic;
         periodicInfo = periodic;
         mpi = nextMPI;
         if (communication)
             _mpiOwner = communication;
-        _nativeState = std::move(prepared);
-        _nativeSmoothing.reset();
+        _nativeState.Store(std::move(prepared));
+        _nativeSmoothing.Reset();
         node2bndNode.clear();
         node2parentNode.clear();
         cell2parentCell.clear();
+        mutation.Commit();
     }
 
     void UnstructuredMesh::PlaceNative(Runtime::Device device, Runtime::ExecutionContext context)
     {
         auto read = versions.Read();
-        DNDS_check_throw_info(_nativeState, "publish native mesh state before placement");
-        _nativeState = _nativeState->WithPlacement(device, context);
-        _nativeSmoothing.reset();
+        _nativeState.Update([&](const std::shared_ptr<const UnstructuredMeshState> &current)
+                            {
+            DNDS_check_throw_info(current, "publish native mesh state before placement");
+            return current->WithPlacement(device, context); });
+        _nativeSmoothing.Reset();
     }
 
 }

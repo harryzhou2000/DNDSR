@@ -534,14 +534,6 @@ namespace DNDS::Geom::Elem
         return false;
     }
 
-    inline bool cellsAreFaceConnected(
-        const std::vector<DNDS::index> &verts_A,
-        const std::vector<DNDS::index> &nodes_B)
-    {
-
-        return false;
-    }
-
     template <class tCoordsIn>
     tJacobi ShapeJacobianCoordD01Nj(const tCoordsIn &cs, Eigen::Ref<const tD01Nj> DiNj)
     {

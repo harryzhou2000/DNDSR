@@ -56,7 +56,13 @@ TEST_CASE("MPI allreduce queues behind a producer and orders the next reduction 
             values(0, 0) = gate->load() ? rank + 1 : -1000;
             values(0, 1) = rank * 2; }, Write(src));
         communication.WaitFor(compute.Record());
-        sum->Submit(engine, communication);
+        compute.WaitFor(sum->Submit(engine, communication));
+        // Inject rank-varying increments before in-place Max so Max cannot pass as a no-op.
+        SubmitArrays(engine, compute, [rank = mpi.rank](ExecutionContext, auto values)
+                     {
+            values(0, 0) += double(rank + 1);
+            values(0, 1) += double(3 * rank); }, ReadWrite(result));
+        communication.WaitFor(compute.Record());
         const auto done = maximum->Submit(engine, communication);
         compute.WaitFor(done);
         SubmitArrays(engine, compute, [](ExecutionContext, auto in, auto out)
@@ -72,8 +78,12 @@ TEST_CASE("MPI allreduce queues behind a producer and orders the next reduction 
         context.reset();
         compute.Record().WaitHost();
         const auto values = observed.Read();
-        CHECK(values.At(0, 0) == (workers ? mpi.size * (mpi.size + 1) : 2 * (mpi.rank + 1)));
-        CHECK(values.At(0, 1) == (workers ? 2 * mpi.size * (mpi.size - 1) : 4 * mpi.rank));
+        const double expectedSum0 = workers ? double(mpi.size * (mpi.size + 1)) / 2.0 : double(mpi.rank + 1);
+        const double expectedSum1 = workers ? double(mpi.size * (mpi.size - 1)) : double(2 * mpi.rank);
+        const double maxInc0 = workers ? double(mpi.size) : double(mpi.rank + 1);
+        const double maxInc1 = workers ? double(3 * (mpi.size - 1)) : double(3 * mpi.rank);
+        CHECK(values.At(0, 0) == 2.0 * (expectedSum0 + maxInc0));
+        CHECK(values.At(0, 1) == 2.0 * (expectedSum1 + maxInc1));
     }
 }
 

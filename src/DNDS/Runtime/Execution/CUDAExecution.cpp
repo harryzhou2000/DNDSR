@@ -132,14 +132,13 @@ namespace DNDS::Runtime
                 if (cudaEventDestroy(_event) != cudaSuccess)
                     std::terminate();
             }
-            void Record(std::vector<RetainedCommand> &commands, std::vector<StreamEvent> &dependencies,
-                        std::exception_ptr error)
+            void Record(std::vector<RetainedCommand> &commands, std::vector<StreamEvent> &dependencies)
             {
                 DeviceScope scope(_ordinal);
                 Check(cudaEventRecord(_event, CUDAStream(*_stream)));
                 _commands.swap(commands);
                 _dependencies.swap(dependencies);
-                _error = error;
+                _error = nullptr;
                 _recorded = true;
             }
             bool Ready() const override
@@ -260,7 +259,7 @@ namespace DNDS::Runtime
             prefixes.push_back(prefix); // Allocate before recording/consuming commands.
             try
             {
-                prefix->Record(pending, retainedDependencies, error);
+                prefix->Record(pending, retainedDependencies);
             }
             catch (...)
             {
@@ -404,8 +403,8 @@ namespace DNDS::Runtime
             // Failure to allocate/record a boundary cannot discard captures of
             // work already issued. Drain that native stream before fallback
             // retirement; no new work is accepted while this Issue is held.
-            if (!_state->error)
-                _state->error = std::current_exception();
+            const auto recordError = std::current_exception();
+            std::exception_ptr runningError;
             DeviceScope device(_state->native->GetDevice().ordinal);
             try
             {
@@ -413,6 +412,8 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                if (!runningError)
+                    runningError = std::current_exception();
             }
             for (const auto &dependency : _state->dependencies)
                 try
@@ -421,10 +422,14 @@ namespace DNDS::Runtime
                 }
                 catch (...)
                 {
+                    if (!runningError)
+                        runningError = std::current_exception();
                 }
             _state->dependencies.clear();
             for (auto &command : _state->pending)
             {
+                if (!runningError)
+                    runningError = command.error;
                 if (command.cleanup)
                     try
                     {
@@ -432,11 +437,15 @@ namespace DNDS::Runtime
                     }
                     catch (...)
                     {
+                        if (!runningError)
+                            runningError = std::current_exception();
                     }
                 if (command.retire)
-                    command.retire(_state->error);
+                    command.retire(runningError);
             }
             _state->pending.clear();
+            if (!_state->error)
+                _state->error = runningError ? runningError : recordError;
         }
         for (const auto &prefix : _state->prefixes)
             try

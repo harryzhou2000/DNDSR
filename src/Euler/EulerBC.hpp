@@ -950,6 +950,18 @@ namespace DNDS::Euler
         template <class TU>
         void AddSimpleInterval(TU vmean, real divV, real lV, real rV)
         {
+            if (nodes.size() < 2)
+                return;
+            if (rV <= lV)
+            {
+                if (lV < nodes[0] || lV > nodes[Size()])
+                    return;
+                index iCell = (std::upper_bound(nodes.begin(), nodes.end(), lV) - nodes.begin()) - index(1);
+                iCell = std::min(Size() - 1, std::max(index(0), iCell));
+                div[iCell] += divV;
+                v(EigenAll, iCell) += vmean * divV;
+                return;
+            }
             index iCL = (std::lower_bound(nodes.begin(), nodes.end(), lV) - nodes.begin()) - index(1);
             iCL = std::min(Size() - 1, std::max(index(0), iCL));
             index iCR = std::upper_bound(nodes.begin(), nodes.end(), rV) - nodes.begin(); // max is Size() + 1

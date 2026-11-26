@@ -9,17 +9,7 @@ namespace DNDS::Geom::detail
 {
     inline std::vector<index> CanonicalRoleKey(Elem::Element element, const NativePeriodicNodes &pattern, bool periodic)
     {
-        DNDS_check_throw_info(!pattern.empty(), "native topology identity requires node occurrences");
-        std::array<bool, 8> candidates{};
-        const auto firstNode = std::min_element(pattern.begin(), pattern.end())->first;
-        for (const auto &[node, frame] : pattern)
-        {
-            DNDS_check_throw_info(frame < 8, "invalid native topology identity image");
-            if (periodic && node == firstNode)
-                candidates[frame] = true;
-        }
-        if (!periodic)
-            candidates[0] = true;
+        const auto candidates = NativePeriodicFrameCandidates(pattern, periodic);
         // Linear subentities have at most four vertices and two-node edges.
         // Build the identical flattened key on the stack; only the returned
         // winning vector allocates. In particular Quad4 must retain cyclic

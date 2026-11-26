@@ -100,13 +100,24 @@ namespace DNDS::Physics::Thermodynamics
     {
         if (independentFractions.nSpecies != int(_state->species.size()) - 1)
             return NumericalStatus{NumericalError::InvalidState, 1, -1};
-        auto &fractions = _worker.Buffers().fractions;
-        // The supplied density 1 is explicitly mass-fraction normalization,
-        // never a fallback for a missing physical density.
-        Chemistry::RepairMassFractions(1, independentFractions, {fractions.data(), int(fractions.size())});
-        return TotalToStaticIdealMixture(_worker.Source(), _state->scales, pressure,
-                                         temperature, speedSquared,
-                                         {fractions.data(), int(fractions.size())});
+        try
+        {
+            auto &fractions = _worker.Buffers().fractions;
+            // The supplied density 1 is explicitly mass-fraction normalization,
+            // never a fallback for a missing physical density.
+            Chemistry::RepairMassFractions(1, independentFractions, {fractions.data(), int(fractions.size())});
+            return TotalToStaticIdealMixture(_worker.Source(), _state->scales, pressure,
+                                             temperature, speedSquared,
+                                             {fractions.data(), int(fractions.size())});
+        }
+        catch (const std::bad_alloc &)
+        {
+            return NumericalStatus{NumericalError::AllocationFailure, 0, -1};
+        }
+        catch (...)
+        {
+            return NumericalStatus{NumericalError::UnexpectedFailure, 0, -1};
+        }
     }
     void IdealGasMixture::PointEvaluator::PrepareComposition(real rho, Chemistry::ConstSpeciesBufferView rhoY)
     {

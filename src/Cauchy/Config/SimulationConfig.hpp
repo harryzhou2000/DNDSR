@@ -581,6 +581,7 @@ namespace DNDS::Cauchy
             return acm ? std::vector<std::string>{"u", "v", "w"} : std::vector<std::string>{"rho"};
         }
         real pseudoCFL = 10, maxPseudoCFL = 1e4, pseudoGrowth = 1.3, relaxation = 1, ransRelaxation = 1;
+        index pseudoGrowthStart = 0;
         int nIterCellSmoothScale = 15;
         bool roeDissipation = false, collectiveChecks = true;
         bool requireConvergedReconstruction = false;

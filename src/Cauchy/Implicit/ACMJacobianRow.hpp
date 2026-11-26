@@ -90,11 +90,13 @@ namespace DNDS::Cauchy::ACM
             return NumericalStatus{NumericalError::InvalidState}.At(cell);
         auto diagonal = DenseBlock<C>(request.diagonal[cell], request.offDiagonal.rowMajorBlocks);
         const auto own = read(cell);
-        // The centered source operator placed the RANS destruction entries in
-        // this row using the mean's phase-owned physical gradient.
-        std::array<real, C - 4> sourceDiagonal{};
-        for (int j = 4; j < C; ++j)
-            sourceDiagonal[j - 4] = diagonal(j, j);
+        // The source operator placed its contributions in this zeroed row
+        // (diagonal-only for centered destruction, full block for rhsQuadrature).
+        std::array<real, C * C> sourceBlock{};
+        if constexpr (C > 4)
+            for (int i = 0; i < C; ++i)
+                for (int j = 0; j < C; ++j)
+                    sourceBlock[i * C + j] = diagonal(i, j);
         FillACMTemporalBlock<C>(own, volume, tau, request.physicalInverseDt, request.physics.alpha, request.physics.beta2, diagonal);
         if (request.frame.moving)
         {
@@ -233,8 +235,10 @@ namespace DNDS::Cauchy::ACM
                     return status.At(cell, sample.face);
             }
         }
-        for (int j = 4; j < C; ++j)
-            diagonal(j, j) += sourceDiagonal[j - 4];
+        if constexpr (C > 4)
+            for (int i = 0; i < C; ++i)
+                for (int j = 0; j < C; ++j)
+                    diagonal(i, j) += sourceBlock[i * C + j];
         for (int j = 0; j < C; ++j)
             for (int i = 0; i < C; ++i)
                 if (!request.active[i] || !request.active[j])

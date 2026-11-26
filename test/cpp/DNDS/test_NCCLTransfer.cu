@@ -389,6 +389,14 @@ TEST_CASE("CUDA producer chains device-packed MPI and NCCL across streams throug
         for (I j = 0; j < 5; ++j)
             CHECK(read.View()(iRow, j) == Value(twicePrevious, iRow, j, 7));
 }
+__global__ void AddRankBias(R::ArrayView<double> values, int rank)
+{
+    const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const auto total = values.RowCount() * values.Width();
+    if (idx < total)
+        values(idx / values.Width(), idx % values.Width()) += double(rank + 1);
+}
+
 TEST_CASE("NCCL global Array reduction orders producer and consumer across streams")
 {
     auto local = R::NCCLTransferProvider::Create(mpi.comm, device);
@@ -403,7 +411,11 @@ TEST_CASE("NCCL global Array reduction orders producer and consumer across strea
     R::SubmitArrays(engine, compute, [](auto ctx, auto values)
                     { Produce<<<1, 32, 0, R::CUDAStream(ctx)>>>(values, mpi.rank, 1); LaunchOK(); }, R::Write(input));
     comm.WaitFor(compute.Record());
-    reduce->Submit(engine, comm);
+    compute.WaitFor(reduce->Submit(engine, comm));
+    // Inject rank-varying bias before in-place Max so Max cannot pass as a no-op.
+    R::SubmitArrays(engine, compute, [](auto ctx, auto values)
+                    { AddRankBias<<<1, 32, 0, R::CUDAStream(ctx)>>>(values, mpi.rank); LaunchOK(); }, R::ReadWrite(sum));
+    comm.WaitFor(compute.Record());
     compute.WaitFor(inPlace->Submit(engine, comm));
     R::SubmitArrays(engine, compute, [](auto ctx, auto x, auto y)
                     { Core<<<1, 32, 0, R::CUDAStream(ctx)>>>(x, y); LaunchOK(); }, R::Read(sum), R::Write(output));
@@ -421,7 +433,7 @@ TEST_CASE("NCCL global Array reduction orders producer and consumer across strea
             double expected = 0;
             for (int rank = 0; rank < mpi.size; ++rank)
                 expected += Value(rank, row, column, 1);
-            CHECK(read.At(row, column) == 2 * expected);
+            CHECK(read.At(row, column) == 2 * (expected + double(mpi.size)));
         }
 }
 

@@ -95,53 +95,10 @@ namespace DNDS::Geom::detail
                     if (!neighbor || *neighbor >= cells.NumOwned() || *neighbor == cell) continue;
                     const auto *other = vertices.data() + size_t(*neighbor) * maxVertices;
                     const size_t otherSize = vertexCounts[size_t(*neighbor)];
-                    bool facial = false;
-                    if (!nodeBits)
-                    {
-                        size_t left = 0, right = 0, shared = 0;
-                        while (left < currentSize && right < otherSize)
-                        {
-                            if (current[left] < other[right]) ++left;
-                            else if (other[right] < current[left]) ++right;
-                            else { ++shared; ++left; ++right; }
-                        }
-                        facial = shared >= size_t(source.dimension);
-                    }
-                    else
-                    {
-                        size_t rawLeft = 0, rawRight = 0, rawShared = 0;
-                        while (rawLeft < currentSize && rawRight < otherSize)
-                        {
-                            if (current[rawLeft] < other[rawRight]) ++rawLeft;
-                            else if (other[rawRight] < current[rawLeft]) ++rawRight;
-                            else { ++rawShared; ++rawLeft; ++rawRight; }
-                        }
-                        if (rawShared < size_t(source.dimension)) continue;
-                        const auto *currentFrames = frames.data() + size_t(cell) * maxVertices;
-                        const auto *otherFrames = frames.data() + size_t(*neighbor) * maxVertices;
-                        uint8_t tried = 0;
-                        for (size_t currentVertex = 0; currentVertex < currentSize && !facial; ++currentVertex)
-                        {
-                            for (size_t otherVertex = 0; otherVertex < otherSize; ++otherVertex)
-                            {
-                                if (current[currentVertex] != other[otherVertex]) continue;
-                                const uint8_t mask = currentFrames[currentVertex] ^ otherFrames[otherVertex];
-                                if (tried & (uint8_t(1) << mask)) continue;
-                                tried |= uint8_t(1) << mask;
-                                size_t left = 0, right = 0, shared = 0;
-                                while (left < currentSize && right < otherSize)
-                                {
-                                    const auto currentKey = std::pair(current[left], currentFrames[left]);
-                                    const auto otherKey = std::pair(other[right], uint8_t(otherFrames[right] ^ mask));
-                                    if (currentKey < otherKey) ++left;
-                                    else if (otherKey < currentKey) ++right;
-                                    else { ++shared; ++left; ++right; }
-                                }
-                                if (shared >= size_t(source.dimension)) { facial = true; break; }
-                            }
-                        }
-                    }
-                    if (facial) cellNeighbors.push_back(neighborGlobal);
+                    const uint8_t *currentFrames = nodeBits ? frames.data() + size_t(cell) * maxVertices : nullptr;
+                    const uint8_t *otherFrames = nodeBits ? frames.data() + size_t(*neighbor) * maxVertices : nullptr;
+                    if (NativePeriodicFacialMatch(current, currentFrames, currentSize, other, otherFrames, otherSize, size_t(source.dimension)))
+                        cellNeighbors.push_back(neighborGlobal);
                 }
             }
             DNDS_check_throw_info(!invalid, "primary partition cell neighbor is outside the mesh domain");

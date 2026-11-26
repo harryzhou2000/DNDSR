@@ -216,14 +216,15 @@ namespace DNDS::Runtime
                 DNDS_check_throw_info(!_issuing, "recursive SYCL drain");
                 // Also covers direct queue borrows and a failure to record an
                 // event. The engine has already progressed external requests.
+                std::exception_ptr prefixError;
                 try
                 {
                     SYCLDetail::Synchronize(_context);
                 }
                 catch (...)
                 {
-                    if (!_error)
-                        _error = std::current_exception();
+                    if (!prefixError)
+                        prefixError = std::current_exception();
                 }
                 for (const auto &prefix : _issued)
                     try
@@ -232,11 +233,13 @@ namespace DNDS::Runtime
                     }
                     catch (...)
                     {
-                        if (!_error)
-                            _error = std::current_exception();
+                        if (!prefixError)
+                            prefixError = std::current_exception();
                     }
                 _issued.clear();
-                _batch.Finish(_context, _error);
+                _batch.Finish(_context, prefixError);
+                if (!_error)
+                    _error = prefixError;
                 if (_error)
                     std::rethrow_exception(_error);
             }

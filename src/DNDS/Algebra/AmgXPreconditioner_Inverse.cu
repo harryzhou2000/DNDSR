@@ -2,6 +2,7 @@
 #include "Solver/ScaledBlockInverse.hpp"
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <vector>
 
 namespace DNDS::Algebra
 {
@@ -19,11 +20,30 @@ namespace DNDS::Algebra
             if (status != Success && atomicCAS(failed, -1, int(row)) == -1)
                 failed[1] = status;
         }
+
+        // AmgX's 1x1 BlockJacobi smoother stores the uninverted scalar diagonal
+        // in Dinv and divides by it (x + omega * (b - y) / d), unlike width >= 2
+        // which multiplies by the inverted block.
+        __global__ void CopyScalarDiagonal(int rows, const int *diag, const double *values, double *output, int *failed)
+        {
+            const auto row = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+            if (row >= size_t(rows))
+                return;
+            const double d = values[size_t(diag[row])];
+            if (!std::isfinite(d))
+            {
+                if (atomicCAS(failed, -1, int(row)) == -1)
+                    failed[1] = NonfiniteInput;
+                return;
+            }
+            output[row] = d;
+        }
     }
 
     int ComputeAmgXBlockInverse(int rows, int width, const int *diag, const double *values, double *output)
     {
-        if (rows <= 0 || width < 4 || width > 6)
+        const bool supportedWidth = (width >= 1 && width <= 10) || width == 19;
+        if (rows <= 0 || !supportedWidth)
             return 1;
         // AmgX setup is already synchronous. Keep its numerical failure visible
         // before returning through the C ABI, including during coarse resetup.
@@ -36,6 +56,15 @@ namespace DNDS::Algebra
             const unsigned blocks = 1 + (unsigned(rows) - 1) / 128;
             switch (width)
             {
+            case 1:
+                CopyScalarDiagonal<<<blocks, 128>>>(rows, diag, values, output, failed);
+                break;
+            case 2:
+                InvertRows<2><<<blocks, 128>>>(rows, diag, values, output, failed);
+                break;
+            case 3:
+                InvertRows<3><<<blocks, 128>>>(rows, diag, values, output, failed);
+                break;
             case 4:
                 InvertRows<4><<<blocks, 128>>>(rows, diag, values, output, failed);
                 break;
@@ -44,6 +73,21 @@ namespace DNDS::Algebra
                 break;
             case 6:
                 InvertRows<6><<<blocks, 128>>>(rows, diag, values, output, failed);
+                break;
+            case 7:
+                InvertRows<7><<<blocks, 128>>>(rows, diag, values, output, failed);
+                break;
+            case 8:
+                InvertRows<8><<<blocks, 128>>>(rows, diag, values, output, failed);
+                break;
+            case 9:
+                InvertRows<9><<<blocks, 128>>>(rows, diag, values, output, failed);
+                break;
+            case 10:
+                InvertRows<10><<<blocks, 128>>>(rows, diag, values, output, failed);
+                break;
+            case 19:
+                InvertRows<19><<<blocks, 128>>>(rows, diag, values, output, failed);
                 break;
             }
             int failure[2];
@@ -59,13 +103,13 @@ namespace DNDS::Algebra
                     std::fprintf(stderr, "AmgX ACM inverse failed on row %d of %d (width %d): %s\n",
                                  failure[0], rows, width, reason);
                     int block;
-                    double entries[36];
+                    std::vector<double> entries(size_t(width) * size_t(width));
                     if (cudaMemcpy(&block, diag + failure[0], sizeof(block), cudaMemcpyDeviceToHost) == cudaSuccess &&
-                        cudaMemcpy(entries, values + size_t(block) * width * width, width * width * sizeof(double),
+                        cudaMemcpy(entries.data(), values + size_t(block) * width * width, entries.size() * sizeof(double),
                                    cudaMemcpyDeviceToHost) == cudaSuccess)
                     {
                         std::fprintf(stderr, "AmgX diagonal block row-major:");
-                        for (int i = 0; i < width * width; ++i)
+                        for (size_t i = 0; i < entries.size(); ++i)
                             std::fprintf(stderr, " %.17g", entries[i]);
                         std::fputc('\n', stderr);
                     }

@@ -60,8 +60,15 @@ namespace DNDS::Geom
     {
         if (!control.useDirectPrec)
             return;
-        _nativeState = _nativeState->WithLocalCellNeighbors(GetCell2CellFaceVLocal(true));
-        _nativeSmoothing.reset();
+        auto localNeighbors = GetCell2CellFaceVLocal(true);
+        {
+            auto read = versions.Read();
+            _nativeState.Update([&](const std::shared_ptr<const UnstructuredMeshState> &current)
+                                {
+                DNDS_check_throw_info(current, "publish native mesh state before fill ordering");
+                return current->WithLocalCellNeighbors(std::move(localNeighbors)); });
+            _nativeSmoothing.Reset();
+        }
 
         const auto &graph = LocalCellNeighbors();
         auto &localFillOrderingNew2Old = symLU.localFillOrderingNew2Old;

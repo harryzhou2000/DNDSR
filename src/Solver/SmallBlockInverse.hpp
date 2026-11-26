@@ -157,6 +157,8 @@ namespace DNDS::Direct
                 oldIndex = next;
                 oldLower = lower;
             }
+            if constexpr (N == 1)
+                return normOne == 0 ? 0 : 1;
             for (int i = 0; i < N; ++i)
                 v[i] = (i % 2 ? -1 : 1) * (1 + real(i) / (N - 1));
             Solve(v);

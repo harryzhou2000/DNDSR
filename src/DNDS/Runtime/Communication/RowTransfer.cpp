@@ -813,23 +813,63 @@ namespace DNDS::Runtime
         return StartManaged(stream, true, callerValid, false);
     }
     TransferOperation TransferBinding::StartManaged(const ExecutionStream &stream, bool checked,
-                                                    bool callerValid, bool observeProducer) const
+                                                    bool callerValid, bool observeProducer,
+                                                    EagerEngine *emptyEngine) const
     {
         DNDS_check_throw_info(_state, "managed MPI begin requires an MPI binding; native providers use Enqueue");
-        auto managed = std::make_shared<TransferOperation::ManagedState>();
+        const bool emptyDirect = emptyEngine && HasEmptyDirectPayload();
+        auto managed = emptyDirect ? std::shared_ptr<TransferOperation::ManagedState>{}
+                                   : std::make_shared<TransferOperation::ManagedState>();
         bool valid = callerValid;
+        bool idle = true;
         ExecutionContext context;
         try
         {
-            stream.RegisterProgress(managed); // Before preparing/packing/posting.
+            if (!emptyDirect)
+                stream.RegisterProgress(managed); // Before preparing/packing/posting.
             context = stream.Context();
-            if (observeProducer && !checked && context.device == Device::Host())
+            if (emptyDirect)
+            {
+                std::lock_guard<std::mutex> lock(_state->mutex);
+                idle = !_state->active;
+            }
+            else if (observeProducer && !checked && context.device == Device::Host())
                 stream.Record().WaitHost();
         }
         catch (...)
         {
             MPI::AbortIfSolverFailure("managed MPI registration failed");
             valid = false; // Fold into the existing launch preflight, no new allreduce.
+        }
+        if (emptyDirect)
+        {
+            // A locally empty participant still enters the exact preflight
+            // sequence of its nonempty peers without reserving buffers or
+            // requiring a CPU-visible producer prefix.
+            if (checked)
+            {
+                _state->Preflight(valid && idle && bool(stream._tracking),
+                                  "checked MPI stream preflight failed on a rank");
+                _state->Preflight(true, "unordered checked MPI access on a rank");
+            }
+            const auto placed = [&](const Buffer &buffer)
+            { return buffer.GetDevice() == Device::Host() || buffer.GetDevice() == context.device; };
+            _state->Preflight(valid && idle && _state->plan->route.Valid() &&
+                                  placed(_state->source) && placed(_state->destination),
+                              "transfer access/stream preflight failed on a rank");
+            auto retained = _state;
+            try
+            {
+                emptyEngine->Submit(stream, [retained](ExecutionContext) {});
+                TransferOperation result;
+                result._nativeCompletion = std::make_shared<StreamEvent>(stream.Record());
+                return result;
+            }
+            catch (...)
+            {
+                MPI::AbortIfSolverFailure("empty MPI transfer submission failed");
+                throw;
+            }
         }
         try
         {
@@ -1052,58 +1092,12 @@ namespace DNDS::Runtime
     {
         return _state && !_provider && _state->emptyDirectPayload;
     }
-    TransferOperation TransferBinding::SubmitEmpty(EagerEngine &engine, const ExecutionStream &stream,
-                                                   bool callerValid) const
-    {
-        // A locally empty participant still enters exactly the preflights of
-        // its nonempty peers. No payload is read/written, so reserve no buffers
-        // and require no CPU-visible producer prefix. Stream ordering alone
-        // carries the halo publication dependency, for every backend/rank count.
-        bool idle;
-        {
-            std::lock_guard<std::mutex> lock(_state->mutex);
-            idle = !_state->active;
-        }
-        if (engine.ChecksAccess())
-        {
-            _state->Preflight(callerValid && idle && bool(stream._tracking),
-                              "checked MPI stream preflight failed on a rank");
-            // Nonempty checked peers next enter AccessTracking::Submit's
-            // unconditional agreement callback, before payload preparation.
-            // This route declares no payload accesses, but must participate in
-            // that same middle agreement to preserve collective ordering.
-            _state->Preflight(true, "unordered checked MPI access on a rank");
-        }
-        const auto context = stream.Context();
-        const auto placed = [&](const Buffer &buffer)
-        { return buffer.GetDevice() == Device::Host() || buffer.GetDevice() == context.device; };
-        _state->Preflight(callerValid && idle && _state->plan->route.Valid() &&
-                              placed(_state->source) && placed(_state->destination),
-                          "transfer access/stream preflight failed on a rank");
-        auto retained = _state;
-        try
-        {
-            // No mutable requests/workspace are touched, so repeated ordered
-            // empty publications may queue on this binding. A real active Begin
-            // still fails the checks above. Retain MPI/context/plan owners until
-            // native completion even when the public operation is discarded.
-            engine.Submit(stream, [retained](ExecutionContext) {});
-            TransferOperation result;
-            result._nativeCompletion = std::make_shared<StreamEvent>(stream.Record());
-            return result;
-        }
-        catch (...)
-        {
-            MPI::AbortIfSolverFailure("empty MPI transfer submission failed");
-            throw;
-        }
-    }
     TransferOperation TransferBinding::SubmitReady(EagerEngine &engine, const ExecutionStream &communication,
                                                    bool callerValid) const
     {
         DNDS_check_throw_info(engine.Owns(communication), "transfer stream belongs to another runtime");
         if (HasEmptyDirectPayload())
-            return SubmitEmpty(engine, communication, callerValid);
+            return StartManaged(communication, engine.ChecksAccess(), callerValid, false, &engine);
         if (!_provider)
             return engine.ChecksAccess() ? BeginReadyChecked(communication, callerValid)
                                          : BeginReadyScheduled(communication, callerValid);

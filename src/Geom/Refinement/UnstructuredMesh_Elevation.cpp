@@ -52,14 +52,17 @@ namespace DNDS::Geom
         const bool checks = !communication || communication->ChecksCollectivePreflight();
         Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
         CheckCollectiveMutationAvailable(checks);
+        std::shared_ptr<const UnstructuredMeshState> current;
         FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                        { DNDS_check_throw_info(_nativeState, "boundary smoothing requires native mesh authority"); });
+                                        {
+            current = _nativeState.Load();
+            DNDS_check_throw_info(current, "boundary smoothing requires native mesh authority"); });
         {
             const auto stamp = versions.Stamp();
-            auto work = NativeMeshSmoothing::PrepareBoundary(_nativeState, mpi, NativeSmoothingFacade::Options(elevationInfo), FiFBndIdNeedSmooth);
+            auto work = NativeMeshSmoothing::PrepareBoundary(current, mpi, NativeSmoothingFacade::Options(elevationInfo), FiFBndIdNeedSmooth);
             FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { stamp.Validate(); });
-            _nativeSmoothing = std::move(work);
+            _nativeSmoothing.Store(std::move(work));
             return;
         }
     }

@@ -514,10 +514,19 @@ namespace DNDS::Runtime
         auto result = std::make_shared<State::Allreduce>();
         result->owner = _state;
         const auto comm = _state->control;
-        const bool valid = src.GetDevice() == _state->device && dst.GetDevice() == _state->device &&
+        const size_t scalarBytes = scalar == ElementScalar::F32   ? 4
+                                   : scalar == ElementScalar::F64 ? 8
+                                   : scalar == ElementScalar::I32 ? 4
+                                   : scalar == ElementScalar::I64 ? 8
+                                                                  : 0;
+        const bool bytesMatch = scalarBytes != 0 && in.Elements() <= SIZE_MAX / scalarBytes &&
+                                src.Bytes() == in.Elements() * scalarBytes &&
+                                dst.Bytes() == out.Elements() * scalarBytes;
+        const bool valid = src.Identity() && dst.Identity() &&
+                           src.GetDevice() == _state->device && dst.GetDevice() == _state->device &&
                            in.Kind() == RowLayoutKind::Table && out.Kind() == RowLayoutKind::Table &&
                            in.Width() == in.Stride() && out.Width() == out.Stride() &&
-                           in.Width() == out.Width() && in.Rows() == out.Rows() &&
+                           in.Width() == out.Width() && in.Rows() == out.Rows() && bytesMatch &&
                            (Detail::IndependentBuffers(src, dst) || Detail::SameBufferOperand(src, dst)) &&
                            (op == Reduction::Sum || op == Reduction::Min || op == Reduction::Max);
         std::array<uint64_t, 4> descriptor{uint64_t(scalar), uint64_t(op), uint64_t(in.Rows()), uint64_t(in.Width())};

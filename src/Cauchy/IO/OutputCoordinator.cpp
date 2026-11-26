@@ -130,20 +130,34 @@ namespace DNDS::Cauchy
             InstallObservers();
         }
 
-        ~Data()
+        ~Data() noexcept
         {
             if (asynchronous)
             {
                 if (std::uncaught_exceptions())
                     MPI::AbortIfSolverFailure("solver unwinding with asynchronous output");
-                asynchronous->Drain();
+                try
+                {
+                    asynchronous->Drain();
+                }
+                catch (...)
+                {
+                    MPI::AbortIfSolverFailure("asynchronous output drain failed during teardown");
+                }
             }
             // Domain callbacks capture this owner. Withdraw them before logger,
             // CSV and scheduling state can disappear.
-            Visit([&](index, Domain &domain)
-                  {
-                      domain.SetProgressObserver({});
-                      domain.SetQuiescentObserver({}); });
+            try
+            {
+                Visit([&](index, Domain &domain)
+                      {
+                          domain.SetProgressObserver({});
+                          domain.SetQuiescentObserver({}); });
+            }
+            catch (...)
+            {
+                MPI::AbortIfSolverFailure("output observer cleanup failed during teardown");
+            }
         }
 
         template <class Action>

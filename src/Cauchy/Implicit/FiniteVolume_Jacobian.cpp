@@ -317,6 +317,11 @@ namespace DNDS::Cauchy
                 off.emplace(output.OffDiagonal().Write());
                 if (nv > 4)
                 {
+                    auto dView = diagonal.View<R::UniformTableRows>();
+                    OMP::ForRows(0, dView.RowCount(), [&](index cell)
+                                 {
+                        for (index k = 0; k < dView.Width(); ++k)
+                            dView(cell, k) = 0; });
                     auto evaluator = _data->equation.MakePointEvaluator();
                     AddEquationSourceJacobian(state, *context, diagonal, output.DiagonalMode(),
                                               controls.residualScale, evaluator, {}, output.RowMajorBlocks());

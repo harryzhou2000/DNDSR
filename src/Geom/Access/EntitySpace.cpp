@@ -271,7 +271,8 @@ namespace DNDS::Geom
 
     EntitySpace UnstructuredMesh::Entities(EntityKind kind) const
     {
-        DNDS_check_throw_info(_nativeState, "entity numbering requires native mesh authority");
-        return _nativeState->Entities(kind);
+        auto state = _nativeState.Load();
+        DNDS_check_throw_info(state, "entity numbering requires native mesh authority");
+        return state->Entities(kind);
     }
 }

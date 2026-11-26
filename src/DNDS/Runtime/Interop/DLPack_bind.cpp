@@ -44,6 +44,8 @@ namespace DNDS::Runtime
                     shape = {int64_t(layout.RowCount() / tile + (layout.RowCount() % tile != 0)), int64_t(layout.Width()), int64_t(tile)};
                     strides = {int64_t(layout.Width() * tile), int64_t(tile), 1};
                 }
+                DNDS_check_throw_info(context.device.space == MemorySpace::Host || context.device.space == MemorySpace::CUDA,
+                                      "DLPack export only supports Host and CUDA memory spaces");
                 tensor.dl_tensor = {access.View<uint8_t>().data,
                                     {context.device.space == MemorySpace::Host ? kDLCPU : kDLCUDA,
                                      context.device.space == MemorySpace::Host ? 0 : context.device.ordinal},
@@ -68,6 +70,8 @@ namespace DNDS::Runtime
             if (!copy.is_none() && py::cast<bool>(copy))
                 throw py::value_error("DLPack adapter only supports zero-copy sharing");
             auto device = array.Storage().GetDevice();
+            DNDS_check_throw_info(device.space == MemorySpace::Host || device.space == MemorySpace::CUDA,
+                                  "DLPack export only supports Host and CUDA memory spaces");
             auto deviceTuple = py::make_tuple(device.space == MemorySpace::Host ? 1 : 2,
                                               device.space == MemorySpace::Host ? 0 : device.ordinal);
             if (!dlDevice.is_none() && !deviceTuple.equal(dlDevice))
@@ -148,6 +152,8 @@ namespace DNDS::Runtime
                 throw py::error_already_set();
             auto owner = std::shared_ptr<DLManagedTensor>(managed, [](DLManagedTensor *value)
                                                           {
+                if (!Py_IsInitialized())
+                    return;
                 py::gil_scoped_acquire gil;
                 if (value->deleter) value->deleter(value); });
             auto allocation = Allocation::Import(std::shared_ptr<void>(owner, pointer), bytes, device);
@@ -163,7 +169,11 @@ namespace DNDS::Runtime
     {
         auto array = py::reinterpret_borrow<py::class_<PythonArray>>(m.attr("Array"));
         array.def("__dlpack_device__", [](const PythonArray &a)
-                  { auto d = a.Storage().GetDevice(); return py::make_tuple(d.space == MemorySpace::Host ? 1 : 2, d.space == MemorySpace::Host ? 0 : d.ordinal); })
+                  {
+                      auto d = a.Storage().GetDevice();
+                      DNDS_check_throw_info(d.space == MemorySpace::Host || d.space == MemorySpace::CUDA,
+                                            "DLPack only supports Host and CUDA memory spaces");
+                      return py::make_tuple(d.space == MemorySpace::Host ? 1 : 2, d.space == MemorySpace::Host ? 0 : d.ordinal); })
             .def("__dlpack__", [](const PythonArray &a, py::object stream, py::object, py::object device, py::object copy)
                  { return ExportArray(a, std::move(stream), std::move(copy), std::move(device)); }, py::arg("stream") = py::none(), py::kw_only(), py::arg("max_version") = py::none(), py::arg("dl_device") = py::none(), py::arg("copy") = py::none(), "Zero-copy numeric table export: logical2D for row/column tables; physical3D (tiles,components,tile) including tails for tiled storage. Logical row count remains array.layout.row_count. Holds an exclusive write lease until the consumer's last alias dies; CUDA release fences the passed stream. Finish DNDS producers first; join all other foreign streams into this stream and keep it alive through release. No autograd contract.");
         m.def("from_dlpack", &ImportArray,

@@ -622,9 +622,8 @@ TEST_CASE("Quadrature: Triangle integrates polynomials up to expected order")
                 t_real exact = ExactMonomialIntegral(TriSpace, a, b);
                 t_real numeric = QuadratureMonomialIntegral(TriSpace, tc.order, a, b);
 
-                if (std::isnan(exact) || std::isnan(numeric))
-                    continue;
-
+                REQUIRE(std::isfinite(exact));
+                REQUIRE(std::isfinite(numeric));
                 CHECK(numeric == doctest::Approx(exact).epsilon(tol));
             }
         }
@@ -666,9 +665,8 @@ TEST_CASE("Quadrature: Tetrahedron integrates polynomials up to expected order")
                     t_real exact = ExactMonomialIntegral(TetSpace, a, b, c);
                     t_real numeric = QuadratureMonomialIntegral(TetSpace, tc.order, a, b, c);
 
-                    if (std::isnan(exact) || std::isnan(numeric))
-                        continue;
-
+                    REQUIRE(std::isfinite(exact));
+                    REQUIRE(std::isfinite(numeric));
                     CHECK(numeric == doctest::Approx(exact).epsilon(tol));
                 }
             }
@@ -706,9 +704,8 @@ TEST_CASE("Quadrature: Prism integrates polynomials up to expected order")
                     t_real exact = ExactMonomialIntegral(PrismSpace, a, b, c);
                     t_real numeric = QuadratureMonomialIntegral(PrismSpace, tc.order, a, b, c);
 
-                    if (std::isnan(exact) || std::isnan(numeric))
-                        continue;
-
+                    REQUIRE(std::isfinite(exact));
+                    REQUIRE(std::isfinite(numeric));
                     CHECK(numeric == doctest::Approx(exact).epsilon(tol));
                 }
             }

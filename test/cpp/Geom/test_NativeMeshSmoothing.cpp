@@ -153,6 +153,7 @@ TEST_CASE("Native smoothing Hermite boundary oracle and detached local RBF")
     CHECK(smoothed->MeshNamespace() == source->MeshNamespace());
     CHECK(smoothed->Entities(G::EntityKind::Node).ChecksCollectivePreflight() == preflight);
     auto current = smoothed->Snapshot(R::Device::Host()).AcquireRead();
+    I movedFree = 0;
     for (I node = 0; node < source->NumOwned(G::EntityKind::Node); ++node)
     {
         const auto before = old.HostView().Coord(node), after = current.HostView().Coord(node);
@@ -162,10 +163,15 @@ TEST_CASE("Native smoothing Hermite boundary oracle and detached local RBF")
             CHECK(after.norm() == doctest::Approx(radius + increase));
         if (role == G::NativeSmoothingConstraint::OriginalBoundary)
             CHECK((after - before).norm() == 0);
+        if (role == G::NativeSmoothingConstraint::Interior && source->OriginalEntityId(G::EntityKind::Node, node) != 1000 &&
+            (after - before).norm() > 1e-6)
+            ++movedFree;
         if (source->OriginalEntityId(G::EntityKind::Node, node) == 1000)
             CHECK(after.norm() < 1e-10);
         CHECK((source->BorrowHostView().Coord(node) - before).norm() == 0);
     }
+    MPI_Allreduce(MPI_IN_PLACE, &movedFree, 1, DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+    CHECK(movedFree > 0);
     source.reset();
     workspace.reset();
     CHECK(current.HostView().NumCell() == old.HostView().NumCell());

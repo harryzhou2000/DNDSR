@@ -109,6 +109,16 @@ namespace DNDS::Cauchy
         std::shared_ptr<const LinearPatternStorage> jacobianColumns;
         std::vector<int> boundaryZones;
         std::vector<BoundaryOutputRow> boundaryOutputRows;
+        struct CopyableMutex
+        {
+            mutable std::mutex mutex;
+            CopyableMutex() = default;
+            CopyableMutex(const CopyableMutex &) {}
+            CopyableMutex &operator=(const CopyableMutex &) { return *this; }
+            CopyableMutex(CopyableMutex &&) noexcept {}
+            CopyableMutex &operator=(CopyableMutex &&) noexcept { return *this; }
+        };
+        CopyableMutex boundaryOutputMutex;
         mutable std::shared_ptr<const BoundaryOutputGeometry> boundaryOutputGeometry;
         std::shared_ptr<const BoundaryOutputGeometry> PrepareBoundaryOutput() const;
         bool hasPressureBoundary = false;

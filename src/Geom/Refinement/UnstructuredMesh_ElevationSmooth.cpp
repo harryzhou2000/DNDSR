@@ -9,16 +9,22 @@ namespace DNDS::Geom
         const bool checks = !communication || communication->ChecksCollectivePreflight();
         Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
         CheckCollectiveMutationAvailable(checks);
+        std::shared_ptr<const UnstructuredMeshState> current;
         FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                        { DNDS_check_throw_info(_nativeState, "internal smoothing requires native mesh authority"); });
+                                        {
+            current = _nativeState.Load();
+            DNDS_check_throw_info(current, "internal smoothing requires native mesh authority"); });
         {
             const auto stamp = versions.Stamp();
+            std::shared_ptr<const NativeSmoothingWorkspace> work;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                            { DNDS_check_throw_info(_nativeSmoothing && _nativeSmoothing->Source() == _nativeState, "native smoothing requires a fresh boundary workspace for the current mesh"); });
-            auto prepared = NativeMeshSmoothing::LocalRBF(*_nativeSmoothing, mpi, NativeSmoothingFacade::Options(elevationInfo));
-            if (prepared != _nativeState)
+                                            {
+                work = _nativeSmoothing.Load();
+                DNDS_check_throw_info(work && work->Source() == current, "native smoothing requires a fresh boundary workspace for the current mesh"); });
+            auto prepared = NativeMeshSmoothing::LocalRBF(*work, mpi, NativeSmoothingFacade::Options(elevationInfo));
+            if (prepared != current)
                 PublishNativeGeometry(std::move(prepared), stamp);
-            _nativeSmoothing.reset();
+            _nativeSmoothing.Reset();
             return;
         }
     }
@@ -29,16 +35,22 @@ namespace DNDS::Geom
         const bool checks = !communication || communication->ChecksCollectivePreflight();
         Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
         CheckCollectiveMutationAvailable(checks);
+        std::shared_ptr<const UnstructuredMeshState> current;
         FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                        { DNDS_check_throw_info(_nativeState, "internal smoothing requires native mesh authority"); });
+                                        {
+            current = _nativeState.Load();
+            DNDS_check_throw_info(current, "internal smoothing requires native mesh authority"); });
         {
             const auto stamp = versions.Stamp();
+            std::shared_ptr<const NativeSmoothingWorkspace> work;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                            { DNDS_check_throw_info(_nativeSmoothing && _nativeSmoothing->Source() == _nativeState, "native smoothing requires a fresh boundary workspace for the current mesh"); });
-            auto prepared = NativeMeshSmoothing::GlobalRBF(*_nativeSmoothing, mpi, NativeSmoothingFacade::Options(elevationInfo));
-            if (prepared != _nativeState)
+                                            {
+                work = _nativeSmoothing.Load();
+                DNDS_check_throw_info(work && work->Source() == current, "native smoothing requires a fresh boundary workspace for the current mesh"); });
+            auto prepared = NativeMeshSmoothing::GlobalRBF(*work, mpi, NativeSmoothingFacade::Options(elevationInfo));
+            if (prepared != current)
                 PublishNativeGeometry(std::move(prepared), stamp);
-            _nativeSmoothing.reset();
+            _nativeSmoothing.Reset();
             return;
         }
     }

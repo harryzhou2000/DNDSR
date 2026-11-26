@@ -121,9 +121,12 @@ namespace DNDS::Cauchy
             if (!entries.count(name))
                 return std::nullopt;
             auto source = Runtime::ReadArray<real>(serializer, name, mpi, shard);
+            const index targetWidth = width > 0 ? width : index(source.Layout().Width());
             std::optional<Runtime::Array<real>> destination;
             MPI::LocalStage(mpi, [&]
-                            { destination.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), width)); });
+                            {
+                                DNDS_check_throw_info(targetWidth > 0, "restored checkpoint cell array must have positive width");
+                                destination.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), targetWidth)); });
             transfer(source, *destination);
             if (_state.trial.Device() != Runtime::Device::Host())
                 MPI::LocalStage(mpi, [&]
@@ -131,7 +134,7 @@ namespace DNDS::Cauchy
             return destination;
         };
         if (polynomial)
-            result->endpointHistory = restoreCellArray("internal_endpoint_limited_vr_history", 2);
+            result->endpointHistory = restoreCellArray("internal_endpoint_limited_vr_history", 0);
         result->ditr = result->time.method == "ditr";
         if (result->ditr)
             for (int stage = 0; stage < 2; ++stage)
@@ -145,7 +148,7 @@ namespace DNDS::Cauchy
         {
             result->middleWarm.emplace(restoreReconstruction("internal_middle_warm_field_", metadata.at("middle_warm_storage")));
             result->middleFinal.emplace(restoreReconstruction("internal_middle_final_field_", metadata.at("middle_final_storage")));
-            result->middleHistory = restoreCellArray("internal_middle_limited_vr_history", 2);
+            result->middleHistory = restoreCellArray("internal_middle_limited_vr_history", 0);
         }
         result->nonlinear = NonlinearSolveState::FromJson(metadata.at("nonlinear_state"));
         if (result->nonlinear.terminal && !result->ditr && result->time.method != "bdf1" && result->time.method != "bdf2")
@@ -162,15 +165,21 @@ namespace DNDS::Cauchy
         result->trialDt = metadata.at("trial_dt").get<real>();
         result->progressTime = metadata.at("progress_time").get<real>();
         serializer->CloseFile();
+        size_t trialIndex = 0;
         MPI::LocalStage(mpi, [&]
                         {
             DNDS_check_throw_info(result->trialEpoch.trial > 0 && std::isfinite(result->trialDt) &&
                                       result->trialDt >= 0 && std::isfinite(result->progressTime),
                                   "invalid exact internal checkpoint cursor");
             const auto found = std::find(result->time.names.begin(), result->time.names.end(), "trial");
-            DNDS_check_throw_info(found != result->time.names.end() &&
-                                      Admissible(result->time.fields[size_t(found - result->time.names.begin())]),
-                                  "exact internal checkpoint trial is inadmissible");
+            DNDS_check_throw_info(found != result->time.names.end(), "exact internal checkpoint lacks trial field");
+            trialIndex = size_t(found - result->time.names.begin()); });
+        // Admissible() is collective across the domain communicator; run it
+        // outside LocalStage after all ranks have agreed on trialIndex.
+        const bool admissible = Admissible(result->time.fields[trialIndex]);
+        MPI::LocalStage(mpi, [&]
+                        {
+            DNDS_check_throw_info(admissible, "exact internal checkpoint trial is inadmissible");
             auto validationTrial = EquationDofOperations::NewVector(_state.trial);
             auto validationStepper = _state.timeStepper->Fresh();
             validationStepper->RestoreActive(result->time, validationTrial);

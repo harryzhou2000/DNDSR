@@ -53,13 +53,16 @@ def pytest_addoption(parser):
                      help="Select the CI single-process or distributed catalog")
 
 
-# Distributed CI runs all Runtime/solver orchestration cases and selected mesh
-# and CFV fixtures. Empty prefixes select every case in that module.
+# Distributed CI runs all Runtime/solver/mesh/CFV MPI suites.
+# Empty prefixes select every case in that module.
 _MPI_MODULES = {
     "test/demos/test_runtime_solver.py": ("",),
+    "test/DNDS/test_native_dof_algebra.py": ("",),
     "test/Cauchy/test_operators.py": ("",),
-    "test/Geom/test_native_mesh_helpers.py": ("test_default_native_archive_file_faults_reject_collectively_and_retry",),
-    "test/CFV/test_fv_facility.py": ("test_reconstruction_shared_buffers_explicit_halo_and_point_sampling",),
+    "test/Cauchy/test_domain.py": ("",),
+    "test/Geom/test_native_mesh_helpers.py": ("",),
+    "test/Geom/test_native_mesh_builder.py": ("",),
+    "test/CFV/test_fv_facility.py": ("",),
 }
 
 
