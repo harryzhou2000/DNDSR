@@ -171,7 +171,7 @@ namespace DNDS::Algebra
         uint64_t weightEpoch = 0;
         index rows = 0, entries = 0;
         int blockSize = 1;
-        bool pattern = false, uploaded = false, vectorsBound = false, ready = false;
+        bool pattern = false, uploaded = false, vectorsBound = false, solverSetup = false, ready = false;
         std::optional<Runtime::Array<real>> nativeValues;
         uint64_t nativeEpoch = 0;
         AmgXCopyStatistics copies;
@@ -186,7 +186,7 @@ namespace DNDS::Algebra
         void SetupOrRefresh(Runtime::ExecutionContext context)
         {
             const auto start = std::chrono::steady_clock::now();
-            const bool refresh = geometricAggregation && uploaded;
+            const bool refresh = geometricAggregation && solverSetup;
             if (refresh)
             {
                 Check(AMGX_solver_resetup(solver, matrix));
@@ -203,6 +203,7 @@ namespace DNDS::Algebra
                     CheckCUDA(cudaDeviceSynchronize());
                 }
                 Check(AMGX_solver_setup(solver, matrix));
+                solverSetup = true;
             }
             CheckCUDA(cudaDeviceSynchronize());
             const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -338,7 +339,7 @@ namespace DNDS::Algebra
         _state->blockSize = blockSize;
         _state->separateDiagonal = separateDiagonal;
         _state->pattern = true;
-        _state->uploaded = _state->vectorsBound = _state->ready = false;
+        _state->uploaded = _state->vectorsBound = _state->solverSetup = _state->ready = false;
     }
 
     void AmgXPreconditioner::SetGeometricWeights(const Runtime::Array<real> &weights)

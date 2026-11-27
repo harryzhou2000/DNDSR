@@ -39,11 +39,12 @@ namespace DNDS::CFV
                                         const R::Array<real> *base, unsigned mergeMask) const
     {
         ValidateMaximum(input, output, caps, region);
+        DNDS_check_throw_info((mergeMask & ~3u) == 0, "LVR mergeMask only supports base columns 0 and 1");
         DNDS_check_throw_info(mergeMask == 0 || base != nullptr, "LVR mergeMask requires a base array");
         if (base)
         {
             DNDS_check_throw_info(base->GetDevice() == Device() && !base->Layout().IsVariable() &&
-                                      base->RowCount() == _metrics.NumCell() && base->Layout().Width() == output.Width(),
+                                      base->RowCount() == _metrics.NumCell() && base->Layout().Width() >= 2,
                                   "LVR merge base shape or placement differs");
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(base->Storage(), output.Owned().Storage()),
                                   "LVR maximum output aliases merge base");
