@@ -9,17 +9,19 @@ namespace DNDS::Cauchy::CUDA::Detail
      * @details This numerical adapter owns nothing. The CTA retires its bank
      * only after all consuming lanes join. Equal periodic parent cell IDs
      * denote the same native state; point arithmetic applies the image map.
+     * Width is fixed by the C/M/D role. The pointer already includes that
+     * role's offset, leaving only the parent identity and pitch at runtime.
      */
     template <int Width = 0>
     struct StagedFaceField
     {
-        static constexpr size_t extent = Width ? size_t(Width) : Runtime::DynamicExtent;
+        static constexpr size_t extent = size_t(Width);
         using Row = Runtime::RowSpan<const real, false, extent, extent, 1>;
-        SpanView<const real, false> values;
-        index own = UnInitIndex, other = UnInitIndex, width = 0, pitch = 0, first = 0;
+        const real *values = nullptr;
+        index own = UnInitIndex, pitch = 0;
         DNDS_DEVICE_CALLABLE Row operator[](index iCell) const
         {
-            return {values.data() + (iCell == own ? 0 : 1) * pitch + first, width, 1};
+            return {values + (iCell == own ? 0 : 1) * pitch, Width, 1};
         }
         DNDS_DEVICE_CALLABLE real operator()(index iCell, index j) const
         {
@@ -81,29 +83,27 @@ namespace DNDS::Cauchy::CUDA::Detail
 
     template <int C, int M, int D>
     __device__ StagedFaceFields<C, M, D> BindFaceStage(SpanView<const real, false> bank, RHSFaceStageShape shape,
-                                                       int slot, const FiniteVolumeDetail::SampleRecord &sample,
+                                                       int slot, index own,
                                                        const RHSKernelControls &controls, const RHSShapeFields<C, M, D> &fields)
     {
         const auto values = bank.Subspan(index(slot) * 2 * shape.width, 2 * shape.width);
         StagedFaceFields<C, M, D> result;
-        result.mean = {values, sample.cell, sample.other, C, shape.width, 0};
+        result.mean = {values.data(), own, shape.width};
         if constexpr (M == 0)
         {
-            result.gradients = {values, sample.cell, sample.other, shape.reconstruction, shape.width, C};
-            result.viscousGradients = {values, sample.cell, sample.other, shape.reconstruction, shape.width,
-                                       controls.distinctViscous ? shape.ViscousFirst() : C};
+            result.gradients = {values.data() + C, own, shape.width};
+            result.viscousGradients = {values.data() + (controls.distinctViscous ? shape.ViscousFirst() : C), own, shape.width};
         }
         else
         {
-            result.coefficients = {values, sample.cell, sample.other, C * M, shape.width, C};
-            result.viscousCoefficients = {values, sample.cell, sample.other, C * M, shape.width,
-                                          controls.distinctViscous ? shape.ViscousFirst() : C};
+            result.coefficients = {values.data() + C, own, shape.width};
+            result.viscousCoefficients = {values.data() + (controls.distinctViscous ? shape.ViscousFirst() : C), own, shape.width};
         }
         if (controls.primitiveGradient)
-            result.primitiveGradients = {values, sample.cell, sample.other, 5 * D, shape.width, shape.ViscousFirst()};
-        result.preparedMean = {values, sample.cell, sample.other, 2, shape.width, shape.AuxFirst()};
-        result.waveJump = {values, sample.cell, sample.other, 1, shape.width, shape.AuxFirst() + 2};
-        result.pressureMinimum = {values, sample.cell, sample.other, 2, shape.width, shape.AuxFirst() + 3};
+            result.primitiveGradients = {values.data() + shape.ViscousFirst(), own, shape.width};
+        result.preparedMean = {values.data() + shape.AuxFirst(), own, shape.width};
+        result.waveJump = {values.data() + shape.AuxFirst() + 2, own, shape.width};
+        result.pressureMinimum = {values.data() + shape.AuxFirst() + 3, own, shape.width};
         result.incoming = fields.incoming;
         result.centerViscosity = fields.centerViscosity;
         result.hasPreparedMean = fields.hasPreparedMean;

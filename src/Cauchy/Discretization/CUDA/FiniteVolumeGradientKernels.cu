@@ -148,7 +148,10 @@ namespace DNDS::Cauchy::CUDA
             };
             // PP POLICY -- retry the complete flow gradient, never individual
             // points/components. The actual endpoint predicate is unchanged.
-            for (int iteration = 0; iteration < 1000 && !accepted(); ++iteration)
+            // Reuse the predicate for the published gradient: checking the
+            // same stored values again after a successful loop exit is redundant.
+            bool storedGood = accepted();
+            for (int iteration = 0; iteration < 1000 && !storedGood; ++iteration)
             {
                 const real previous = beta;
                 beta = p.clippedPolicy == ReconstructionClippedReferencePolicy::FallbackToBase ? 0 : beta * .9;
@@ -160,8 +163,9 @@ namespace DNDS::Cauchy::CUDA
                     for (int d = 0; d < p.dimension; ++d)
                         points.gradients[j][d] *= beta / previous;
                 publish();
+                storedGood = accepted();
             }
-            if (!accepted())
+            if (!storedGood)
                 return NumericalStatus{NumericalError::InvalidState, 5}.At(iCell);
             outputBeta = beta;
             return {};

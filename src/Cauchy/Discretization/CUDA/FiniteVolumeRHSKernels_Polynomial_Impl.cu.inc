@@ -44,9 +44,11 @@ namespace DNDS::Cauchy::CUDA::Detail
                 const int side = int(iWord / prepared.shape.width) % 2;
                 const int column = int(iWord % prepared.shape.width);
                 const auto face = prepared.segments(package.firstSegment + slot, 0);
-                const auto anchor = geometry.FaceAnchor(face.auxiliaryFace);
+                // Staging needs only canonical parent IDs, not a quadrature
+                // sample's metric, boundary or periodic point data.
+                const auto parents = geometry.stencil.topology.FaceCells(geometry.stencil.stencilFaces(face.auxiliaryFace, 0));
                 const real *source = FaceStageSource(fields, controls, prepared.shape,
-                                                     side ? anchor.other : anchor.cell, column);
+                                                     parents[side], column);
                 if (source)
                 {
 #if __CUDA_ARCH__ >= 800
@@ -95,9 +97,10 @@ namespace DNDS::Cauchy::CUDA::Detail
             index firstPoint = 0;
             if (ownSlot >= 0)
             {
-                const auto anchor = geometry.FaceAnchor(segment.auxiliaryFace);
-                staged = BindFaceStage(bank, prepared.shape, ownSlot, anchor, controls, fields);
-                firstPoint = geometry.faceOffsets(anchor.face, 0);
+                const index face = geometry.stencil.stencilFaces(segment.auxiliaryFace, 0);
+                const auto parents = geometry.stencil.topology.FaceCells(face);
+                staged = BindFaceStage(bank, prepared.shape, ownSlot, parents[0], controls, fields);
+                firstPoint = geometry.faceOffsets(face, 0);
             }
             std::array<real, Components> total{}, totalLow{};
             index totalFallback = 0;

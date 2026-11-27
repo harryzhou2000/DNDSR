@@ -15,6 +15,15 @@ five, A100 defaults are:
 | Diagonal inverse | `guardedLU`, retaining the condition guard and filtered SVD fallback |
 | Linear Jacobi | Existing thread-per-cell, compact matrix storage |
 
+For coupled AoS **3D SA P2/Q3**, the A100 preset selects 512-thread
+polynomial PP and a 256-thread FP64 RHS block. It leaves the mapping and
+grid selection to the existing RHS resolver, including its periodic presets.
+The block default does not override explicit block sizes, face-thread mapping,
+double buffering, row hoisting, custom reductions or reduced arithmetic.
+Direct-P1 launch geometry is unchanged. The hardware families sharing the
+A100 preset inherit these shape choices; this is not a performance guarantee
+on every device or mesh.
+
 Cauchy selects `fp64V2` for A100 and A800 combined AoS polynomial relaxation.
 A800 uses the A100 VR preset at compute capability 8.0. The other automatic
 policies in the table retain their own device and shape criteria. CFV

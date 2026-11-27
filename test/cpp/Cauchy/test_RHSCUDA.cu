@@ -660,120 +660,145 @@ TEST_CASE("CUDA canonical ghost-left and self-periodic faces preserve owned sign
                             state[2] * velocity, state[3] * velocity, (state[4] + pressure) * velocity};
     };
     for (bool self : {false, true})
-    {
-        CAPTURE(self);
-        CauchyTest::CompactStencilFixture::Input input;
-        input.cellFaces = self ? std::vector<std::vector<I>>{{0, 0}} : std::vector<std::vector<I>>{{0}};
-        input.incidenceBits = self ? std::vector<std::vector<uint8_t>>{{0, 1}} : std::vector<std::vector<uint8_t>>{{0}};
-        input.faceCells = self ? std::vector<std::array<I, 2>>{{{0, 0}}} : std::vector<std::array<I, 2>>{{{1, 0}}};
-        input.faceOffsets = {0, 1};
-        input.cells = {1, 1, 0, 0, 1, 0, 0, 1};
-        if (!self)
-            input.cells.insert(input.cells.end(), {1, -1, 0, 0, -1, 0, 0, 1});
-        constexpr real area = .75;
-        input.faceMetrics = input.quadrature = {.25, .2, 0, 1, 0, 0, area};
-        input.codes = {4};
-        input.parameters.rotatedGenerators = 1;
-        input.parameters.generators.rotation[1].map() << 0, -1, 0, 1, 0, 0, 0, 0, 1;
-        input.parameters.generators.translation[1].map().setZero();
-        input.quadratureBoundaryValues = false;
-        input.coreCells = self ? std::vector<I>{0} : std::vector<I>{};
-        input.dependentCells = self ? std::vector<I>{} : std::vector<I>{0};
-        input.coreFaces = self ? std::vector<I>{0} : std::vector<I>{};
-        input.dependentFaces = self ? std::vector<I>{} : std::vector<I>{0};
-        CauchyTest::CompactStencilFixture hostGeometry(input), geometry(input, context);
-        const auto leftRecord = hostGeometry.View().RHSFaceSample(0, 0, 0);
-        CHECK(leftRecord.cell == (self ? 0 : 1)); // The canonical ghost stays on the left.
-        const auto rightRecord = hostGeometry.View().GradientSample(0, self ? 1 : 0);
-        CHECK(rightRecord.side == 1);
-        if (self)
+        for (bool modal : {false, true})
         {
-            CHECK(hostGeometry.View().topology.CellFaces(0).size() == 2);
-            CHECK(hostGeometry.View().GradientSample(0, 0).side == 0);
-        }
-        const auto owned = gas.Conservative({1.2, .3, -.2, .04, 1.1});
-        const auto remote = gas.Conservative({.9, -.1, .15, -.02, .8});
-        const auto left = self ? owned : remote;
-        const auto right = rotate(owned, false); // right stored -> canonical left
-        const auto fl = physicalFlux(left), fr = physicalFlux(right);
-        const real signal = std::max(std::abs(left[1] / left[0]) + std::sqrt(gas.gamma * gas.Pressure(left) / left[0]),
-                                     std::abs(right[1] / right[0]) + std::sqrt(gas.gamma * gas.Pressure(right) / right[0]));
-        C::FlowState flux{}, expected{};
-        for (int j = 0; j < 5; ++j)
-            flux[j] = .5 * (fl[j] + fr[j]) - .5 * signal * (right[j] - left[j]);
-        const auto rightFlux = rotate(flux, true); // canonical left -> stored right
-        for (int j = 0; j < 5; ++j)
-            expected[j] = area * (rightFlux[j] - (self ? flux[j] : 0));
-        auto means = Rows<real>({owned.begin(), owned.end()}, 5).To(context.device);
-        auto ghosts = Rows<real>(self ? std::vector<real>{} : std::vector<real>{remote.begin(), remote.end()}, 5).To(context.device);
-        auto selected = Rows<I>({0}).To(context.device), noRows = Rows<I>({}).To(context.device);
-        C::PerfectGasBoundaryParameters interior;
-        interior.kind = C::BoundaryKind::Interior;
-        auto conditions = Rows<C::PerfectGasBoundaryParameters>({interior}).To(context.device);
-        C::ThermalPolicy thermal(equation, 1e-12, 1e-12, 0, 1e-12);
-        K::RHSKernelParameters parameters;
-        parameters.physics = C::PerfectGasSpatialParameters::FromEquation(equation, 2);
-        parameters.thermal = thermal.View();
-        auto policy = Rows<K::RHSKernelParameters>({parameters}).To(context.device);
-        const auto meanRead = means.Read(context), ghostRead = ghosts.Read(context);
-        const auto conditionRead = conditions.Read(context);
-        const auto selectedRead = selected.Read(context), emptyRead = noRows.Read(context);
-        const auto policyRead = policy.Read(context);
-        K::RHSGeometry numerical;
-        numerical.stencil = geometry.View();
-        numerical.cellCent = numerical.stencil.metric.cellCent;
-        numerical.cellBary = numerical.stencil.metric.cellBary;
-        numerical.faceOffsets = numerical.stencil.metric.faceOffsets;
-        numerical.quadrature = numerical.stencil.metric.quadrature;
-        numerical.conditions = conditionRead.View<R::FixedRows<1>>();
-        K::RHSGeometryPublication publication(numerical, context);
-        K::RHSFields fields;
-        fields.mean = {meanRead.View<R::UniformTableRows>(), ghostRead.View<R::UniformTableRows>()};
-        K::RHSKernelControls controls;
-        controls.components = 5;
-        controls.dimension = 2;
-        controls.direct = controls.firstOrder = true;
-        controls.solver = C::Riemann::Solver::Rusanov;
-        controls.fluxPolicy.rusanov = true;
-        controls.fluxPolicy.required = C::Riemann::RequiredInputs(controls.solver);
-        const std::array<I, 1> pointCounts{1};
-        const auto packages = K::RHSFacePackages::Prepare(selected, {pointCounts.data(), 1}, controls, context);
-        R::Array<real> faces(R::RowLayout::Dense(1, 5), context.device), result(R::RowLayout::Dense(1, 5), context.device);
-        R::Array<DNDS::NumericalStatus> faceStatus(R::RowLayout::Dense(1, 1), context.device), cellStatus(R::RowLayout::Dense(1, 1), context.device);
-        R::Array<I> counts(R::RowLayout::Dense(1, 1), context.device);
-        {
-            auto out = faces.Write(context);
-            auto status = faceStatus.Write(context);
-            auto count = counts.Write(context);
-            K::RHSFaceOutputs outputs{out.View<R::TableRows>(), {}, {}, status.View<R::FixedRows<1>>(), count.View<R::FixedRows<1>>()};
-            auto core = fields;
-            core.mean.ghost = {};
-            // The core launch intentionally has no ghost allocation. For the
-            // right-owned case it is empty; dependent work sees the ghost.
-            K::EvaluateFluxFaces(context, publication, policyRead.View<R::FixedRows<1>>(), controls, core, outputs,
-                                 self ? selectedRead.View<R::FixedRows<1>>() : emptyRead.View<R::FixedRows<1>>(), false, packages.View());
+            CAPTURE(self);
+            CAPTURE(modal);
+            CauchyTest::CompactStencilFixture::Input input;
+            input.cellFaces = self ? std::vector<std::vector<I>>{{0, 0}} : std::vector<std::vector<I>>{{0}};
+            input.incidenceBits = self ? std::vector<std::vector<uint8_t>>{{0, 1}} : std::vector<std::vector<uint8_t>>{{0}};
+            input.faceCells = self ? std::vector<std::array<I, 2>>{{{0, 0}}} : std::vector<std::array<I, 2>>{{{1, 0}}};
+            input.faceOffsets = {0, 1};
+            input.cells = {1, 1, 0, 0, 1, 0, 0, 1};
             if (!self)
-                K::EvaluateFluxFaces(context, publication, policyRead.View<R::FixedRows<1>>(), controls, fields, outputs,
-                                     selectedRead.View<R::FixedRows<1>>(), true, packages.View());
-            REQUIRE(cudaStreamSynchronize(::DNDS::Runtime::CUDAStream(context)) == cudaSuccess);
+                input.cells.insert(input.cells.end(), {1, -1, 0, 0, -1, 0, 0, 1});
+            constexpr real area = .75;
+            input.faceMetrics = input.quadrature = {.25, .2, 0, 1, 0, 0, area};
+            input.codes = {4};
+            input.parameters.rotatedGenerators = 1;
+            input.parameters.generators.rotation[1].map() << 0, -1, 0, 1, 0, 0, 0, 0, 1;
+            input.parameters.generators.translation[1].map().setZero();
+            input.quadratureBoundaryValues = false;
+            input.coreCells = self ? std::vector<I>{0} : std::vector<I>{};
+            input.dependentCells = self ? std::vector<I>{} : std::vector<I>{0};
+            input.coreFaces = self ? std::vector<I>{0} : std::vector<I>{};
+            input.dependentFaces = self ? std::vector<I>{} : std::vector<I>{0};
+            CauchyTest::CompactStencilFixture hostGeometry(input), geometry(input, context);
+            const auto leftRecord = hostGeometry.View().RHSFaceSample(0, 0, 0);
+            CHECK(leftRecord.cell == (self ? 0 : 1)); // The canonical ghost stays on the left.
+            const auto rightRecord = hostGeometry.View().GradientSample(0, self ? 1 : 0);
+            CHECK(rightRecord.side == 1);
+            if (self)
+            {
+                CHECK(hostGeometry.View().topology.CellFaces(0).size() == 2);
+                CHECK(hostGeometry.View().GradientSample(0, 0).side == 0);
+            }
+            const auto owned = gas.Conservative({1.2, .3, -.2, .04, 1.1});
+            const auto remote = gas.Conservative({.9, -.1, .15, -.02, .8});
+            const auto left = self ? owned : remote;
+            const auto right = rotate(owned, false); // right stored -> canonical left
+            const auto fl = physicalFlux(left), fr = physicalFlux(right);
+            const real signal = std::max(std::abs(left[1] / left[0]) + std::sqrt(gas.gamma * gas.Pressure(left) / left[0]),
+                                         std::abs(right[1] / right[0]) + std::sqrt(gas.gamma * gas.Pressure(right) / right[0]));
+            C::FlowState flux{}, expected{};
+            for (int j = 0; j < 5; ++j)
+                flux[j] = .5 * (fl[j] + fr[j]) - .5 * signal * (right[j] - left[j]);
+            const auto rightFlux = rotate(flux, true); // canonical left -> stored right
+            for (int j = 0; j < 5; ++j)
+                expected[j] = area * (rightFlux[j] - (self ? flux[j] : 0));
+            auto means = Rows<real>({owned.begin(), owned.end()}, 5).To(context.device);
+            auto ghosts = Rows<real>(self ? std::vector<real>{} : std::vector<real>{remote.begin(), remote.end()}, 5).To(context.device);
+            // A zero P2 polynomial has the same independent constant-state flux,
+            // but exercises shared staging with ghost-left and equal parent IDs.
+            constexpr int modes = 5;
+            auto coefficients = Rows<real>(std::vector<real>(5 * modes, 0), 5 * modes).To(context.device);
+            auto ghostCoefficients = Rows<real>(std::vector<real>(self ? 0 : 5 * modes, 0), 5 * modes).To(context.device);
+            std::vector<real> moments((self ? 1 : 2) * (modes + 1), 0);
+            for (size_t i = 0; i < moments.size(); i += modes + 1)
+                moments[i] = 1;
+            auto cellMoments = Rows<real>(moments, modes + 1).To(context.device);
+            auto selected = Rows<I>({0}).To(context.device), noRows = Rows<I>({}).To(context.device);
+            C::PerfectGasBoundaryParameters interior;
+            interior.kind = C::BoundaryKind::Interior;
+            auto conditions = Rows<C::PerfectGasBoundaryParameters>({interior}).To(context.device);
+            C::ThermalPolicy thermal(equation, 1e-12, 1e-12, 0, 1e-12);
+            K::RHSKernelParameters parameters;
+            parameters.physics = C::PerfectGasSpatialParameters::FromEquation(equation, 2);
+            parameters.thermal = thermal.View();
+            auto policy = Rows<K::RHSKernelParameters>({parameters}).To(context.device);
+            const auto meanRead = means.Read(context), ghostRead = ghosts.Read(context);
+            const auto coefficientRead = coefficients.Read(context), ghostCoefficientRead = ghostCoefficients.Read(context);
+            const auto momentRead = cellMoments.Read(context);
+            const auto conditionRead = conditions.Read(context);
+            const auto selectedRead = selected.Read(context), emptyRead = noRows.Read(context);
+            const auto policyRead = policy.Read(context);
+            K::RHSGeometry numerical;
+            numerical.stencil = geometry.View();
+            numerical.cellCent = numerical.stencil.metric.cellCent;
+            numerical.cellBary = numerical.stencil.metric.cellBary;
+            numerical.faceOffsets = numerical.stencil.metric.faceOffsets;
+            numerical.quadrature = numerical.stencil.metric.quadrature;
+            numerical.conditions = conditionRead.View<R::FixedRows<1>>();
+            numerical.hasBasis = modal;
+            numerical.basis.moments = momentRead.View<R::TableRows, false>();
+            numerical.basis.cellCent = numerical.stencil.metric.cellCent;
+            numerical.basis.cellScale = numerical.stencil.metric.cellScale;
+            numerical.basis.polynomial = F::Math::TaylorBasis(2, 2).KernelParameters();
+            numerical.basis.availableDerivatives = 3;
+            K::RHSGeometryPublication publication(numerical, context);
+            K::RHSFields fields;
+            fields.mean = {meanRead.View<R::UniformTableRows>(), ghostRead.View<R::UniformTableRows>()};
+            if (modal)
+                fields.reconstruction = {coefficientRead.View<R::UniformTableRows>(), ghostCoefficientRead.View<R::UniformTableRows>()};
+            K::RHSKernelControls controls;
+            controls.components = 5;
+            controls.dimension = 2;
+            controls.direct = controls.firstOrder = !modal;
+            controls.modes = modal ? modes : 0;
+            controls.mapping = K::RHSFaceMapping::CTASegments;
+            controls.blockSize = 256;
+            controls.solver = C::Riemann::Solver::Rusanov;
+            controls.fluxPolicy.rusanov = true;
+            controls.fluxPolicy.required = C::Riemann::RequiredInputs(controls.solver);
+            const std::array<I, 1> pointCounts{1};
+            const auto packages = K::RHSFacePackages::Prepare(selected, {pointCounts.data(), 1}, controls, context);
+            R::Array<real> faces(R::RowLayout::Dense(1, 5), context.device), result(R::RowLayout::Dense(1, 5), context.device);
+            R::Array<DNDS::NumericalStatus> faceStatus(R::RowLayout::Dense(1, 1), context.device), cellStatus(R::RowLayout::Dense(1, 1), context.device);
+            R::Array<I> counts(R::RowLayout::Dense(1, 1), context.device);
+            {
+                auto out = faces.Write(context);
+                auto status = faceStatus.Write(context);
+                auto count = counts.Write(context);
+                K::RHSFaceOutputs outputs{out.View<R::TableRows>(), {}, {}, status.View<R::FixedRows<1>>(), count.View<R::FixedRows<1>>()};
+                auto core = fields;
+                core.mean.ghost = {};
+                core.reconstruction.ghost = {};
+                // The core launch intentionally has no ghost allocation. For the
+                // right-owned case it is empty; dependent work sees the ghost.
+                K::EvaluateFluxFaces(context, publication, policyRead.View<R::FixedRows<1>>(), controls, core, outputs,
+                                     self ? selectedRead.View<R::FixedRows<1>>() : emptyRead.View<R::FixedRows<1>>(), false, packages.View());
+                if (!self)
+                    K::EvaluateFluxFaces(context, publication, policyRead.View<R::FixedRows<1>>(), controls, fields, outputs,
+                                         selectedRead.View<R::FixedRows<1>>(), true, packages.View());
+                REQUIRE(cudaStreamSynchronize(::DNDS::Runtime::CUDAStream(context)) == cudaSuccess);
+            }
+            {
+                const auto face = faces.Read(context);
+                const auto status = faceStatus.Read(context);
+                auto out = result.Write(context);
+                auto error = cellStatus.Write(context);
+                K::GatherFluxCells(context, publication, face.View<R::TableRows>(), {}, status.View<R::FixedRows<1>>(),
+                                   out.View<R::TableRows>(), {}, error.View<R::FixedRows<1>>(), selectedRead.View<R::FixedRows<1>>(), false);
+                REQUIRE(cudaStreamSynchronize(::DNDS::Runtime::CUDAStream(context)) == cudaSuccess);
+            }
+            const auto downloaded = result.To(R::Device::Host());
+            const auto checked = cellStatus.To(R::Device::Host());
+            const auto values = downloaded.Read();
+            const auto status = checked.Read();
+            REQUIRE(bool(status.View()(0, 0)));
+            for (int j = 0; j < 5; ++j)
+                CHECK(values.View()(0, j) == doctest::Approx(expected[j]).epsilon(3e-12).scale(1));
         }
-        {
-            const auto face = faces.Read(context);
-            const auto status = faceStatus.Read(context);
-            auto out = result.Write(context);
-            auto error = cellStatus.Write(context);
-            K::GatherFluxCells(context, publication, face.View<R::TableRows>(), {}, status.View<R::FixedRows<1>>(),
-                               out.View<R::TableRows>(), {}, error.View<R::FixedRows<1>>(), selectedRead.View<R::FixedRows<1>>(), false);
-            REQUIRE(cudaStreamSynchronize(::DNDS::Runtime::CUDAStream(context)) == cudaSuccess);
-        }
-        const auto downloaded = result.To(R::Device::Host());
-        const auto checked = cellStatus.To(R::Device::Host());
-        const auto values = downloaded.Read();
-        const auto status = checked.Read();
-        REQUIRE(bool(status.View()(0, 0)));
-        for (int j = 0; j < 5; ++j)
-            CHECK(values.View()(0, j) == doctest::Approx(expected[j]).epsilon(3e-12).scale(1));
-    }
 }
 
 int main(int argc, char **argv)

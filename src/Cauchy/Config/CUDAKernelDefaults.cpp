@@ -56,6 +56,18 @@ namespace DNDS::Cauchy
         const bool a100Polynomial = profile == CUDAKernelDeviceProfile::A100 && coupledAoSPolynomial;
         const bool a100P3 = a100Polynomial && numerics.cfv.maxOrder == 3 && numerics.cfv.intOrder <= 5;
         const bool measuredFlow5 = a100P3 && !acm && withoutRANS && settings.mesh.dimension == 3;
+        const bool measuredSAP2 = a100Polynomial && !acm && settings.mesh.dimension == 3 &&
+                                  settings.equation.rans.model == "SA" && numerics.cfv.maxOrder == 2 &&
+                                  numerics.RHSIntegrationOrder() == 3;
+        // Coupled 3D SA P2/Q3 favors a larger CTA and PP block in complete
+        // warmed updates. Preserve explicit mappings, arithmetic, staging and
+        // launch overrides; the separate periodic RHS preset still applies.
+        if (measuredSAP2 && !kernels.rhsBlockSize && !kernels.rhsDoubleBuffer &&
+            !kernels.rhsHoistFaceRows.value_or(false) && kernels.rhsReduction == "auto" &&
+            (kernels.rhsMapping == "auto" || kernels.rhsMapping == "ctaSegments") &&
+            kernels.polynomialArithmetic == "fp64" && kernels.dissipationArithmetic == "fp64" &&
+            kernels.fluxArithmetic == "fp64")
+            kernels.rhsBlockSize = 256;
         if (acm && kernels.rhsMapping == "auto")
         {
             const bool fp64 = kernels.polynomialArithmetic == "fp64" && kernels.dissipationArithmetic == "fp64" &&
@@ -75,7 +87,7 @@ namespace DNDS::Cauchy
             execution.reconstructionKernel = a100Polynomial && !numerics.reconstructionSolver.UsesAMG() ? "fp64V2" : "fp64";
         }
         if (!kernels.polynomialPPThreads)
-            kernels.polynomialPPThreads = measuredFlow5 ? 512 : 128;
+            kernels.polynomialPPThreads = measuredFlow5 || measuredSAP2 ? 512 : 128;
     }
     std::string ResolveAutomaticCUDAInverse(const std::string &selection, Runtime::Device device)
     {

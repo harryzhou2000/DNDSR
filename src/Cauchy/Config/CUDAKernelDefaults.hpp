@@ -21,6 +21,8 @@ namespace DNDS::Cauchy
     /** @brief Resolve automatic policies before constructing resident operators.
      * @details RTX 30/40/50-series, A100/A800, H100/H200/H20, and B200/B300
      * share the A100 preset. Its P3 flow5 policy uses warp-per-cell PP with 512 threads.
+     * Coupled 3D SA P2/Q3 also uses 512-thread PP and a 256-thread FP64 RHS
+     * default, while explicit launch/staging/arithmetic choices take precedence.
      * Perfect-gas RHS selection is resolved separately when its workset is bound.
      * ACM retains its degree- and quadrature-dependent mapping.
      * The device profile is separate so policy tests need no CUDA device.

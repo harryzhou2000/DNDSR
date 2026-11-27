@@ -68,6 +68,47 @@ TEST_CASE("Automatic CUDA policies select measured A100 kernels and preserve exp
     CHECK(base.execution.reconstructionKernel == "fp64V2");
 }
 
+TEST_CASE("SA P2 Q3 CUDA defaults preserve unsupported profiles and explicit launch choices")
+{
+    C::DomainSettings base;
+    base.mesh.dimension = 3;
+    base.equation.rans.model = "SA";
+    base.numerics.reconstruction = "variational";
+    base.numerics.cfv.maxOrder = 2;
+    base.numerics.cfv.intOrder = 3;
+    auto selected = base;
+    C::ResolveAutomaticCUDAKernels(selected, CUDAProfile::A100, false);
+    CHECK(selected.execution.kernels.rhsBlockSize == 256);
+    CHECK(selected.execution.kernels.polynomialPPThreads == 512);
+    CHECK(selected.execution.kernels.rhsMapping == "auto");
+    for (const int variant : {0, 1, 2, 3, 4, 5, 6})
+    {
+        auto settings = base;
+        auto &kernels = settings.execution.kernels;
+        if (variant == 0)
+            kernels.rhsMapping = "thread";
+        if (variant == 1)
+            kernels.rhsDoubleBuffer = true;
+        if (variant == 2)
+            kernels.rhsHoistFaceRows = true;
+        if (variant == 3)
+            kernels.polynomialArithmetic = "fp32";
+        if (variant == 4)
+            settings.mesh.dimension = 2;
+        if (variant == 5)
+            settings.numerics.cfv.intOrder = 5;
+        C::ResolveAutomaticCUDAKernels(settings, variant == 6 ? CUDAProfile::Other : CUDAProfile::A100, false);
+        CHECK_FALSE(kernels.rhsBlockSize.has_value());
+        if (variant >= 4)
+            CHECK(kernels.polynomialPPThreads == 128);
+    }
+    base.execution.kernels.rhsBlockSize = 64;
+    base.execution.kernels.polynomialPPThreads = 256;
+    C::ResolveAutomaticCUDAKernels(base, CUDAProfile::A100, false);
+    CHECK(base.execution.kernels.rhsBlockSize == 64);
+    CHECK(base.execution.kernels.polynomialPPThreads == 256);
+}
+
 TEST_CASE("Supported GPU names select the same VR and RHS presets as the A100")
 {
     const C::RHSKernelProfile rhs{"none", "periodic", 5, 19, 3, 1, 1};

@@ -98,7 +98,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(acmSSTScalarJacobian, "Reuse the unchanged interior transport speed in the two CUDA ACM/SST scalar derivative columns; false evaluates every full flux perturbation");
             DNDS_FIELD(rhsDoubleBuffer, "Experimental two-bank FP64 CTA staging");
             config.field_optional(&T::rhsHoistFaceRows, "rhsHoistFaceRows", "FP64 modal face-thread row binding; null selects automatically");
-            DNDS_FIELD(polynomialPPThreads, "CUDA polynomial PP block size: 0 selects the device/shape default (512 for P3 flow5 with the A100 preset, otherwise 128); explicit 128/256/512 or the existing environment override is preserved");
+            DNDS_FIELD(polynomialPPThreads, "CUDA polynomial PP block size: 0 selects the device/shape default (512 for coupled 3D P3 flow5 or SA P2/Q3 with the A100 preset, otherwise 128); explicit 128/256/512 or the existing environment override is preserved");
         }
         bool Default() const
         {

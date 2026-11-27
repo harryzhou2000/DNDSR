@@ -69,32 +69,40 @@ namespace DNDS::CFV::Math
                     }
                 }
             const index first = values.first, count = values.count;
-            for (index d = 0; d < dim; ++d)
-                for (index i = 0; i < count; ++i)
-                {
-                    real a = 0, b = 0;
-                    for (index j = 0; j < count; ++j)
+            if (count)
+            {
+                const auto forward = values.forward[iFace];
+                for (index d = 0; d < dim; ++d)
+                    for (index i = 0; i < count; ++i)
                     {
-                        const real transform = values.forward(iFace, i + count * j);
-                        a += transform * center[(first + j) * dim + d];
-                        b += transform * other[(first + j) * dim + d];
+                        real a = 0, b = 0;
+                        for (index j = 0; j < count; ++j)
+                        {
+                            const real transform = forward[i + count * j];
+                            a += transform * center[(first + j) * dim + d];
+                            b += transform * other[(first + j) * dim + d];
+                        }
+                        limited[(first + i) * dim + d] = WBAPBiway(a, b);
                     }
-                    limited[(first + i) * dim + d] = WBAPBiway(a, b);
-                }
+            }
             for (index component = 0; component < components; ++component)
                 if (component < first || component >= first + count)
                     for (index d = 0; d < dim; ++d)
                         limited[component * dim + d] = WBAPBiway(center[component * dim + d], other[component * dim + d]);
-            for (index d = 0; d < dim; ++d)
+            if (count)
             {
-                for (index i = 0; i < count; ++i)
+                const auto inverse = values.inverse[iFace];
+                for (index d = 0; d < dim; ++d)
                 {
-                    temporary[i] = 0;
-                    for (index j = 0; j < count; ++j)
-                        temporary[i] += values.inverse(iFace, i + count * j) * limited[(first + j) * dim + d];
+                    for (index i = 0; i < count; ++i)
+                    {
+                        temporary[i] = 0;
+                        for (index j = 0; j < count; ++j)
+                            temporary[i] += inverse[i + count * j] * limited[(first + j) * dim + d];
+                    }
+                    for (index i = 0; i < count; ++i)
+                        limited[(first + i) * dim + d] = temporary[i];
                 }
-                for (index i = 0; i < count; ++i)
-                    limited[(first + i) * dim + d] = temporary[i];
             }
             for (index j = 0; j < width; ++j)
             {
