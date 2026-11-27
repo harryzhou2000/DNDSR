@@ -18,6 +18,7 @@ namespace DNDS::Geom::detail
         auto neighborRows = found->Read();
         auto nodeRows = cones->Read();
         auto metadata = source.cellInfo->Read();
+        const auto numbering = cells.ReadNumbering();
         std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> nodeBits;
         if (source.periodic)
         {
@@ -27,7 +28,6 @@ namespace DNDS::Geom::detail
         NativePartitionGraph graph;
         source.LocalStage(mpi, [&]
                           {
-            graph.offsets.push_back(0);
             const size_t cellCount = size_t(cells.NumOwned());
             constexpr size_t maxVertices = size_t(Elem::CellNumNodeMax);
             DNDS_check_throw_info(cellCount == 0 || maxVertices <= SIZE_MAX / cellCount,
@@ -76,22 +76,16 @@ namespace DNDS::Geom::detail
                     std::sort(sorted, sorted + element.GetNumVertices());
             }
             DNDS_check_throw_info(!invalid, "primary partition cell has an invalid element cone");
-            std::vector<std::vector<index>> neighbors(cellCount);
-#pragma omp parallel for if (cellCount >= 4096) schedule(static) reduction(| : invalid)
-            for (index cell = 0; cell < cells.NumOwned(); ++cell)
+            const auto fillNeighbors = [&](index cell, std::vector<index> &cellNeighbors)
             {
                 const auto *current = vertices.data() + size_t(cell) * maxVertices;
                 const size_t currentSize = vertexCounts[size_t(cell)];
-                auto &cellNeighbors = neighbors[size_t(cell)];
                 for (auto neighborGlobal : neighborRows.View()[size_t(cell)])
                 {
                     if (neighborGlobal == UnInitIndex) continue;
-                    if (neighborGlobal < 0 || neighborGlobal >= cells.NumGlobal())
-                    {
-                        invalid = 1;
-                        continue;
-                    }
-                    const auto neighbor = cells.GlobalToLocal(neighborGlobal);
+                    DNDS_check_throw_info(neighborGlobal >= 0 && neighborGlobal < cells.NumGlobal(),
+                                          "primary partition cell neighbor is outside the mesh domain");
+                    const auto neighbor = numbering.GlobalToLocal(neighborGlobal);
                     if (!neighbor || *neighbor >= cells.NumOwned() || *neighbor == cell) continue;
                     const auto *other = vertices.data() + size_t(*neighbor) * maxVertices;
                     const size_t otherSize = vertexCounts[size_t(*neighbor)];
@@ -100,17 +94,38 @@ namespace DNDS::Geom::detail
                     if (NativePeriodicFacialMatch(current, currentFrames, currentSize, other, otherFrames, otherSize, size_t(source.dimension)))
                         cellNeighbors.push_back(neighborGlobal);
                 }
-            }
-            DNDS_check_throw_info(!invalid, "primary partition cell neighbor is outside the mesh domain");
-            for (auto &cellNeighbors : neighbors)
+            };
+            const int workers = cellCount >= 4096 ? OMP::DistributedThreads() : 1;
+            const auto cellBegin = [&](index worker) { return cells.NumOwned() * worker / workers; };
+            graph.offsets.resize(cellCount + 1);
+            std::vector<std::vector<idx_t>> adjacencyByWorker(static_cast<size_t>(workers));
+            OMP::ForSetupRowsWithThreads(0, workers, workers, [&](index worker)
             {
-                CompactAdjacencyRow(cellNeighbors);
-                for (auto neighbor : cellNeighbors)
+                auto &adjacency = adjacencyByWorker[size_t(worker)];
+                std::vector<index> cellNeighbors;
+                for (index cell = cellBegin(worker); cell < cellBegin(worker + 1); ++cell)
                 {
-                    graph.adjacency.push_back(METIS::indexToIdx(neighbor));
+                    graph.offsets[size_t(cell)] = METIS::indexToIdx(adjacency.size());
+                    cellNeighbors.clear();
+                    fillNeighbors(cell, cellNeighbors);
+                    CompactAdjacencyRow(cellNeighbors);
+                    for (auto neighbor : cellNeighbors)
+                        adjacency.push_back(METIS::indexToIdx(neighbor));
                 }
-                graph.offsets.push_back(METIS::indexToIdx(graph.adjacency.size()));
-            } });
+            });
+            std::vector<size_t> starts(size_t(workers) + 1, 0);
+            for (int worker = 0; worker < workers; ++worker)
+                starts[size_t(worker) + 1] = CheckedSize::Add(starts[size_t(worker)], adjacencyByWorker[size_t(worker)].size());
+            graph.offsets.back() = METIS::indexToIdx(starts.back());
+            graph.adjacency.resize(starts.back());
+            OMP::ForSetupRowsWithThreads(0, workers, workers, [&](index worker)
+            {
+                const auto first = starts[size_t(worker)];
+                auto &adjacency = adjacencyByWorker[size_t(worker)];
+                std::copy(adjacency.begin(), adjacency.end(), graph.adjacency.begin() + first);
+                for (index cell = cellBegin(worker); cell < cellBegin(worker + 1); ++cell)
+                    graph.offsets[size_t(cell)] += METIS::indexToIdx(first);
+            }); });
         return graph;
     }
 
@@ -124,6 +139,7 @@ namespace DNDS::Geom::detail
                                                   "owned partition requires matching weight method 0/1 and dimension two/three"); });
         auto closure = BuildNativeCellClosure(source, mpi);
         auto cone = closure.cellNodes.Read();
+        const auto cells = cone.Source().ReadNumbering();
         auto metadata = closure.cellInfo.ReadCombined();
         std::optional<RelationPeriodicBits> periodic;
         if (closure.cellNodesPbi)
@@ -183,7 +199,7 @@ namespace DNDS::Geom::detail
                 for (size_t side = 0; side < 2; ++side)
                     if (parents[side] < cone.NumOwned())
                     {
-                        const auto target = cone.Source().LocalToGlobal(parents[1 - side]);
+                        const auto target = cells.LocalToGlobal(parents[1 - side]);
                         neighbors[size_t(parents[side])].emplace_back(target, diameter);
                     }
             }

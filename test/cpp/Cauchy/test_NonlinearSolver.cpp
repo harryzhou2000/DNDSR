@@ -347,6 +347,50 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
     CHECK(cfl == std::vector<double>{1, 2});
     CHECK(report.pseudoCFL == 2);
 }
+TEST_CASE("Pseudo-CFL growth starts after the configured nonlinear correction")
+{
+    C::ImplicitSettings settings;
+    settings.iterations = settings.minIterations = 5;
+    settings.pseudoCFL = 1;
+    settings.pseudoGrowth = 2;
+    settings.maxPseudoCFL = 4;
+    std::vector<double> expected{1, 2, 4, 4, 4};
+    SUBCASE("Zero is the default and grows after the first correction")
+    {
+        REQUIRE(settings.pseudoGrowthStart == 0);
+    }
+    SUBCASE("A start of three holds the first three corrections")
+    {
+        settings.pseudoGrowthStart = 3;
+        expected = {1, 1, 1, 2, 4};
+    }
+    SUBCASE("Negative starts are invalid")
+    {
+        settings.pseudoGrowthStart = -1;
+        CHECK_THROWS(settings.Validate());
+        return;
+    }
+
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+    for (bool coupled : {false, true})
+    {
+        using Observation = C::NonlinearDetail::ResidualObservation;
+        C::NonlinearSolveSetup controller(
+            settings, schema, mpi.rank, coupled ? "ditrSequential2Stage" : "singleStageImplicit",
+            {coupled ? 2 : 1, coupled ? Observation::AfterUpdate : Observation::BeforeUpdate, coupled});
+        std::vector<double> applied;
+        C::SolveNonlinear(controller, 0, {{}, C::NonlinearIterationReport{}, 0, [] {}, [](auto &norms)
+                                          { std::fill(norms.begin(), norms.end(), 1.); },
+                                          []
+                                          { return std::make_pair(0, 0.); },
+                                          [&](int stage, auto &report, bool applyCorrection)
+                                          {
+                                              if (applyCorrection && stage == 0)
+                                                  applied.push_back(report.pseudoCFL);
+                                          }});
+        CHECK(applied == expected);
+    }
+}
 TEST_CASE("Nonlinear controller resumes after a completed correction without resetting references or CFL")
 {
     C::ImplicitSettings settings;

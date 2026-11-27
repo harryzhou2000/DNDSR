@@ -252,7 +252,8 @@ namespace DNDS::Cauchy
                                   nonnegative(relativeTolerance) && nonnegative(absoluteTolerance) &&
                                   std::isfinite(algebraicRateTolerance) && algebraicRateTolerance > 0 &&
                                   std::isfinite(pseudoCFL) && pseudoCFL > 0 && std::isfinite(maxPseudoCFL) && maxPseudoCFL >= pseudoCFL &&
-                                  std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1 &&
+                                  std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && pseudoGrowthStart >= 0 &&
+                                  std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1 &&
                                   std::isfinite(ransRelaxation) && ransRelaxation > 0 && ransRelaxation <= 1,
                               "invalid implicit nonlinear/diagonal/pseudo-time controls");
         DNDS_check_throw_info((linear.cudaJacobiMapping == "thread" || linear.cudaJacobiMapping == "componentGroup") &&

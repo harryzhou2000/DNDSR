@@ -100,11 +100,11 @@ namespace DNDS::Cauchy
     }
 
     ProgressHistory::ProgressHistory(CsvSchema schema, std::string bare, index segmentRows, int precision,
-                                     std::optional<CsvLogPosition> resume)
+                                     std::optional<CsvLogPosition> resume, std::function<void(const CsvRow &)> retain)
         : _columns(ColumnNames(schema)),
           _log(resume ? CsvLog(std::move(schema), bare, ".csv", segmentRows, *resume)
                       : CsvLog(std::move(schema), bare, ".csv", segmentRows)),
-          _precision(precision)
+          _precision(precision), _retain(std::move(retain))
     {
         DNDS_check_throw_info(!_columns.empty() && !bare.empty() && segmentRows > 0,
                               "invalid Cauchy detailed-history construction");
@@ -116,6 +116,8 @@ namespace DNDS::Cauchy
     void ProgressHistory::Write(const ProgressRow &row)
     {
         _log.WriteLine(row._row, _precision);
+        if (_retain)
+            _retain(row._row);
     }
     void ProgressHistory::Flush() { _log.Flush(); }
 
@@ -256,7 +258,8 @@ namespace DNDS::Cauchy
     ProgressOutputController::ProgressOutputController(EquationSchema schema, OutputSettings settings, std::string domain,
                                                        std::string bareHistory, bool writer,
                                                        std::shared_ptr<OperationalLogger> logger,
-                                                       std::optional<CsvLogPosition> resume)
+                                                       std::optional<CsvLogPosition> resume,
+                                                       std::function<void(const CsvRow &)> retain)
         : _schema(std::move(schema)), _settings(std::move(settings)), _domain(std::move(domain)), _writer(writer),
           _logger(std::move(logger))
     {
@@ -265,7 +268,8 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_logger, "invalid Cauchy progress-output controller");
         if (_writer)
             _history = std::make_unique<ProgressHistory>(DetailedHistorySchema(_schema, _settings.historyStateBounds), bareHistory,
-                                                         _settings.historySegmentRows, _settings.historyPrecision, resume);
+                                                         _settings.historySegmentRows, _settings.historyPrecision, resume,
+                                                         std::move(retain));
     }
     ProgressRow ProgressOutputController::Base(const ProgressLocation &location, ProgressRecordStatus status) const
     {

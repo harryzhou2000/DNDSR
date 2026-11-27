@@ -13,8 +13,52 @@
 #include <optional>
 #include <vector>
 
+#ifndef _WIN32
+#    include <pthread.h>
+#    include <signal.h>
+#endif
+
+namespace
+{
+    // Block before MPI or the solver can start threads. Check for the pending
+    // process-directed signal synchronously on the solver thread.
+    class UserStopSignal
+    {
+#ifndef _WIN32
+        sigset_t _signals{};
+#endif
+
+    public:
+        bool Block()
+        {
+#ifndef _WIN32
+            return sigemptyset(&_signals) == 0 && sigaddset(&_signals, SIGUSR1) == 0 &&
+                   pthread_sigmask(SIG_BLOCK, &_signals, nullptr) == 0;
+#else
+            return true;
+#endif
+        }
+        void Poll(DNDS::Cauchy::RunControl &control) const
+        {
+#ifndef _WIN32
+            sigset_t pending;
+            DNDS_check_throw_info(sigpending(&pending) == 0, "cannot read pending Cauchy stop signal");
+            if (sigismember(&pending, SIGUSR1) == 1)
+            {
+                int signal = 0;
+                DNDS_check_throw_info(sigwait(&_signals, &signal) == 0 && signal == SIGUSR1,
+                                      "cannot consume pending Cauchy stop signal");
+                control.EnqueueStop();
+            }
+#else
+            (void)control;
+#endif
+        }
+    };
+}
+
 /// Keep every MPI-owning solver object inside this scope, before DNDS Finalize.
-static int Run(int argc, char **argv, double started)
+static int Run(int argc, char **argv, double started, const UserStopSignal &signals)
 {
     // The designated reader and serial partitioner may use a node-wide team.
     // Simulation switches to the per-rank team only after distribution.
@@ -121,8 +165,11 @@ static int Run(int argc, char **argv, double started)
             if (!restartPath.empty())
                 simulation.ReadCheckpoint(restartPath, meansOnly ? DNDS::Cauchy::CheckpointLoadMode::MeansOnly
                                                                  : DNDS::Cauchy::CheckpointLoadMode::Resume);
+            DNDS::Cauchy::RunControl control(config, mpi.rank);
             DNDS::Cauchy::OutputCoordinator outputs(simulation, config, mpi,
-                                                    started);
+                                                    started, &control,
+                                                    [&]
+                                                    { signals.Poll(control); });
             const auto &output = config.Output();
             const auto &time = config.Time();
             const auto domainCount = DNDS::index(config.Domains().size());
@@ -135,7 +182,9 @@ static int Run(int argc, char **argv, double started)
                         action(iDomain, simulation.GetDomain(iDomain));
             };
 
-            bool wallStop = false, reached = false;
+            using DNDS::Cauchy::RunStop;
+            auto stop = RunStop::None;
+            bool reached = false;
             for (DNDS::index step = 0;
                  time.tEnd > 0
                      ? !DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(
@@ -143,15 +192,10 @@ static int Run(int argc, char **argv, double started)
                      : step < time.steps;
                  ++step)
             {
-                int stop = time.wallSeconds > 0 &&
-                           MPI_Wtime() - started >= time.wallSeconds;
-                stop = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Max>(
-                    stop, mpi.comm);
-                if (stop)
-                {
-                    wallStop = true;
+                stop = outputs.PollStop(time.wallSeconds > 0 &&
+                                        MPI_Wtime() - started >= time.wallSeconds);
+                if (stop != RunStop::None)
                     break;
-                }
 
                 DNDS::real dt = time.dt;
                 if (time.cfl > 0)
@@ -188,7 +232,15 @@ static int Run(int argc, char **argv, double started)
                             : exactTarget.value_or(simulation.Time() + dt));
                     const auto result = simulation.Advance(dt, exactTarget);
                     outputs.FlushPending();
+                    if (result.interrupted)
+                    {
+                        stop = RunStop::Requested;
+                        break;
+                    }
                     if (result)
+                        break;
+                    stop = outputs.PollStop();
+                    if (stop == RunStop::Requested)
                         break;
                     if (retries++ >= time.maxRetries)
                         DNDS::MPI::Abort(
@@ -199,6 +251,8 @@ static int Run(int argc, char **argv, double started)
                     dt *= .5;
                     exactTarget.reset();
                 }
+                if (stop != RunStop::None)
+                    break;
 
                 const bool printStep =
                     output.consoleInterval > 0 &&
@@ -210,7 +264,9 @@ static int Run(int argc, char **argv, double started)
                 if (reached)
                     break;
             }
-            status = outputs.Finalize(wallStop, reached);
+            if (stop == RunStop::None)
+                stop = outputs.PollStop();
+            status = outputs.Finalize(stop, reached);
         }
         catch (const std::exception &exception)
         {
@@ -232,6 +288,12 @@ static int Run(int argc, char **argv, double started)
 
 int main(int argc, char **argv)
 {
+    UserStopSignal signals;
+    if (!signals.Block())
+    {
+        std::cerr << "Cauchy: cannot block SIGUSR1 before starting worker threads\n";
+        return 1;
+    }
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
     {
         // Initialization failed: no MPI clock, solver construction or finalize.
@@ -239,7 +301,7 @@ int main(int argc, char **argv)
         return 1;
     }
     // Include import/partition/setup in the external wall-time budget.
-    const int status = Run(argc, argv, MPI_Wtime());
+    const int status = Run(argc, argv, MPI_Wtime(), signals);
     DNDS::MPI::Finalize();
     return status;
 }

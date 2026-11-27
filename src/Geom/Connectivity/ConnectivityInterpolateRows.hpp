@@ -39,16 +39,11 @@ namespace DNDS::Geom::ConnectivityRows
         inline void ValidateCandidate(const SubEntityCandidate &candidate,
                                       index nNode)
         {
-            DNDS_assert_info(candidate.desc.nVertices > 0 &&
-                                 candidate.desc.nVertices <= candidate.desc.nNodes &&
-                                 candidate.desc.nNodes <= MaxSubEntityNodes,
-                             fmt::format("Interpolate: sub-entity has {} nodes, max is {}",
-                                         candidate.desc.nNodes, MaxSubEntityNodes));
             for (int vertex = 0; vertex < candidate.desc.nVertices; ++vertex)
-                DNDS_assert_info(candidate.vertices[size_t(vertex)] >= 0 &&
-                                     candidate.vertices[size_t(vertex)] < nNode,
-                                 fmt::format("Interpolate: node index {} out of range [0, {})",
-                                             candidate.vertices[size_t(vertex)], nNode));
+                DNDS_check_throw_info(candidate.vertices[size_t(vertex)] >= 0 &&
+                                          candidate.vertices[size_t(vertex)] < nNode,
+                                      fmt::format("Interpolate: node index {} out of range [0, {})",
+                                                  candidate.vertices[size_t(vertex)], nNode));
         }
 
         template <class ReadNode>
@@ -60,11 +55,11 @@ namespace DNDS::Geom::ConnectivityRows
             candidate.parent = parent;
             candidate.sub = sub;
             candidate.desc = query.describe(parent, sub);
-            DNDS_assert_info(candidate.desc.nVertices > 0 &&
-                                 candidate.desc.nVertices <= candidate.desc.nNodes &&
-                                 candidate.desc.nNodes <= MaxSubEntityNodes,
-                             fmt::format("Interpolate: sub-entity has {} nodes, max is {}",
-                                         candidate.desc.nNodes, MaxSubEntityNodes));
+            DNDS_check_throw_info(candidate.desc.nVertices > 0 &&
+                                      candidate.desc.nVertices <= candidate.desc.nNodes &&
+                                      candidate.desc.nNodes <= MaxSubEntityNodes,
+                                  fmt::format("Interpolate: sub-entity has {} nodes, max is {}",
+                                              candidate.desc.nNodes, MaxSubEntityNodes));
             const auto parentNode = [&](int slot) -> index
             { return readNode(parent, slot); };
             query.extractNodes(parent, sub, parentNode, candidate.nodes.data());
@@ -205,7 +200,7 @@ namespace DNDS::Geom::ConnectivityRows
                         references[size_t(ordinal)] = {parent, sub};
                         owners[size_t(ordinal)] = std::min(
                             workers - 1, int(candidate.vertices[0] / nodeChunk));
-                        const auto [found, inserted] = arities.emplace(
+                        const auto [found, inserted] = arities.try_emplace(
                             candidate.desc.typeTag, candidate.desc.nVertices);
                         if (!inserted && found->second != candidate.desc.nVertices)
                             found->second = -1;
@@ -219,7 +214,7 @@ namespace DNDS::Geom::ConnectivityRows
             for (const auto &worker : workerArities)
                 for (const auto &[type, arity] : worker)
                 {
-                    const auto [found, inserted] = arities.emplace(type, arity);
+                    const auto [found, inserted] = arities.try_emplace(type, arity);
                     irregularType = irregularType || arity < 0 ||
                                     (!inserted && found->second != arity);
                 }
@@ -273,7 +268,9 @@ namespace DNDS::Geom::ConnectivityRows
             {
                 index originOrdinal;
                 CandidateKey key;
-                std::vector<index> ordinals;
+                index lastOrdinal;
+                index parentCount;
+                index nextAtVertex = -1;
             };
             struct OwnerRecords
             {
@@ -289,6 +286,9 @@ namespace DNDS::Geom::ConnectivityRows
                                   key.vertices.begin());
             };
             std::vector<OwnerRecords> records(static_cast<size_t>(workers));
+            // Each candidate slot has one owner. Link its occurrences in
+            // ordinal order without a small allocation for every entity.
+            std::vector<index> nextOccurrence(size_t(candidateCount), -1);
             OMP::ForSetupRowsWithThreads(0, workers, workers, [&](index owner)
                                          {
                 const index begin = ownerStarts[size_t(owner)];
@@ -298,8 +298,8 @@ namespace DNDS::Geom::ConnectivityRows
                 const index firstNode = owner * nodeChunk;
                 const index ownerNodeCount = std::max<index>(
                     std::min(nodeChunk, nNode - firstNode), 0);
-                std::vector<std::vector<index>> byMinimumVertex(
-                    static_cast<size_t>(ownerNodeCount));
+                struct VertexEntities { index first = -1, last = -1; };
+                std::vector<VertexEntities> byMinimumVertex(static_cast<size_t>(ownerNodeCount));
                 for (index routed = begin; routed < end; ++routed)
                 {
                     const index ordinal = routedOrdinals[size_t(routed)];
@@ -309,7 +309,7 @@ namespace DNDS::Geom::ConnectivityRows
                     auto &possible = byMinimumVertex[size_t(
                         candidate.vertices[0] - firstNode)];
                     index accepted = -1;
-                    for (auto entity : possible)
+                    for (index entity = possible.first; entity >= 0; entity = entities[size_t(entity)].nextAtVertex)
                     {
                         const auto &existing = entities[size_t(entity)];
                         const auto originRef = references[size_t(existing.originOrdinal)];
@@ -325,11 +325,20 @@ namespace DNDS::Geom::ConnectivityRows
                     if (accepted < 0)
                     {
                         accepted = index(entities.size());
-                        entities.push_back({ordinal,
-                                            {candidate.desc, candidate.vertices}, {}});
-                        possible.push_back(accepted);
+                        entities.push_back({ordinal, {candidate.desc, candidate.vertices}, ordinal, 1});
+                        if (possible.last >= 0)
+                            entities[size_t(possible.last)].nextAtVertex = accepted;
+                        else
+                            possible.first = accepted;
+                        possible.last = accepted;
                     }
-                    entities[size_t(accepted)].ordinals.push_back(ordinal);
+                    else
+                    {
+                        auto &pending = entities[size_t(accepted)];
+                        nextOccurrence[size_t(pending.lastOrdinal)] = ordinal;
+                        pending.lastOrdinal = ordinal;
+                        ++pending.parentCount;
+                    }
                 } });
 
             struct EntityCursor
@@ -379,8 +388,9 @@ namespace DNDS::Geom::ConnectivityRows
                     origin.nodes.begin(), origin.nodes.begin() + origin.desc.nNodes);
                 result.entityElemInfo[size_t(entity)] = ElemInfo{origin.desc.typeTag, 0};
                 auto &parents = result.entity2parent[size_t(entity)];
-                parents.reserve(pending.ordinals.size());
-                for (auto ordinal : pending.ordinals)
+                parents.reserve(size_t(pending.parentCount));
+                for (auto ordinal = pending.originOrdinal; ordinal >= 0;
+                     ordinal = nextOccurrence[size_t(ordinal)])
                 {
                     const auto ref = references[size_t(ordinal)];
                     parents.push_back(ref.parent);

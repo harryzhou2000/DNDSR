@@ -6,6 +6,7 @@
 #include "NativeConnectivityLegacyConditions.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
+#include "Geom/Connectivity/ConnectivityInterpolateRows.hpp"
 #include <filesystem>
 
 using namespace DNDS;
@@ -13,6 +14,37 @@ using namespace DNDS::Geom;
 namespace R = DNDS::Runtime;
 namespace T = NativeRelationSynthetic;
 static MPIInfo g_mpi;
+
+TEST_CASE("Record-prefix interpolation preserves first occurrence and parent order")
+{
+    SubEntityQuery query;
+    query.numSubEntities = [](DNDS::index)
+    { return 2; };
+    query.describe = [](DNDS::index, int)
+    { return SubEntityDesc{2, 2, Elem::Line2}; };
+    query.extractNodes = [](DNDS::index, int sub, const std::function<DNDS::index(int)> &read, DNDS::index *out)
+    {
+        out[0] = read(2 * sub);
+        out[1] = read(2 * sub + 1);
+    };
+    query.matchExtra = [](DNDS::index parent, int, DNDS::index, DNDS::index origin, int)
+    { return parent % 3 == origin % 3; };
+    query.matchExtraSupportsParallelGrouping = true;
+    auto read = [](DNDS::index parent, int slot) -> DNDS::index
+    {
+        const auto base = slot < 2 ? 0 : 8;
+        return base + (slot + parent) % 2;
+    };
+
+    using ConnectivityRows::SubEntityEnumerationMode;
+    const auto append = ConnectivityRows::EnumerateSubEntities(read, query, 18, 16, SubEntityEnumerationMode::Append);
+    const auto records = ConnectivityRows::EnumerateSubEntities(read, query, 18, 16, SubEntityEnumerationMode::RecordPrefix);
+    REQUIRE(append.nEntities == 6);
+    CHECK(records.nEntities == append.nEntities);
+    CHECK(records.parent2entity == append.parent2entity);
+    CHECK(records.entity2node == append.entity2node);
+    CHECK(records.entity2parent == append.entity2parent);
+}
 
 struct NativeHandCrafted
 {

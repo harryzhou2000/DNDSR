@@ -161,6 +161,7 @@ namespace DNDS::Geom
             auto nodes = cellNodes.Read();
             auto neighbors = cellCells.Read();
             auto metadata = source.cellInfo->Read();
+            const auto numbering = cells.ReadNumbering();
             std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> nodeBits;
             if (source.periodic)
             {
@@ -223,7 +224,7 @@ namespace DNDS::Geom
                 {
                     if (neighborGlobal == UnInitIndex)
                         continue;
-                    const auto neighbor = cells.GlobalToLocal(neighborGlobal);
+                    const auto neighbor = numbering.GlobalToLocal(neighborGlobal);
                     if (!neighbor || *neighbor >= cells.NumOwned() || *neighbor == cell)
                         continue;
                     const auto *other = vertices.data() + size_t(*neighbor) * maxVertices;

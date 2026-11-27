@@ -1177,8 +1177,10 @@ TEST_CASE("Native interpolation matches repeated canonical IDs after XOR permute
     { for (int slot = 0; slot < 3; ++slot) output[slot] = get(slot); };
     query.extractPbi = [](I, int, const std::function<G::NodePeriodicBits(int)> &get, G::NodePeriodicBits *output)
     { for (int slot = 0; slot < 3; ++slot) output[slot] = get(slot); };
-    auto result = G::AdjacencyRegistry::Interpolate(read, G::EntityKind::Face, query, [mpi](const std::vector<I> &, const std::vector<DNDS::MPI_int> &owners, I)
-                                                    { return G::OwnershipDecision{*std::min_element(owners.begin(), owners.end()) == mpi.rank, {}}; }, &periodic);
+    int ownerCalls = 0; // This fixture has exactly one distinct entity on rank zero.
+    auto result = G::AdjacencyRegistry::Interpolate(read, G::EntityKind::Face, query, [mpi, &ownerCalls](const std::vector<I> &, const std::vector<DNDS::MPI_int> &owners, I)
+                                                    { ++ownerCalls; return G::OwnershipDecision{*std::min_element(owners.begin(), owners.end()) == mpi.rank, {}}; }, &periodic);
+    CHECK(ownerCalls == (mpi.rank == 0 ? 1 : 0));
     CHECK(result.entities.NumGlobal() == 1);
     if (mpi.rank == 0)
     {

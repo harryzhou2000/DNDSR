@@ -122,6 +122,8 @@ namespace DNDS
             _cells[i] = std::move(value);
         }
         void Clear(const std::string &name) { _cells[_schema->Index(name)] = std::monostate{}; }
+        const std::vector<CsvColumn> &Columns() const { return _schema->Columns(); }
+        const std::vector<CsvCell> &Cells() const { return _cells; }
     };
 
     /**

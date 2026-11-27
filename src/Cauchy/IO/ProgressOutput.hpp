@@ -37,10 +37,12 @@ namespace DNDS::Cauchy
         std::vector<std::string> _columns;
         CsvLog _log;
         int _precision = 10;
+        std::function<void(const CsvRow &)> _retain;
 
     public:
         ProgressHistory(CsvSchema schema, std::string bare, index segmentRows, int precision,
-                        std::optional<CsvLogPosition> resume = std::nullopt);
+                        std::optional<CsvLogPosition> resume = std::nullopt,
+                        std::function<void(const CsvRow &)> retain = {});
         ProgressRow NewRow() const { return ProgressRow(_log.MakeRow()); }
         void Write(const ProgressRow &row);
         void Flush();
@@ -148,7 +150,8 @@ namespace DNDS::Cauchy
         ProgressOutputController(EquationSchema schema, OutputSettings settings, std::string domain,
                                  std::string bareHistory, bool writer,
                                  std::shared_ptr<OperationalLogger> logger,
-                                 std::optional<CsvLogPosition> resume = std::nullopt);
+                                 std::optional<CsvLogPosition> resume = std::nullopt,
+                                 std::function<void(const CsvRow &)> retain = {});
         void BeginAttempt(ProgressLocation location);
         /// Capture the frontend's elapsed wall time at observation, not the
         /// attempt-start time or the later sink-flush time.

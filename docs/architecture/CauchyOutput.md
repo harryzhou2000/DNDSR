@@ -279,6 +279,52 @@ domains may reach different nonlinear iteration counts. Accepted-step and final
 snapshots are coordinated by `OutputCoordinator` after `Simulation::Advance`
 and may therefore capture all domain cursors with simulation-wide collectives.
 
+### Graceful stop and live queries
+
+The C++ `RunControl` API exposes `EnqueueStop()`, `CurrentConfiguration()`,
+and `CurrentHistory(limit)`. Enqueue coalesces repeated requests and does no
+MPI or I/O. The queries return host-side copies and can run on a control
+thread. Configuration is the resolved input for the current run. History
+retains the newest 256 CSV records written on the current process across its
+local domain roots, including the recorded nonlinear, stage-end, and
+accepted-step rows. The response identifies the process rank, retained count,
+capacity, domain index, and typed column values. The ring starts empty on
+restart and grows with new rows. CSV file rotation and checkpoint history
+cursors are independent of the ring.
+
+The POSIX CLI blocks SIGUSR1 before MPI starts worker threads and polls for
+the signal on the solver thread. Any rank can receive it. A collective vote
+turns the request into a checkpoint and clean exit. A transient run writes
+an accepted-step checkpoint. A steady run with one domain spanning the
+simulation communicator writes an exact internal checkpoint at the next
+coordinated nonlinear boundary. Steady runs with other placements use the
+accepted-step boundary. A request already pending between steps checkpoints
+the accepted state immediately. The forced checkpoint is independent of
+the output cadence and `output.finalSnapshot`. The summary records
+`graceful-stop`, the boundary, and the closed checkpoint path.
+
+For a Slurm job launched as a solver step, `#SBATCH --signal=USR1@300`
+requests a warning before the time limit. For an interactive request,
+`scancel --signal=USR1 <jobid>.<stepid>` targets the step. Confirm signal
+forwarding with the launcher and allow time to reach the boundary, drain
+queued writes, and close the checkpoint.
+
+A future optional HTTP listener can use the bundled Boost.Asio and Beast
+headers from the CLI on rank zero. Its handlers can query the copied
+configuration and recent rows or enqueue commands. The listener must not
+drive MPI or access live fields. Rank-zero history covers its local domain
+roots. Simulation-wide history would require publication from the other
+roots through a solver-managed exchange.
+
+For HTTP controls, use a per-run random bearer key read from a private
+file. The listener should reject mutations without a valid
+`Authorization: Bearer <key>` header and compare the supplied key in
+constant time. Bind to loopback by default and reach it through SSH
+forwarding. Keep the key out of resolved configuration, checkpoints, URLs,
+and event logs. A control request can return a request ID when enqueued.
+Its completion should be reported only after the solver applies the
+command or finishes the checkpoint.
+
 Checkpoint controller metadata includes exact-time event ordinals, resolved
 cadence and typed CSV segment cursors. Continuing with the same output prefix
 validates and appends at those cursors without duplicating the initial/accepted
