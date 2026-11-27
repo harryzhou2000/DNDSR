@@ -872,6 +872,22 @@ TEST_CASE("Older viscous archives retain primitive gradients and reject a silent
     CHECK(C::CheckpointMetadata::CompatibleConfig(forced) != centered);
     Remove({path});
 }
+TEST_CASE("Resume compares active pressure ramp thresholds across the input-key rename")
+{
+    auto current = C::SimulationConfig::Resolve(C::Json::object(), 1).Root();
+    auto &fields = current["domains"][0]["settings"]["numerics"]["riemann"];
+    fields["dissipationMode"] = "constant";
+    fields["dissipationCoefficient"] = .1;
+    auto previous = current;
+    auto &old = previous["domains"][0]["settings"]["numerics"]["riemann"];
+    old.erase("pressureRatioStart");
+    old.erase("pressureRatioFull");
+    old["pressureLLFBlendStart"] = 1.05;
+    old["pressureLLFBlendFull"] = 2.;
+    CHECK(C::CheckpointMetadata::CompatibleConfig(current) == C::CheckpointMetadata::CompatibleConfig(previous));
+    fields["pressureRatioFull"] = 3.;
+    CHECK(C::CheckpointMetadata::CompatibleConfig(current) != C::CheckpointMetadata::CompatibleConfig(previous));
+}
 TEST_CASE("Older physical-boundary archives omit inactive composition without invalidating restart")
 {
     const auto path = Path("cauchy-boundary-composition-");

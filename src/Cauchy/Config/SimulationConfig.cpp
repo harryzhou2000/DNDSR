@@ -33,6 +33,14 @@ namespace DNDS::Cauchy
             else
                 origins[path] = source;
         }
+        std::string CanonicalInputKey(const std::string &path, const std::string &key)
+        {
+            constexpr std::string_view suffix = "/numerics/riemann";
+            for (const auto &[legacy, current] : RiemannSettings::pressureRatioAliases)
+                if (key == legacy && path.size() >= suffix.size() && path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0)
+                    return current;
+            return key;
+        }
         void Merge(Json &target, const Json &patch, const std::string &path, const std::string &source, Origins &origins)
         {
             if (patch.is_object() && target.is_object())
@@ -50,8 +58,14 @@ namespace DNDS::Cauchy
                 }
                 if (!patch.empty())
                     origins.erase(path);
-                for (const auto &[key, child] : patch.items())
+                for (const auto &[inputKey, child] : patch.items())
                 {
+                    const auto key = CanonicalInputKey(path, inputKey);
+                    if (key != inputKey && patch.contains(key))
+                    {
+                        DNDS_check_throw_info(child == patch.at(key), "conflicting pressure-ramp thresholds at " + path + "/" + key);
+                        continue;
+                    }
                     if (!target.contains(key))
                         target[key] = child.is_object() ? Json::object() : Json();
                     Merge(target[key], child, path + "/" + Escape(key), source, origins);
@@ -79,7 +93,8 @@ namespace DNDS::Cauchy
     SimulationConfig SimulationConfig::Resolve(const Json &input, int size, const std::vector<ConfigOverride> &overrides)
     {
         DNDS_check_throw_info(size > 0, "invalid simulation size");
-        Config::ValidatePartialJsonSchema(input, InputSchema());
+        const auto inputSchema = InputSchema();
+        Config::ValidatePartialJsonSchema(input, inputSchema);
         DNDS_check_throw_info(input.value("schemaVersion", 1) == 1, "unsupported Cauchy schema version");
         const auto supplied = [&](const char *section, const char *field)
         {
@@ -102,7 +117,7 @@ namespace DNDS::Cauchy
                               "specify only time.tEnd or deprecated time.finalTime");
         DNDS_check_throw_info(!(supplied("output", "checkpointInterval") && activeDeprecatedAlias("output", "interval")),
                               "specify only output.checkpointInterval or deprecated output.interval");
-        const auto schema = DomainSettings::schema();
+        const auto &schema = inputSchema.at("properties").at("defaults");
         const auto profiles = input.value("profiles", Json::object());
         DNDS_check_throw_info(profiles.is_object(), "Cauchy profiles must be named objects");
         for (const auto &[name, patch] : profiles.items())
@@ -179,9 +194,11 @@ namespace DNDS::Cauchy
         }
         for (const auto &override : overrides)
         {
-            const Json::json_pointer pointer(override.pointer);
+            Json::json_pointer pointer(override.pointer);
+            if (!pointer.empty())
+                pointer = pointer.parent_pointer() / CanonicalInputKey(pointer.parent_pointer().to_string(), pointer.back());
             DNDS_check_throw_info(!override.pointer.empty() && data->root.contains(pointer), "CLI override must target an existing resolved key: " + override.pointer);
-            Merge(data->root[pointer], override.value, override.pointer, "CLI " + override.pointer, data->provenance);
+            Merge(data->root[pointer], override.value, pointer.to_string(), "CLI " + override.pointer, data->provenance);
         }
         DNDS_check_throw_info(data->root["schemaVersion"] == 1, "unsupported resolved schema version");
         DNDS_check_throw_info(data->root["domains"].is_array() && !data->root["domains"].empty(), "resolved Cauchy configuration has no domains");

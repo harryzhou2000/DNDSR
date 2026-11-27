@@ -14,7 +14,7 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         bool noGRPOnWall = false;
         bool isothermalWallInviscidMirror = false;
         bool pressureLLFBlend = false;
-        real pressureLLFBlendStart = 1.05, pressureLLFBlendFull = 2;
+        real pressureRatioStart = 1.05, pressureRatioFull = 2;
         real dissipationCoefficient = 1;
         Riemann::DissipationMode dissipationMode = Riemann::DissipationMode::FullUpwind;
         DNDS_DEVICE_CALLABLE bool UsesDESDissipation() const noexcept { return dissipationMode == Riemann::DissipationMode::DES; }
@@ -25,7 +25,7 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         }
         DNDS_DEVICE_CALLABLE bool NeedsPressureBounds(bool useStencil) const noexcept
         {
-            return (useStencil && pressureStencil) || pressureLLFBlend;
+            return (useStencil && pressureStencil) || pressureLLFBlend || dissipationCoefficient < 1;
         }
     };
 }

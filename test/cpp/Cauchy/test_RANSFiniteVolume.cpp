@@ -3,7 +3,7 @@
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Discretization/FiniteVolumeKernelPolicy.hpp"
+#include "Cauchy/Discretization/PressureLLFBlend.hpp"
 #include "Physics/RANS/PointKernels.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/State/RANSState.hpp"
@@ -187,6 +187,12 @@ TEST_CASE("Hybrid RANS dissipation prepares the cell shield and averages it symm
     CHECK(policy.DissipationAtFace(table, 1, 0) == doctest::Approx(.6));
     CHECK(policy.DissipationAtFace(table, 0, DNDS::UnInitIndex) == .2);
     CHECK(policy.DissipationAtFace(table, 1, DNDS::UnInitIndex) == 1.);
+    C::Riemann::FluxSettings face;
+    face.dissipationScale = policy.DissipationAtFace(table, 0, 1);
+    const auto bounds = [](I cell, int column)
+    { return cell == 1 && column == 1 ? 1.525 : 1.; };
+    CHECK(C::FiniteVolumeDetail::ApplyFacePressureStencil(policy, false, bounds, 0, 1, face) == 0.);
+    CHECK(face.dissipationScale == doctest::Approx(.8));
     CHECK(table.AtFace(0, 1) == -1.);
 }
 

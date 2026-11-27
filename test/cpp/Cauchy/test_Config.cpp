@@ -423,6 +423,19 @@ TEST_CASE("Chemical source splitting is explicit and keeps Euler reactor default
     CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
 #endif
 }
+TEST_CASE("Legacy pressure blend thresholds resolve to the shared pressure-ratio ramp")
+{
+    C::Json input;
+    input["defaults"]["numerics"]["riemann"] = {{"pressureLLFBlendStart", 1.2}, {"pressureRatioFull", 3.}};
+    const auto resolved = C::SimulationConfig::Resolve(input, 1, {{"/domains/0/settings/numerics/riemann/pressureLLFBlendFull", 2.5}});
+    const auto &riemann = resolved.Domains()[0].settings.numerics.riemann;
+    CHECK(riemann.pressureRatioStart == 1.2);
+    CHECK(riemann.pressureRatioFull == 2.5);
+    const auto &fields = resolved.Root()["domains"][0]["settings"]["numerics"]["riemann"];
+    CHECK_FALSE(fields.contains("pressureLLFBlendStart"));
+    input["defaults"]["numerics"]["riemann"]["pressureRatioStart"] = 1.3;
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+}
 TEST_CASE("Configured RANS exposes Euler DES and QCR controls without a unit-length substitution")
 {
     C::Json input{{"defaults", {{"equation", {{"transport", "NewtonianFourier"}, {"viscosity", .001}, {"rans", {{"model", "SA"}, {"desScale", .01}, {"desMode", 3}, {"useQCR", true}}}}}, {"numerics", {{"flux", "rusanov"}, {"faceFallback", false}, {"viscousGradient", "polynomial"}}}}}};
