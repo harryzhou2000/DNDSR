@@ -147,7 +147,7 @@ namespace DNDS::Runtime
                 // than a potentially global-synchronizing cudaFree fallback.
                 try
                 {
-                    if (storage && releaseContext.device.space == MemorySpace::CUDA &&
+                    if (success && storage && releaseContext.device.space == MemorySpace::CUDA &&
                         storage->CanReleaseOrdered(releaseContext) && layout->CanReleaseOrdered(releaseContext))
                     {
                         ArrayStorage::ReleaseHandle(storage, releaseContext);

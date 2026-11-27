@@ -1111,14 +1111,28 @@ namespace DNDS::Runtime
                                                    StreamEvent producer, bool callerValid) const
     {
         DNDS_check_throw_info(engine.Owns(communication), "transfer stream belongs to another runtime");
-        if (!_provider && !HasEmptyDirectPayload())
+        try
         {
-            // Portable MPI posting needs the producer visible to its controller.
-            // Do not enqueue a CPU waiter that would occupy a worker or call MPI
-            // from a thread forbidden by the initialized MPI thread level.
-            producer.WaitHost();
+            if (!_provider)
+            {
+                // Portable MPI posting (and empty-payload CUDA communication
+                // lanes waiting on non-CUDA producers) needs the producer
+                // visible on the host before WaitFor / collective Preflight.
+                if (!HasEmptyDirectPayload() ||
+                    (communication.Context().device.space == MemorySpace::CUDA && !producer.Ready()))
+                {
+                    producer.WaitHost();
+                }
+            }
+            communication.WaitFor(std::move(producer));
         }
-        communication.WaitFor(std::move(producer));
+        catch (...)
+        {
+            MPI::AbortIfSolverFailure("transfer producer wait failed");
+            if (_provider)
+                throw;
+            callerValid = false;
+        }
         return SubmitReady(engine, communication, callerValid);
     }
     void TransferOperation::EnqueueWait(const ExecutionStream &consumer) const
@@ -1171,7 +1185,7 @@ namespace DNDS::Runtime
         {
             try
             {
-                if (!_managed && !_nativeCompletion)
+                if (!_managed && !_nativeCompletion && (!_provider || !_provider->Finished()))
                     Wait();
             }
             catch (...)
@@ -1188,7 +1202,7 @@ namespace DNDS::Runtime
     }
     TransferOperation::~TransferOperation()
     {
-        if (_managed || _nativeCompletion)
+        if (_managed || _nativeCompletion || (_provider && _provider->Finished()))
             return; // Runtime inventory, not handle scope, owns retirement.
         // Waiting while unwinding a rank-local exception can strand this rank
         // before the application reaches its fatal handler: a peer may never

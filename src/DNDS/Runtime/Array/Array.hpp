@@ -474,8 +474,26 @@ namespace DNDS::Runtime
             }
             void Wait()
             {
-                owned.Wait();
-                ghost.Wait();
+                std::exception_ptr first;
+                try
+                {
+                    owned.Wait();
+                }
+                catch (...)
+                {
+                    first = std::current_exception();
+                }
+                try
+                {
+                    ghost.Wait();
+                }
+                catch (...)
+                {
+                    if (!first)
+                        first = std::current_exception();
+                }
+                if (first)
+                    std::rethrow_exception(first);
             }
         };
         typename Array<T>::ReadLease ReadOwned(ExecutionContext context = ExecutionContext::Host()) const { return owned.Read(context); }

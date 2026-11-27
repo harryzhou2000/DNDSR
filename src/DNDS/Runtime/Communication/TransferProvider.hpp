@@ -21,6 +21,7 @@ namespace DNDS::Runtime
             virtual void WaitDestinationReady() = 0;
             virtual void Wait() = 0;
             virtual bool Test() = 0;
+            virtual bool Finished() const noexcept { return false; }
         };
         class TransferProviderBinding
         {

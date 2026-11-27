@@ -118,12 +118,20 @@ namespace DNDS::MPI
                 DNDS_assert(datatype != MPI_DATATYPE_NULL);
                 MPI_Op mpi_op = py_get_simple_mpi_op_by_name(op);
 
+                DNDS_assert_info(!recv_info.readonly, "receive buffer must be writable");
+                DNDS_assert_info(send_info.ptr != recv_info.ptr, "send and recv buffers must not alias");
+
                 auto [count_s, send_style] = py_buffer_get_contigious_size(send_info);
-                auto [count_r, recv_style] = py_buffer_get_contigious_size(send_info);
+                auto [count_r, recv_style] = py_buffer_get_contigious_size(recv_info);
                 DNDS_assert_info(count_r >= count_s, "receive buffer size not enough");
 
-                MPI_int err = Allreduce(send_info.ptr, recv_info.ptr, count_s,
-                                        datatype, mpi_op, mpi.comm);
+                MPI_int err = MPI_SUCCESS;
+                {
+                    py::gil_scoped_release release_gil;
+                    err = Allreduce(send_info.ptr, recv_info.ptr, count_s,
+                                    datatype, mpi_op, mpi.comm);
+                }
+                DNDS_check_throw_info(err == MPI_SUCCESS, "MPI Allreduce failed");
             },
             py::arg("send"), py::arg("recv"), py::arg("op"), py::arg("mpi"));
     }

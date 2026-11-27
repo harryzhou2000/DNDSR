@@ -79,13 +79,10 @@ namespace DNDS::OMP
         std::vector<uint64_t> totals(size_t(threads), 0), bases(size_t(threads), 0);
         int invalid = 0;
 #if defined(DNDS_USE_OMP)
-#    pragma omp parallel num_threads(threads) reduction(| : invalid)
+#    pragma omp parallel for schedule(static) num_threads(threads) reduction(| : invalid)
 #endif
+        for (int worker = 0; worker < threads; ++worker)
         {
-            int worker = 0;
-#if defined(DNDS_USE_OMP)
-            worker = omp_get_thread_num();
-#endif
             const index common = rowNumber / threads;
             const index remainder = rowNumber % threads;
             const index begin = common * worker + std::min<index>(worker, remainder);

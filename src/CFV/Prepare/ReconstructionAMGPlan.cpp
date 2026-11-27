@@ -142,12 +142,13 @@ namespace DNDS::CFV
         // healthy engine.Close(), late scope fences observe retired completion
         // without another native call. Do not mark a scope complete before its
         // view is formed: Complete intentionally revokes further view access.
+        const R::ExecutionContext retainedContext{context.device, nullptr};
         for (const auto *array : {&data.deviceOffsets, &data.deviceColumns})
-            data.intReads.push_back(array->Read(context));
+            data.intReads.push_back(array->Read(retainedContext));
         for (const auto *array : {&data.incidenceOffsets, &data.neighbors, &data.boundaryOffsets})
-            data.indexReads.push_back(array->Read(context));
+            data.indexReads.push_back(array->Read(retainedContext));
         for (const auto *array : {&data.values, &data.vectors, &data.injection})
-            data.realReads.push_back(array->Read(context));
+            data.realReads.push_back(array->Read(retainedContext));
         data.geometry = {data.indexReads[0].View(), data.indexReads[1].View(), data.indexReads[2].View(),
                          data.realReads[1].View(), data.realReads[2].View(), data.intReads[0].View(), data.intReads[1].View(), data.realReads[0].View(), int(n)};
         return result;

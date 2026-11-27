@@ -155,7 +155,7 @@ namespace DNDS::Serializer
         else
             for (auto &name : pth)
                 newPath.push_back(name);
-        std::string nP = constructPath(cPathSplit);
+        std::string nP = constructPath(newPath);
         hid_t group_id = GetGroupOfFileIfExist(h5file, reading, nP, collectiveMetadataRW);
         herr = H5Gclose(group_id), H5CHECK_Close;
     }
@@ -345,11 +345,12 @@ namespace DNDS::Serializer
             if (coll_on_meta)
                 herr = H5Pset_all_coll_metadata_ops(aapl_id, true), H5CHECK_Set;
             hid_t scalar_space = H5Screate(H5S_SCALAR);
-            hid_t string_type = H5Tcreate(H5T_STRING, v.length());
+            hid_t string_type = H5Tcreate(H5T_STRING, std::max<size_t>(v.length(), 1));
             herr = H5Tset_strpad(string_type, H5T_STR_NULLPAD), H5CHECK_Set;
             hid_t type_attr_id = H5Acreate(group_id, name.c_str(), string_type, scalar_space, H5P_DEFAULT, aapl_id);
             DNDS_assert_info(type_attr_id >= 0, fmt::format("{}, {}, {}", name, v, cP));
-            herr = H5Awrite(type_attr_id, string_type, v.data()), H5CHECK_Set;
+            const char emptyString[1] = {'\0'};
+            herr = H5Awrite(type_attr_id, string_type, v.empty() ? emptyString : v.data()), H5CHECK_Set;
 
             herr = H5Aclose(type_attr_id), H5CHECK_Close;
             herr = H5Tclose(string_type), H5CHECK_Close;
@@ -444,9 +445,13 @@ namespace DNDS::Serializer
 
         hid_t group_id = GetGroupOfFileIfExist(h5file, reading, cP, coll_on_meta);
         if (offset == ArrayGlobalOffset_One)
-            H5_WriteDataset(group_id, name.c_str(), size, 0, mpi.rank == 0 ? size : 0,
+        {
+            uint64_t nGlobalU = mpi.rank == 0 ? uint64_t(size) : 0;
+            MPI::Bcast(&nGlobalU, 1, MPI_UINT64_T, 0, commDup);
+            H5_WriteDataset(group_id, name.c_str(), index(nGlobalU), 0, mpi.rank == 0 ? index(size) : 0,
                             T_H5TYPE, T_H5TYPE, dxpl_id, dapl_id, chunksize, deflateLevel,
                             v);
+        }
         else if (offset == ArrayGlobalOffset_Parts) // now we force it to be
         {
             uint64_t sizeU{size}, sizeOff{0}, sizeGlobal{0};

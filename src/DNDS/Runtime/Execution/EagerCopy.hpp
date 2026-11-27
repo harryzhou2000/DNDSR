@@ -49,12 +49,18 @@ namespace DNDS::Runtime
                                {
                 retained->source.Complete(!error);
                 retained->destination.Complete(!error);
-                try
+                if (!error)
                 {
-                    for (auto *owner : {&retained->sourceOwner, &retained->destinationOwner})
-                        if (owner->GetDevice().space == MemorySpace::CUDA && owner->CanReleaseOrdered(retained->context))
-                            owner->ReleaseOn(retained->context);
-                }
-                catch (...) { std::terminate(); } }, {{source, AccessMode::Read}, {destination, AccessMode::Write}});
+                    try
+                    {
+                        for (auto *owner : {&retained->sourceOwner, &retained->destinationOwner})
+                            if (owner->GetDevice().space == MemorySpace::CUDA && owner->CanReleaseOrdered(retained->context))
+                                owner->ReleaseOn(retained->context);
+                    }
+                    catch (...)
+                    {
+                        std::terminate();
+                    }
+                } }, {{source, AccessMode::Read}, {destination, AccessMode::Write}});
     }
 }

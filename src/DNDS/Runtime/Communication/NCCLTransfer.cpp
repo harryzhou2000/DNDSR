@@ -286,6 +286,45 @@ namespace DNDS::Runtime
                 receive.pending.Complete(!error);
                 finished = true;
             }
+            bool Finished() const noexcept override { return finished; }
+            void FailAndRetire(std::exception_ptr failure) noexcept
+            {
+                MPI::AbortIfSolverFailure("solver NCCL completion failed");
+                if (!error)
+                    error = std::move(failure);
+                binding->owner->Abort();
+                try
+                {
+                    source.Fail();
+                }
+                catch (...)
+                {
+                }
+                try
+                {
+                    destination.Fail();
+                }
+                catch (...)
+                {
+                }
+                try
+                {
+                    send.Fail();
+                }
+                catch (...)
+                {
+                }
+                try
+                {
+                    receive.Fail();
+                }
+                catch (...)
+                {
+                }
+                finished = true;
+                if (manual)
+                    binding->manualActive = false;
+            }
             void WaitDestinationReady() override { Wait(); }
             void Wait() override
             {
@@ -308,51 +347,28 @@ namespace DNDS::Runtime
                 }
                 catch (...)
                 {
-                    MPI::AbortIfSolverFailure("solver NCCL completion failed");
-                    error = std::current_exception();
-                    binding->owner->Abort();
-                    try
-                    {
-                        source.Fail();
-                    }
-                    catch (...)
-                    {
-                    }
-                    try
-                    {
-                        destination.Fail();
-                    }
-                    catch (...)
-                    {
-                    }
-                    try
-                    {
-                        send.Fail();
-                    }
-                    catch (...)
-                    {
-                    }
-                    try
-                    {
-                        receive.Fail();
-                    }
-                    catch (...)
-                    {
-                    }
+                    FailAndRetire(std::current_exception());
+                    std::rethrow_exception(error);
                 }
                 finished = true;
                 if (manual)
                     binding->manualActive = false;
-                if (error)
-                    std::rethrow_exception(error);
             }
             bool Test() override
             {
                 if (error)
                     std::rethrow_exception(error);
-                binding->owner->Check();
-                if (!finished && !completion.Ready())
-                    return false;
+                try
+                {
+                    binding->owner->Check();
+                    if (!finished && !completion.Ready())
+                        return false;
+                }
+                catch (...)
+                {
+                    FailAndRetire(std::current_exception());
+                    std::rethrow_exception(error);
+                }
                 Wait();
                 return true;
             }

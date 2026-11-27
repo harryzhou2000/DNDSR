@@ -225,15 +225,25 @@ namespace DNDS::Algebra
             // CPU version when native kernels have only been submitted.
             auto source = std::make_shared<typename Operation::SourceStamp>();
             auto field = _data->field;
-            engine.SubmitOperation(stream, [](Runtime::ExecutionContext) {}, [source, field](std::exception_ptr error) noexcept
-                                   {
-                source->failure = error;
-                if (!error)
-                {
-                    try { source->version = field.Owned().Version(); }
-                    catch (...) { source->failure = std::current_exception(); }
-                } });
-            auto operation = _data->binding.SubmitAfter(engine, stream, stream.Record(), valid);
+            Runtime::StreamEvent frontier;
+            try
+            {
+                engine.SubmitOperation(stream, [](Runtime::ExecutionContext) {}, [source, field](std::exception_ptr error) noexcept
+                                       {
+                    source->failure = error;
+                    if (!error)
+                    {
+                        try { source->version = field.Owned().Version(); }
+                        catch (...) { source->failure = std::current_exception(); }
+                    } });
+                frontier = stream.Record();
+            }
+            catch (...)
+            {
+                MPI::AbortIfSolverFailure("halo frontier recording failed");
+                valid = false;
+            }
+            auto operation = _data->binding.SubmitAfter(engine, stream, std::move(frontier), valid);
             _data->active = true;
             return Operation(_data, std::move(operation), std::move(epoch), std::move(source));
         }
@@ -244,6 +254,9 @@ namespace DNDS::Algebra
                              const Runtime::ExecutionStream &communication,
                              Runtime::StreamEvent producer, bool checks = false)
         {
+            if (!_data->binding.SupportsStreamEnqueue() &&
+                communication.Context().device.space == Runtime::MemorySpace::CUDA && !producer.Ready())
+                producer.WaitHost();
             communication.WaitFor(std::move(producer));
             return Begin(std::move(epoch), engine, communication, checks);
         }

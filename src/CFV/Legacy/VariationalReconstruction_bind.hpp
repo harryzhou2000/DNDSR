@@ -31,8 +31,9 @@ namespace DNDS::CFV
                 "ConstructBaseAndWeight",
                 [](T &self, typename T::tFGetBoundaryWeight f)
                 {
+                    py::gil_scoped_release release_gil;
                     self.ConstructBaseAndWeight(
-                        [f](Geom::t_index id, int order)
+                        [&f](Geom::t_index id, int order)
                         {
                             py::gil_scoped_acquire scope_gil;
                             return f(id, order);

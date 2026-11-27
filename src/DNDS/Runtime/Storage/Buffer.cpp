@@ -986,7 +986,25 @@ namespace DNDS::Runtime
 
     void CopyOperation::Wait()
     {
-        _source.Wait();
-        _destination.Wait();
+        std::exception_ptr first;
+        try
+        {
+            _source.Wait();
+        }
+        catch (...)
+        {
+            first = std::current_exception();
+        }
+        try
+        {
+            _destination.Wait();
+        }
+        catch (...)
+        {
+            if (!first)
+                first = std::current_exception();
+        }
+        if (first)
+            std::rethrow_exception(first);
     }
 }

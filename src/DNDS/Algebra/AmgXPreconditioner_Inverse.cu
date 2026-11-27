@@ -2,7 +2,6 @@
 #include "DNDS/Algebra/ScaledBlockInverse.hpp"
 #include <cuda_runtime.h>
 #include <cstdio>
-#include <vector>
 
 namespace DNDS::Algebra
 {
@@ -30,10 +29,10 @@ namespace DNDS::Algebra
             if (row >= size_t(rows))
                 return;
             const double d = values[size_t(diag[row])];
-            if (!std::isfinite(d))
+            if (!std::isfinite(d) || d == 0.0 || !std::isfinite(1.0 / d))
             {
                 if (atomicCAS(failed, -1, int(row)) == -1)
-                    failed[1] = NonfiniteInput;
+                    failed[1] = !std::isfinite(d) ? NonfiniteInput : NonfiniteOutput;
                 return;
             }
             output[row] = d;
@@ -103,13 +102,14 @@ namespace DNDS::Algebra
                     std::fprintf(stderr, "AmgX ACM inverse failed on row %d of %d (width %d): %s\n",
                                  failure[0], rows, width, reason);
                     int block;
-                    std::vector<double> entries(size_t(width) * size_t(width));
+                    double entries[19 * 19];
+                    const size_t entryCount = size_t(width) * size_t(width);
                     if (cudaMemcpy(&block, diag + failure[0], sizeof(block), cudaMemcpyDeviceToHost) == cudaSuccess &&
-                        cudaMemcpy(entries.data(), values + size_t(block) * width * width, entries.size() * sizeof(double),
+                        cudaMemcpy(entries, values + size_t(block) * entryCount, entryCount * sizeof(double),
                                    cudaMemcpyDeviceToHost) == cudaSuccess)
                     {
                         std::fprintf(stderr, "AmgX diagonal block row-major:");
-                        for (size_t i = 0; i < entries.size(); ++i)
+                        for (size_t i = 0; i < entryCount; ++i)
                             std::fprintf(stderr, " %.17g", entries[i]);
                         std::fputc('\n', stderr);
                     }
