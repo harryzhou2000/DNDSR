@@ -63,9 +63,19 @@ namespace DNDS::Cauchy::CUDA::Detail
             }
             else if (!ACM::ExteriorAt(physics.flow, kind, left.values, bc, sample.normal, sample.ownPoint, controls.frame, right.values, C, omega))
                 return NumericalStatus{NumericalError::UnsupportedRequest}.At(sample.cell, entry);
-            if (separateViscous)
-                rightViscous = right.values;
-            // Keep the reflected SA scalar for the wall-normal viscous jump.
+            if (controls.viscous && kind != BoundaryKind::SlipWall)
+            {
+                const auto &vLeft = separateViscous ? leftViscous : left.values;
+                if (separateViscous && kind != BoundaryKind::Interface)
+                {
+                    if (!ACM::ExteriorAt(physics.flow, kind, vLeft, bc, sample.normal, sample.ownPoint, controls.frame, rightViscous, C, omega))
+                        return NumericalStatus{NumericalError::UnsupportedRequest}.At(sample.cell, entry);
+                }
+                else
+                    rightViscous = right.values;
+                for (int j = 0; j < C; ++j)
+                    rightViscous[j] = ACM::PenaltyFaceValue(kind, vLeft[j], rightViscous[j]);
+            }
         }
         std::array<real, C> flux{};
         const auto grid = controls.frame.GridVelocity(sample.ownPoint);
@@ -75,7 +85,7 @@ namespace DNDS::Cauchy::CUDA::Detail
         {
             ACM::KernelPoint<C> face;
             const auto &vLeft = separateViscous ? leftViscous : left.values;
-            const auto &vRight = separateViscous ? rightViscous : right.values;
+            const auto &vRight = separateViscous || sample.other == UnInitIndex ? rightViscous : right.values;
             for (int j = 0; j < C; ++j)
             {
                 face.values[j] = .5 * (left.values[j] + right.values[j]);

@@ -1108,7 +1108,8 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     std::map<std::string, double> composition;
     for (int k = 0; k < mixture.species; ++k)
         composition[mixture.material.SpeciesNames()[k]] = Y[k];
-    fv.InitializeConstant(state, {.8, 0, 0, 0, 1}, composition, 1400 / mixture.scales.T0, mixture.workers);
+    const double speed = .2;
+    fv.InitializeConstant(state, {.8, speed, 0, 0, 1}, composition, 1400 / mixture.scales.T0, mixture.workers);
     auto reconstruction = fv.BuildReconstructionState(state);
     auto work = fv.BuildWorkspace(state, mixture.workers);
     R::EagerEngine engine(2);
@@ -1119,15 +1120,14 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     const double p = r1 * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * 1400;
     const double e1 = mixture.prototype.mixtureIntEnergy(1400, fractions, p) / mixture.scales.SpecificEnergy();
     const double e2 = mixture.prototype.mixtureIntEnergy(600, fractions, p) / mixture.scales.SpecificEnergy();
-    // Euler noRsOnWall uses the wall state for the flux's thermodynamics,
-    // retaining the previously formed conservative exterior jump gradient.
+    // noRsOnWall evaluates the transport properties at the physical wall state.
     const double rho = r2, energy = e2, temperature = 600;
     P::Thermodynamics::Properties thermo;
     P::Transport::Properties transport;
     mixture.prototype.EvaluateProperties(temperature, rho * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * temperature, fractions, thermo, &transport);
-    // The unit cube's reflected cell-centroid separation is one; composition
-    // is constant, so the independent full-energy chain rule has no dY term.
-    const double gradient = (r2 * e2 - r1 * e1 - energy * (r2 - r1)) / (rho * thermo.cv / mixture.scales.HeatCapacity());
+    // Each wall is half a unit from the cell center. Composition is constant,
+    // so the independent full-energy chain rule has no dY term.
+    const double gradient = (r2 * e2 - r1 * (e1 + .5 * speed * speed) - energy * (r2 - r1)) / (.5 * rho * thermo.cv / mixture.scales.HeatCapacity());
     const double expected = 6 * transport.conductivity / mixture.scales.Conductivity() * gradient;
     CHECK(expected < -1e-8);
     double actual = 0;

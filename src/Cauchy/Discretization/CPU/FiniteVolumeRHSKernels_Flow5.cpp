@@ -245,7 +245,6 @@ namespace DNDS::Cauchy::CPU
                         if (!exterior)
                             return exterior.status.At(iCell, sample.point);
                         right = exterior.value;
-                        viscousRight = right;
                         rightGradient = left.gradient;
                     }
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
@@ -306,6 +305,13 @@ namespace DNDS::Cauchy::CPU
                             return NumericalStatus{NumericalError::InvalidState, 13, iCell, sample.point};
                         const bool wall = !internal && boundaryKind == BoundaryKind::NoSlipWall;
                         const real inverseDistance = wall && noGRPOnWall ? 0 : 1 / sample.viscousDistance;
+                        if (!internal && inverseDistance != 0)
+                        {
+                            const auto trace = FiniteVolumeDetail::BoundaryGradientValue(sample, gas, left.viscousState, request.time, frame, incoming);
+                            if (!trace)
+                                return trace.status.At(iCell, sample.point);
+                            viscousRight = trace.value;
+                        }
                         const auto diffusion = PolynomialViscousFlux(equation, convectiveLeft, rightLinearization, left.viscousState, viscousRight,
                                                                      left.gradient, rightGradient, normal, inverseDistance, wall && !sample.boundary.isothermal);
                         for (int component = 0; component < 5; ++component)

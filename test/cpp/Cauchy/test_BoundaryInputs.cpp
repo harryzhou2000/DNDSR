@@ -41,6 +41,81 @@ TEST_CASE("Analytic boundary numerical failures return status through both equat
     CHECK_THROWS(condition.Exterior(equation.Gas(), inside, normal));
 }
 
+TEST_CASE("Viscous penalty uses the stationary wall velocity and midpoints supplied interface rows" * doctest::test_suite("rank-local"))
+{
+    for (bool acm : {false, true})
+    {
+        CAPTURE(acm);
+        C::EquationSettings settings;
+        if (acm)
+        {
+            settings.system = "incompressibleACM";
+            settings.eos = "none";
+        }
+        const auto equation = C::EquationSystem::Resolve(settings);
+        C::BoundaryPointOperator boundary(equation);
+        auto evaluator = equation.MakePointEvaluator();
+        C::BoundaryCondition condition;
+        condition.kind = C::BoundaryKind::NoSlipWall;
+        std::vector<double> inside{2, -1, .5, 3}, wall{0, 0, 0, 3};
+        if (!acm)
+        {
+            condition.isothermal = true;
+            condition.temperature = 2 / equation.Gas().gasConstant;
+            const auto state = equation.Gas().Conservative({2, 2, -1, .5, 3});
+            const auto target = equation.Gas().Conservative({1.5, 0, 0, 0, 3});
+            inside.assign(state.begin(), state.end());
+            wall.assign(target.begin(), target.end());
+        }
+        auto point = inside;
+        REQUIRE(boundary.TryEvaluate(point, condition, 0, {1, 0, 0}, {}, evaluator, {}, 0,
+                                     C::BoundaryPointStateKind::ViscousPenaltyTrace));
+        for (size_t j = 0; j < point.size(); ++j)
+            CHECK(point[j] == doctest::Approx(wall[j]));
+
+        if (acm)
+        {
+            condition.acmState = {-.2, .4, .6, 1., 0., 0.};
+            for (auto kind : {C::BoundaryKind::VelocityInlet, C::BoundaryKind::PressureOutlet, C::BoundaryKind::Farfield})
+            {
+                CAPTURE(int(kind));
+                condition.kind = kind;
+                point = inside;
+                REQUIRE(boundary.TryEvaluate(point, condition, 0, {1, 0, 0}, {}, evaluator, {}, 0,
+                                             C::BoundaryPointStateKind::ViscousPenaltyTrace));
+                auto expected = inside;
+                if (kind == C::BoundaryKind::Farfield)
+                {
+                    // The characteristic solver already returns the physical state.
+                    REQUIRE(boundary.TryEvaluate(expected, condition, 0, {1, 0, 0}, {}, evaluator, {}, 0,
+                                                 C::BoundaryPointStateKind::ExteriorState));
+                    CHECK(expected != inside);
+                }
+                else if (kind == C::BoundaryKind::VelocityInlet)
+                    std::copy_n(condition.acmState.begin(), 3, expected.begin());
+                else
+                    expected[3] = condition.acmState[3];
+                for (size_t j = 0; j < point.size(); ++j)
+                    CHECK(point[j] == doctest::Approx(expected[j]));
+            }
+        }
+        condition.kind = C::BoundaryKind::Interface;
+        const int width = int(inside.size());
+        R::Array<double> packet(R::RowLayout::Dense(1, width));
+        {
+            auto write = packet.Write();
+            for (int j = 0; j < width; ++j)
+                write.View()(0, j) = wall[j];
+        }
+        const auto read = packet.Read();
+        point = inside;
+        REQUIRE(boundary.TryEvaluate(point, condition, 0, {1, 0, 0}, {}, evaluator, {}, 0,
+                                     C::BoundaryPointStateKind::ViscousPenaltyTrace, {}, 0, read.View<R::UniformTableRows>()));
+        for (int j = 0; j < width; ++j)
+            CHECK(point[j] == doctest::Approx(.5 * (inside[j] + wall[j])));
+    }
+}
+
 TEST_CASE("DMR bottom producer resolves prescribed and reflecting pieces in world coordinates" * doctest::test_suite("rank-local"))
 {
     C::DomainSettings settings;

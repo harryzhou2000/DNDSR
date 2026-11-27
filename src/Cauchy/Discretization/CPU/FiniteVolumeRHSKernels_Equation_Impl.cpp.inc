@@ -291,20 +291,22 @@ namespace DNDS::Cauchy::CPU
                         gatherMean(sample.cell, cellMean);
                         boundaryMean.Emplace(cellMean.values);
                     }
+                    const auto evaluateBoundary = [&](std::vector<real> &values, BoundaryPointStateKind kind)
                     {
-                        if (const auto status = boundary.TryEvaluate(
-                                right.values, sample.boundary, sample.boundaryPoint,
-                                {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
-                                evaluator, frame, request.time,
-                                BoundaryPointStateKind::ExteriorState, boundaryMean,
-                                request.hasWall ? wallValues.cellMean(sample.cell, 0) : 0,
-                                request.incoming);
-                            !status)
+                        return boundary.TryEvaluate(values, sample.boundary, sample.boundaryPoint,
+                                                    {sample.normal[0], sample.normal[1], sample.normal[2]},
+                                                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                                                    evaluator, frame, request.time, kind, boundaryMean,
+                                                    request.hasWall ? wallValues.cellMean(sample.cell, 0) : 0, request.incoming);
+                    };
+                    if (const auto status = evaluateBoundary(right.values, BoundaryPointStateKind::ExteriorState); !status)
+                        return status;
+                    if (viscous && (acm ? boundaryKind != BoundaryKind::SlipWall : !request.primitiveGradient && (boundaryKind == BoundaryKind::Interface || (boundaryKind == BoundaryKind::NoSlipWall && !noGRPOnWall))))
+                    {
+                        right.viscousValues = distinctViscous ? left.viscousValues : left.values;
+                        if (const auto status = evaluateBoundary(right.viscousValues, BoundaryPointStateKind::ViscousPenaltyTrace); !status)
                             return status;
                     }
-                    if (distinctViscous)
-                        right.viscousValues = right.values;
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
                     if (!acm && ransModel && ransModel->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
                     {
@@ -330,7 +332,7 @@ namespace DNDS::Cauchy::CPU
                     if (viscous && boundaryKind != BoundaryKind::SlipWall)
                     {
                         const auto &vLeft = distinctViscous ? left.viscousValues : left.values;
-                        const auto &vRight = distinctViscous ? right.viscousValues : right.values;
+                        const auto &vRight = distinctViscous || !internal ? right.viscousValues : right.values;
                         for (int j = 0; j < width; ++j)
                         {
                             face.values[j] = .5 * (left.values[j] + right.values[j]);
@@ -600,7 +602,7 @@ namespace DNDS::Cauchy::CPU
                     {
                         const real inverseDistance = wall && noGRPOnWall ? 0 : 1 / sample.viscousDistance;
                         const auto &vLeft = distinctViscous ? left.viscousValues : left.values;
-                        const auto &vRight = distinctViscous ? right.viscousValues : right.values;
+                        const auto &vRight = distinctViscous || !internal ? right.viscousValues : right.values;
                         for (index j = 0; j < width; ++j)
                         {
                             face.values[j] = .5 * (left.values[j] + right.values[j]);

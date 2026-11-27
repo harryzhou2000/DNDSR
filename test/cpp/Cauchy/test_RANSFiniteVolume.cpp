@@ -1018,10 +1018,9 @@ TEST_CASE("Zero-SA wall convection retains the interior SA viscous jump")
     point.wallDistance = 1;
     point.cellLength = .5;
     const double source = equation.RANS().Source(point)[0];
-    // Each of the eight cubes has three exterior walls: A=1/4, V=1/8,
-    // reflected-centroid separation=1/2. Convection sees SA=0 on both sides,
-    // but Euler's viscosity uses the original interior .02 against exterior 0.
-    const double wallDiffusion = -3 * (.001 / DNDS::Physics::RANS::SA::sigma) * .02 * (.25 / .5);
+    // Three walls per cube, each of area 1/4 at normal distance 1/4.
+    // The viscous penalty takes the interior .02 to zero at the wall.
+    const double wallDiffusion = -3 * (.001 / DNDS::Physics::RANS::SA::sigma) * .02 * (.25 / .25);
     const auto read = result.ReadOwned(), mean = state.ReadOwned();
     const auto sa = read.Block("rans"), original = mean.Block("rans");
     for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)

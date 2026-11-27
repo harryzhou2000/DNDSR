@@ -123,6 +123,9 @@ namespace DNDS::Cauchy
                 for (index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
                 {
                     distance(q, 0) = std::max(.25 * scale, std::min(2 * scale, std::abs(delta.dot(metric.GetFaceNorm(q)))));
+                    // A boundary jump ends at the physical face, halfway to the virtual neighbor.
+                    if (parents[1] == UnInitIndex)
+                        distance(q, 0) *= .5;
                     DNDS_check_throw_info(std::isfinite(distance(q, 0)) && distance(q, 0) > 0, "invalid viscous distance");
                 }
             });

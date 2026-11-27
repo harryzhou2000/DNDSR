@@ -1352,25 +1352,24 @@ filtered WBAP/PP polynomial; false selects the unlimited VR polynomial for
 viscous values and derivatives. LVR alters the sweep equations and produces
 one polynomial for both roles when used alone, regardless of this switch.
 If reconstruction PP follows LVR, the pre-PP field is the LVR solution.
-At boundaries the exterior is generated from
-the convective interior, following Euler even with an unlimited viscous interior.
-No EOS work enters Riemann. `PolynomialViscousFlux` is a pure local numerical
-operator; `EquationSystem` owns the conservative-to-primitive chain rule and
-`PerfectGas` supplies the initial Newtonian/Fourier law.
+At a physical boundary the polynomial gradient is the interior viscous gradient
+plus `n * (U_face - U_left_vis)/d_n`, where `U_face` is evaluated from the viscous
+interior trace. A stationary no-slip wall imposes zero velocity. An isothermal
+compressible wall also imposes the wall temperature and retains the interior
+pressure. An externally supplied interface uses the conservative midpoint of
+the viscous interior and the received row. The convective exterior and the
+flux thermodynamic linearization are computed separately.
 
-The length is normal centroid separation clamped to `[0.25,2]` times
-`2*min(V_left,V_right)/A_face`, with doubled center-to-boundary distance for an
-exterior face. Setup caches it per incidence quadrature; no geometry or matrix
-allocation occurs in the residual loop. The boundary centroid is quadrature
-weighted (identical to the reference center for planar affine faces); exact
-curved-face/legacy geometric-center equivalence is not claimed.
+At an interior or periodic face the length is the normal centroid separation
+clamped to `[0.25,2]` times `2*min(V_left,V_right)/A_face`. At a boundary,
+setup constructs the reflected center using the quadrature-weighted face
+centroid, applies the same clamp with the owning cell volume, and halves the
+result to obtain `d_n`. Setup caches this distance per quadrature point.
 
-Only no-slip walls contribute boundary viscous flux in this mode; extrapolate,
-farfield, analytic, slip and DMR special boundaries use Euler's zero-viscous-flux
-convention. Adiabatic walls remove the normal temperature gradient. Isothermal
-viscous exterior density follows prescribed pressure/temperature without changing
-the inviscid exterior API. `noGRPOnWall=true` sets the no-slip jump coefficient to
-zero while retaining polynomial derivatives. Euler's optional pressure-primitive
+Compressible boundary viscous flux is evaluated at no-slip walls and coupled
+interfaces. Adiabatic walls remove normal heat conduction. `noGRPOnWall=true`
+suppresses the no-slip polynomial jump while retaining the interior derivatives.
+Euler's optional pressure-primitive
 penalty variant (`usePrimGradInVisFlux!=0`) is not implemented here.
 
 ```text

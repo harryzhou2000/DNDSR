@@ -15,7 +15,7 @@ wall value:
 | VR boundary equation | Configured `physicalTrace` or `physicalMirrored` target at each face quadrature point |
 | Convective numerical flux | Interior and Euler exterior states |
 | Direct conservative gradients | Independent physical face trace at the mapped face center; never mirrored |
-| Polynomial viscous flux | Average conservative state, average conservative gradient plus the exterior jump divided by Euler's prepared GRP distance |
+| Polynomial viscous flux | Average gradient plus a normal jump correction. At a boundary the jump runs from the viscous interior state to the physical face over the one-sided normal distance |
 | `noRsOnWall=true` | Replace both convective states by the physical no-slip wall state after forming the viscous jump gradient; use that wall state for flux thermodynamics |
 | Mean auxiliary spectral preparation | Duplicate the owned mean at a physical boundary, as Euler `EvaluateDt` does; interface input is a separate extension |
 | Exact `ExteriorJacobian` | Derivative of the physical exterior map with branch frozen |
@@ -25,7 +25,7 @@ wall value:
 the `noRsOnWall` option, and it is the common VR/direct-gradient reconstruction
 trace. In particular, removing wall-normal momentum while retaining pressure
 changes kinetic/total energy; the trace is intentionally distinct from the
-reflected exterior pair consumed by the Riemann/viscous paths. This distinction
+reflected exterior pair used for convection. This distinction
 matters on the coarse pMG levels.
 
 ## Wall states
@@ -38,9 +38,17 @@ For interior `rho,u,p`, prescribed wall velocity `uw`, and outward unit normal n
   Heat conduction through the wall is disabled; species diffusion is impermeable.
 - Isothermal no-slip exterior: prescribe `TR=Tw`, `uR=2*uw-u`, `pR=p` and unchanged
   mass fractions. The EOS determines rhoR and total energy. For a perfect/ideal
-  mixture gas, `rhoR=p/(R(Y)*Tw)`. This exterior is applied to convection and
-  the viscous jump. Reconstruction instead receives the physical wall trace
-  `u=uw`, `T=Tw`, `p=p_inside` through the same EOS-aware point producer.
+  mixture gas, `rhoR=p/(R(Y)*Tw)`. The viscous penalty uses the EOS wall trace
+  `u=uw`, `T=Tw`, `p=p_inside`, evaluated from the viscous interior state.
+
+At a stationary no-slip wall the penalty targets zero velocity for both
+compressible flow and ACM. ACM uses the prescribed velocity at a moving wall
+or velocity inlet, the prescribed pressure at a pressure outlet, and its incoming
+characteristic state at farfield. For a supplied interface row the penalty target
+is the componentwise mean of the interior viscous trace and the received row.
+The one-sided normal distance is half the clamped virtual center-to-center
+distance. The midpoint and half-distance recover the full two-sided jump per
+unit length at an interface.
 
 There is no extrapolated negative ghost temperature and no unit fallback.
 For an isothermal wall, the arithmetic mean of the two conservative states
@@ -90,8 +98,8 @@ are preserved, including the sonic equalities:
 
 Species and RANS follow the same incoming/outgoing selection. Energy is rebuilt
 through the equation EOS; no perfect-gas equivalent gamma enters the Riemann API.
-Farfield, extrapolation and analytic physical boundaries have zero viscous flux,
-matching Euler's active wall/open-boundary dispatch. Extrapolation returns the
+Compressible farfield, extrapolation and analytic physical boundaries have zero
+viscous flux, matching Euler's active wall/open-boundary dispatch. Extrapolation returns the
 interior exterior state; its approximate implicit BC derivative is nevertheless
 zero under Euler's `linMode=1` convention.
 

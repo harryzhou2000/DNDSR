@@ -441,7 +441,7 @@ The CPU residual integrates inviscid flux minus Newtonian/Fourier flux. The
 existing `numerics.viscousGradient="primitive"` default uses cell gradients
 of `[rho,u,v,w,T]` and the center-displacement correction. The explicit
 `"polynomial"` mode uses cached conservative polynomial derivatives and
-Euler's normal jump penalty, then the equation-owned chain rule to `[rho,u,v,w,T]`.
+the normal jump penalty with a physical face target at boundaries, then the equation-owned chain rule to `[rho,u,v,w,T]`.
 Both transform gradients and vector components across periodic frames. See the
 [polynomial viscous contract](CauchyImplicit.md#polynomial-viscous-operator).
 Second-order LS/GG/GGMP or Jacobi/ordered-SOR VR and descending 3WBAP use explicit boundary

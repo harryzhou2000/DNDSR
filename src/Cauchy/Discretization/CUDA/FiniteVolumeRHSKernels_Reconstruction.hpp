@@ -237,10 +237,10 @@ namespace DNDS::Cauchy::CUDA::Detail
                                           controls.time, controls.frame, exterior);
     }
     template <int Components, class Fields>
-    DNDS_DEVICE_CALLABLE NumericalStatus ExteriorPoint(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
-                                                       const RHSKernelControls &controls,
-                                                       const Fields &fields, const FiniteVolumeDetail::SampleRecord &sample,
-                                                       PerfectGasKernelPoint<Components> &point) noexcept
+    DNDS_DEVICE_CALLABLE NumericalStatus BoundaryPointValues(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
+                                                             const RHSKernelControls &controls,
+                                                             const Fields &fields, const FiniteVolumeDetail::SampleRecord &sample,
+                                                             std::array<real, Components> &values, bool exterior) noexcept
     {
         const auto &condition = geometry.conditions(sample.condition, 0);
         if (condition.kind == BoundaryKind::Interface)
@@ -248,13 +248,13 @@ namespace DNDS::Cauchy::CUDA::Detail
             if (!fields.hasIncoming || sample.boundaryPoint < 0 || sample.boundaryPoint >= fields.incoming.RowCount())
                 return {NumericalError::InvalidInput, 2};
             for (int j = 0; j < Components; ++j)
-                point.values[j] = fields.incoming(sample.boundaryPoint, j);
+                values[j] = exterior ? fields.incoming(sample.boundaryPoint, j) : .5 * (values[j] + fields.incoming(sample.boundaryPoint, j));
             return {};
         }
         std::array<real, Components> mean;
         for (int j = 0; j < Components; ++j)
             mean[j] = fields.mean(sample.cell, j);
-        return TryPerfectGasBoundaryState<Components>(condition, parameters.physics.gas, parameters.physics.rans.kind, point.values, mean,
-                                                      geometry.hasWall ? geometry.wallMean(sample.cell, 0) : 0, sample.normal, sample.ownPoint, controls.time, controls.frame, true);
+        return TryPerfectGasBoundaryState<Components>(condition, parameters.physics.gas, parameters.physics.rans.kind, values, mean,
+                                                      geometry.hasWall ? geometry.wallMean(sample.cell, 0) : 0, sample.normal, sample.ownPoint, controls.time, controls.frame, exterior);
     }
 }

@@ -68,6 +68,12 @@ namespace DNDS::Cauchy::ACM
         }
         return true;
     }
+    /// Farfield already supplies the incoming-characteristic trace. The reflected
+    /// Dirichlet states and receiver-frame interface data give a midpoint trace.
+    DNDS_DEVICE_CALLABLE inline real PenaltyFaceValue(BoundaryKind kind, real inside, real exterior) noexcept
+    {
+        return kind == BoundaryKind::Farfield ? exterior : .5 * (inside + exterior);
+    }
     /// Inertial inlet/farfield velocities are expressed in the current local axes.
     /// A wall speed specified in mesh axes is relative to the rigid wall motion.
     template <class Condition, class State, class Normal, class Point, class Output>

@@ -49,11 +49,11 @@ namespace DNDS::Cauchy::CUDA::Detail
         }
         else
         {
-            const auto boundary = BoundaryFlow(geometry, parameters, controls, fields, sample, mean.Flow(), true);
+            const auto boundary = BoundaryFlow(geometry, parameters, controls, fields, sample, mean.Flow(), false);
             if (!boundary)
                 return boundary.status;
             otherFlow = boundary.value;
-            if (geometry.conditions(sample.condition, 0).kind != BoundaryKind::Interface)
+            if (geometry.conditions(sample.condition, 0).kind == BoundaryKind::Interface)
                 for (int j = 0; j < 5; ++j)
                     otherFlow[j] = .5 * (otherFlow[j] + mean.values[j]);
         }
@@ -139,11 +139,9 @@ namespace DNDS::Cauchy::CUDA::Detail
         else
         {
             right = left;
-            const auto status = ExteriorPoint(geometry, parameters, controls, fields, sample, right);
+            const auto status = BoundaryPointValues<Components>(geometry, parameters, controls, fields, sample, right.values, true);
             if (!status)
                 return status.At(sample.cell, sample.point);
-            if (separateViscous)
-                rightViscous = right.values;
         }
         real wallSAViscousInterior = 0;
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
@@ -285,7 +283,14 @@ namespace DNDS::Cauchy::CUDA::Detail
             {
                 const real inverseDistance = wall && controls.fluxPolicy.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
                 const auto &vLeft = separateViscous ? leftViscous : left.values;
-                const auto &vRight = separateViscous ? rightViscous : right.values;
+                if (!internal && inverseDistance != 0)
+                {
+                    rightViscous = vLeft;
+                    const auto status = BoundaryPointValues<Components>(geometry, parameters, controls, fields, sample, rightViscous, false);
+                    if (!status)
+                        return status.At(sample.cell, sample.point);
+                }
+                const auto &vRight = separateViscous || !internal ? rightViscous : right.values;
                 for (int j = 0; j < Components; ++j)
                 {
                     face.values[j] = .5 * (left.values[j] + right.values[j]);
@@ -324,8 +329,8 @@ namespace DNDS::Cauchy::CUDA::Detail
                             leftGradient[j] = left.gradients[j];
                             rightGradient[j] = right.gradients[j];
                         }
-                        return TryPerfectGasPolynomialViscousCompute<FluxScalar>(gas, left.Flow(), right.Flow(), leftGradient, rightGradient,
-                                                                                 sample.normal, inverseDistance, wall && !condition.isothermal, wallFluxState, face.Flow());
+                        return TryPerfectGasPolynomialViscousCompute<FluxScalar>(gas, vLeft, vRight, leftGradient, rightGradient,
+                                                                                 sample.normal, inverseDistance, wall && !condition.isothermal, !internal || separateViscous, face.Flow());
                     }
                 }();
                 if (!diffusion)

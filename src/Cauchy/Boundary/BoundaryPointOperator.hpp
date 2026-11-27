@@ -12,12 +12,13 @@ namespace DNDS::Cauchy
     class PointEvaluator;
 
     /// The mathematical state requested from a prepared physical boundary.
-    /// Interface sources ignore this distinction: their sampled receiver-frame
-    /// row is already the prescribed point state for every downstream path.
+    /// A supplied interface row is used directly for reconstruction and convection.
+    /// The viscous penalty uses its conservative midpoint with the interior trace.
     enum class BoundaryPointStateKind
     {
         FaceTrace,
-        ExteriorState
+        ExteriorState,
+        ViscousPenaltyTrace
     };
 
     using InterfaceBoundaryRows =
