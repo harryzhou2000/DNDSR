@@ -63,6 +63,8 @@ namespace DNDS::Geom
         std::optional<index> GlobalToLocalPinned(index global) const;
 
     public:
+        class NumberingRead;
+
         EntitySpace(const EntitySpace &) = default;
         EntitySpace(EntitySpace &&) noexcept = default;
         /// Replacing a descriptor handle never mutates the retained mesh epoch.
@@ -137,6 +139,10 @@ namespace DNDS::Geom
         MPI_int Owner(index global) const;
         index OwnerLocalRow(index global) const;
 
+        /// Pin the validated numbering for a batch of lookups, including an
+        /// OpenMP loop. Keep the returned lease alive until the workers join.
+        NumberingRead ReadNumbering() const;
+
         /// Collective on the mesh communicator, including empty ranks. Builds
         /// an owned-to-ghost route every call. Retain/share the returned plan to
         /// reuse its immutable route; descriptor lookup never initiates MPI.
@@ -145,5 +151,34 @@ namespace DNDS::Geom
         /// Mapping/epoch and peer order are retained, not rediscovered.
         Runtime::RowTransferPlan BuildRowTransferPlan(std::shared_ptr<Runtime::CommunicationContext> context) const;
     };
+
+    class EntitySpace::NumberingRead
+    {
+        friend class EntitySpace;
+        EntitySpace _space;
+        Runtime::VersionTracker::ReadLease _lease;
+
+        explicit NumberingRead(const EntitySpace &space)
+            : _space(space), _lease(_space._versions.Read())
+        {
+            _space.Validate();
+        }
+
+    public:
+        NumberingRead(const NumberingRead &) = delete;
+        NumberingRead &operator=(const NumberingRead &) = delete;
+
+        index LocalToGlobal(index local) const { return _space.LocalToGlobalPinned(local); }
+        std::optional<index> GlobalToLocal(index global) const { return _space.GlobalToLocalPinned(global); }
+        std::pair<MPI_int, index> OwnerRow(index global) const
+        {
+            MPI_int rank = -1;
+            index local = -1;
+            DNDS_check_throw_info(_space._global->search(global, rank, local), "global entity index outside entity space");
+            return {rank, local};
+        }
+    };
+
+    inline EntitySpace::NumberingRead EntitySpace::ReadNumbering() const { return NumberingRead(*this); }
 
 }

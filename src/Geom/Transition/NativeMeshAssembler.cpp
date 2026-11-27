@@ -436,6 +436,7 @@ namespace DNDS::Geom
                     // numbering. Ownership membership is a range test, not an
                     // owner search/version lock for every cone incidence.
                     const auto &target = read.Target();
+                    if (target.NumOwned() == target.NumGlobal()) return;
                     const index firstOwned = target._global->ROffsets()[size_t(mpi.rank)];
                     const index endOwned = firstOwned + target.NumOwned();
                     const auto &knownRows = known[kind];
@@ -486,13 +487,24 @@ namespace DNDS::Geom
         std::map<LocalKey, Runtime::ArrayPair<index>> localized;
         auto localRows = [&](const MeshAdjacency &relation)
         {
-            auto read = relation.Read();
             const LocalKey key{reinterpret_cast<uintptr_t>(relation.Owned().SharedStorage().get()),
                                relation.Ghost() ? reinterpret_cast<uintptr_t>(relation.Ghost()->SharedStorage().get()) : 0,
                                relation.Source().Kind(), relation.Target().Kind()};
             auto found = localized.find(key);
             if (found != localized.end())
                 return found->second;
+            auto read = relation.Read();
+            DNDS_check_throw_info(relation.Ghost(), "published adjacency is missing ghost storage");
+            const auto &target = read.Target();
+            if (read.State() == Adj_PointToGlobal && target.NumOwned() == target.NumGlobal())
+            {
+                // The validated rank-offset map is the identity. The local
+                // publication can share the owned and ghost-shaped payloads
+                // while retaining its own relation descriptor and state.
+                Runtime::ArrayPair<index> result{relation.Owned(), *relation.Ghost()};
+                localized.emplace(key, result);
+                return result;
+            }
             // Conversion changes indices, not physical row storage. Named and
             // facade aliases retain the same preserved table/padded/CSR shape.
             auto converted = MeshAdjacency::Convert(read, Adj_PointToLocal);

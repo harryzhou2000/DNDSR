@@ -2,6 +2,7 @@
 
 #include "DNDS/Core/CheckedSize.hpp"
 #include "DNDS/Core/OMP.hpp"
+#include <utility>
 #include <vector>
 
 namespace DNDS::Geom::ConnectivityRows
@@ -16,7 +17,7 @@ namespace DNDS::Geom::ConnectivityRows
      * before reaching the caller's collective failure boundary.
      */
     template <class Visit>
-    void AppendSetupRows(index rowNumber, std::vector<index> &output, Visit &&visit)
+    void AppendSetupRows(index rowNumber, std::vector<index> &output, std::vector<size_t> &starts, Visit &&visit)
     {
         DNDS_check_throw_info(rowNumber >= 0, "negative connectivity setup row count");
         if (OMP::DistributedThreads() == 1 || rowNumber <= 1)
@@ -26,7 +27,7 @@ namespace DNDS::Geom::ConnectivityRows
                       { output.push_back(value); });
             return;
         }
-        std::vector<size_t> starts(CheckedSize::Add(size_t(rowNumber), size_t(1)), 0);
+        starts.resize(CheckedSize::Add(size_t(rowNumber), size_t(1)));
         OMP::ForSetupRows(0, rowNumber, [&](index iRow)
                           {
             size_t count = 0;
@@ -46,4 +47,11 @@ namespace DNDS::Geom::ConnectivityRows
                 output[next++] = value; });
             DNDS_check_throw_info(next == end, "connectivity setup expansion changed after counting"); });
     }
+    template <class Visit>
+    void AppendSetupRows(index rowNumber, std::vector<index> &output, Visit &&visit)
+    {
+        std::vector<size_t> starts;
+        AppendSetupRows(rowNumber, output, starts, std::forward<Visit>(visit));
+    }
+
 }
