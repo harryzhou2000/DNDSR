@@ -318,7 +318,8 @@ namespace DNDS::Cauchy
             return;
         }
         data.held = data.localTerminal;
-        if (!data.held && (ObservationBeforeUpdate() || data.currentIteration > 0))
+        if (!data.held && (ObservationBeforeUpdate() || data.currentIteration > 0) &&
+            reportedIteration >= data.settings.pseudoGrowthStart)
             data.report.pseudoCFL = std::min(
                 data.settings.maxPseudoCFL,
                 data.report.pseudoCFL * data.settings.pseudoGrowth);
