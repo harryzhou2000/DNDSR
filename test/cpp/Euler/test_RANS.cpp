@@ -29,6 +29,7 @@
 
 #include "Euler/RANS_ke.hpp"
 #include "Euler/EulerEvaluatorSettings.hpp"
+#include "Euler/CLDriver.hpp"
 
 #include <Eigen/Dense>
 #include <cmath>
@@ -790,4 +791,32 @@ TEST_CASE("shared SA: explicit frame vorticity matches corrected velocity gradie
                       0.1, 1e10, 0.1, 0, uncorrected, 0, 0, g_saConfig);
     CHECK(explicitFrame.isApprox(fromGradient, 1e-12));
     CHECK(std::abs(explicitFrame[I4 + 1] - uncorrected[I4 + 1]) > 1e-3);
+}
+
+TEST_CASE("CLDriver: Update stays finite when lastAOA equals AOA")
+{
+    CLDriverSettings cfg;
+    cfg.AOAInit = 2.0;
+    cfg.targetCL = 0.5;
+    cfg.nIterStartDrive = 0;
+    cfg.nIterConvergeMin = 2;
+    cfg.CLconvergeWindow = 2;
+    cfg.CLconvergeThreshold = 1e-2;
+    cfg.CLIncrementRelax = 0.25;
+
+    CLDriver driver(cfg);
+    MPIInfo mpi;
+    mpi.rank = 1; // silence stdout log in serial UT
+
+    // First window converges at CL == targetCL -> AOANew == AOA, so lastAOA == AOA!
+    driver.Update(0, 0.5, mpi);
+    driver.Update(1, 0.5, mpi);
+    CHECK(std::isfinite(driver.GetAOA()));
+    CHECK(driver.GetAOA() == doctest::Approx(2.0));
+
+    // Second window converges with CL != targetCL while lastAOA == AOA; must not divide by 0.
+    driver.Update(2, 0.6, mpi);
+    driver.Update(3, 0.6, mpi);
+    CHECK(std::isfinite(driver.GetAOA()));
+    CHECK(driver.GetAOA() < 2.0);
 }

@@ -116,7 +116,7 @@ namespace DNDS
         else if (py_buffer_is_contigious_f(info))
             style = 'F';
         else
-            DNDS_assert_info(false, "the data layout is neither C or F contigious");
+            DNDS_check_throw_info(false, "the data layout is neither C or F contigious");
         return {info.size, style};
     }
 
@@ -127,7 +127,7 @@ namespace DNDS
             vec.data(),
             {vec.size()},
             {sizeof(T)},
-            true);
+            readonly);
     }
 
     inline void pybind11_bind_defines(py::module_ &m)

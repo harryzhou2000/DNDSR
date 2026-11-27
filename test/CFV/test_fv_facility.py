@@ -173,6 +173,12 @@ def test_two_domains_interface_sampling_and_transform_publication():
         plan.DoLimiterWBAP_3Order(coefficients, work, 2, transform)
     plan.FinalizeFaceTransform(transform)
     plan.DoLimiterWBAP_3Order(coefficients, work, 2, transform)
+    # Verify optional indicator=None (default and explicit) works on DoLimiterWBAP_3OrderTo (PY-2)
+    plan.DoLimiterWBAP_3OrderTo(coefficients, work, 2, transform)
+    plan.DoLimiterWBAP_3OrderTo(coefficients, work, 2, transform, indicator=None)
+    indicator = R.Array(R.RowLayout.dense(metrics.NumCell(), 1))
+    indicator.assign(np.ones((metrics.NumCell(), 1), dtype=np.float64))
+    plan.DoLimiterWBAP_3OrderTo(coefficients, work, 2, transform, indicator=indicator, threshold=0.5)
     if MPI.COMM_WORLD.size != 1:
         return  # The distributed API is exercised separately below and in C++.
     donor_patch = Geom.BoundaryPatch.Create(donor, list(range(donor.NumBnd())))

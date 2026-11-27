@@ -190,8 +190,9 @@ namespace DNDS::Euler
                     ensureDir(dio.getOutRestartName());
 
                 std::string logFileName = solver.config.dataIOControl.getOutLogName() + ".logstr.txt";
-                createOutputDir(logFileName);
-                DNDS::setLogFile(logFileName);
+                ensureDir(logFileName);
+                if (mpi.rank == 0)
+                    DNDS::setLogFile(logFileName);
             }
             solver.ReadMeshAndInitialize();
             solver.RunImplicitEuler();

@@ -43,15 +43,36 @@ struct Vec2
     Vec2() = default;
     Vec2(double a, double b) : x(a), y(b) {}
     Vec2 &operator=(const Vec2 &) = default;
-    void operator+=(const Vec2 &o) { x += o.x; y += o.y; }
-    void operator*=(double s) { x *= s; y *= s; }
-    void operator*=(const Vec2 &o) { x *= o.x; y *= o.y; } // element-wise (SSPRK3 dTau)
-    void setConstant(double s) { x = s; y = s; }
-    void addTo(const Vec2 &o, double s) { x += o.x * s; y += o.y * s; }
+    void operator+=(const Vec2 &o)
+    {
+        x += o.x;
+        y += o.y;
+    }
+    void operator*=(double s)
+    {
+        x *= s;
+        y *= s;
+    }
+    void operator*=(const Vec2 &o)
+    {
+        x *= o.x;
+        y *= o.y;
+    } // element-wise (SSPRK3 dTau)
+    void setConstant(double s)
+    {
+        x = s;
+        y = s;
+    }
+    void addTo(const Vec2 &o, double s)
+    {
+        x += o.x * s;
+        y += o.y * s;
+    }
     double norm() const { return std::sqrt(x * x + y * y); }
 };
 
-static auto v2init = [](Vec2 &v) { v = Vec2(0, 0); };
+static auto v2init = [](Vec2 &v)
+{ v = Vec2(0, 0); };
 
 // ===================================================================
 // Harmonic oscillator: du/dt = [[0,-w],[w,0]] * u, w=2*pi
@@ -81,7 +102,7 @@ static tODE::Fdt g_fdt = [](Vec2 &, Vec2 &dTau, real, int)
 //   [[1/dTau+1/dt, alpha*w],[-alpha*w, 1/dTau+1/dt]]
 // With dTau~inf: [[1/dt, alpha*w],[-alpha*w, 1/dt]]
 static tODE::Fsolve g_fsolve = [](Vec2 &, Vec2 &rhs, Vec2 &, Vec2 &dTau,
-                                   real dt, real alpha, Vec2 &xinc, int, real, int)
+                                  real dt, real alpha, Vec2 &xinc, int, real, int)
 {
     double d = 1.0 / dTau.x + 1.0 / dt;
     double aw = alpha * g_omega;
@@ -142,7 +163,8 @@ static ConvergenceResult measureOrder(
 template <int sc>
 static ConvergenceResult measureOrderESDIRK(double T, int N_base)
 {
-    auto run = [&](int N) {
+    auto run = [&](int N)
+    {
         ODE::ImplicitSDIRK4DualTimeStep<Vec2, Vec2> ode(1, v2init, v2init, sc);
         return integrateOscillator(ode, T, N);
     };
@@ -155,7 +177,8 @@ static ConvergenceResult measureOrderESDIRK(double T, int N_base)
 static ConvergenceResult measureOrderDITR(int mask, double alpha,
                                           double T, int N_base)
 {
-    auto run = [&](int N) {
+    auto run = [&](int N)
+    {
         ODE::ImplicitHermite3SimpleJacobianDualStep<Vec2, Vec2> ode(
             1, v2init, v2init, alpha, /*curSolveMethod=*/0, /*nStartIter=*/0,
             /*thetaM1n=*/0.9146, /*thetaM2n=*/0.0, mask, /*nMGn=*/0);
@@ -248,7 +271,8 @@ TEST_CASE("VBDF k=1: 1st-order on oscillator")
 
 TEST_CASE("VBDF k=2: 2nd-order on oscillator")
 {
-    auto run = [](int N) {
+    auto run = [](int N)
+    {
         ODE::ImplicitVBDFDualTimeStep<Vec2, Vec2> ode(1, v2init, v2init, 2);
         return integrateOscillator(ode, 1.0, N);
     };
@@ -307,4 +331,24 @@ TEST_CASE("SSPRK3: golden value on oscillator")
     double err = integrateOscillator(ode, 0.5, 200);
     std::cout << "[SSPRK3/golden] err=" << std::scientific << std::setprecision(10) << err << std::endl;
     CHECK(err < 1e-6); // very small at 200 steps for T=0.5
+}
+
+TEST_CASE("DITR U2R2 (nStartIter > 0): startup iterations apply fincrement")
+{
+    ODE::ImplicitHermite3SimpleJacobianDualStep<Vec2, Vec2> ode(
+        1, v2init, v2init, /*alpha=*/0.5, /*curSolveMethod=*/0, /*nStartIter=*/3,
+        /*thetaM1n=*/0.9146, /*thetaM2n=*/0.0, /*mask=*/0, /*nMGn=*/0);
+    Vec2 u(1.0, 0.0), xinc;
+    int incCalls = 0;
+    auto countingIncrement = [&](Vec2 &x, Vec2 &dx, real s, int stage)
+    {
+        ++incCalls;
+        g_fincrement(x, dx, s, stage);
+    };
+    // Stop after the 2 startup iterations (iter=1, 2 < nStartIter=3) by setting maxIter=2.
+    auto neverStop = [](int, Vec2 &, int) -> bool
+    { return false; };
+    ode.Step(u, xinc, g_frhs, g_fdt, g_fsolve, /*maxIter=*/2, neverStop, countingIncrement, /*dt=*/0.05);
+    CHECK(incCalls == 2);
+    CHECK(std::abs(u.x - 1.0) + std::abs(u.y) > 1e-3);
 }

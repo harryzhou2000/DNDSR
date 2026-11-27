@@ -419,15 +419,6 @@ namespace DNDS::Euler
             }
         }
 
-        void ensureBuffers(int nVars) const
-        {
-            // Buffers are eagerly initialized in the constructor; this method
-            // exists only as a no-op backward-compatibility shim.  The
-            // constructor sizes bufOmega_, bufJ_, bufY_, and bufDSdu_ for
-            // every thread based on the pool size and nSpecies / nVars.
-            (void)nVars;
-        }
-
         void evaluate(TU &ret, TJac &jac, const TU &U, const TDiffU &,
                       const Geom::tPoint &, const SourceCellAux &aux,
                       index, index, int Mode) const
@@ -514,75 +505,7 @@ namespace DNDS::Euler
                         dSdu(iRow, j) = val;
                     }
                 }
-                if (filterReactiveJacobianSpectrum_ == 1)
-                {
-                    // kDebugEigenFilter — per-cell reactive Jacobian eigenvalue
-                    // filtering switch.  The chemical source Jacobian dSdu is
-                    // assembled in species rows only (Isp .. Isp+Ns1-1); the
-                    // filter ensures that its eigenvalues have non-positive real
-                    // parts so the source term does not destabilise the
-                    // time-integration scheme.
-                    //
-                    // Mode 0 — no filtering (default).
-                    //   The chemical Jacobian is already diagonally dominant and
-                    //   stable (negative-diagonal Z-matrix).  Skipping the filter
-                    //   is both the fastest per-iteration *and* converges
-                    //   correctly (tested on 1-D H2/O2 detonation, 5000 cells).
-                    //
-                    // Mode 1 — Gershgorin circle filter (O(Ns1^2)).
-                    //   For each species row i, compute radius = sum_{j!=i}|dSdu(i,j)|.
-                    //   If center+radius > 0 the diagonal is shifted so the
-                    //   Gershgorin disc lies in the left half-plane.  Per-iteration
-                    //   cost is close to mode 0, but the filter is *too conservative*
-                    //   — it over-suppresses cross-species coupling, stalling
-                    //   species residual convergence (tested on detonation).
-                    //   Keep available for stiff chemistry regimes where it may help.
-                    //
-                    // Mode 2 — full ComplexEigenSolver (O(Ns1^3)).
-                    //   Original code.  Clips the real part of every eigenvalue
-                    //   to ≤ 0 then reconstructs the filtered matrix.  Converges
-                    //   correctly but ~2× slower per iteration than modes 0/1
-                    //   (7 % of total cycles in ComplexSchur::reduceToTriangularForm).
-                    //   Preserved as a reference for validation.
-                    //
-                    static const int kDebugEigenFilter = 0;
-                    switch (kDebugEigenFilter)
-                    {
-                    case 0:
-                        break;
-                    case 1:
-                    {
-                        for (int k = 0; k < Ns1; ++k)
-                        {
-                            int iRow = Isp + k;
-                            real center = dSdu(iRow, iRow);
-                            real radius = real(0);
-                            for (int j = Isp; j < Isp + Ns1; ++j)
-                                if (j != iRow)
-                                    radius += std::abs(dSdu(iRow, j));
-                            if (center + radius > 0)
-                                dSdu(iRow, iRow) -= (center + radius);
-                        }
-                        break;
-                    }
-                    case 2:
-                    {
-                        Eigen::ComplexEigenSolver<Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>> eig(dSdu);
-                        if (eig.info() == Eigen::Success)
-                        {
-                            Eigen::Vector<std::complex<real>, Eigen::Dynamic> lambda = eig.eigenvalues();
-                            for (int i = 0; i < lambda.size(); ++i)
-                                lambda(i) = std::complex<real>(std::min(lambda(i).real(), real(0)), lambda(i).imag());
-                            Eigen::Matrix<std::complex<real>, Eigen::Dynamic, Eigen::Dynamic> dSduFiltered =
-                                eig.eigenvectors() * lambda.asDiagonal() * eig.eigenvectors().inverse();
-                            dSdu = dSduFiltered.real();
-                        }
-                        break;
-                    }
-                    default:
-                        break;
-                    }
-                }
+                (void)filterReactiveJacobianSpectrum_;
                 jac -= dSdu;
             }
         }

@@ -26,6 +26,38 @@ def test_all_reduce_scalar(mpi: DNDS.MPIInfo):
     assert scalarBuf == mpi.size
 
 
+def test_all_reduce_buffer_validation_and_memoryview_writability(mpi: DNDS.MPIInfo):
+    send = np.array([1.0, 2.0], dtype=np.float64)
+    readonly_recv = np.zeros(2, dtype=np.float64)
+    readonly_recv.flags.writeable = False
+    with pytest.raises((ValueError, RuntimeError)):
+        DNDS.MPI.Allreduce(send, readonly_recv, "MPI_SUM", mpi)
+    # Mismatched dtype
+    wrong_dtype = np.zeros(2, dtype=np.float32)
+    with pytest.raises(RuntimeError):
+        DNDS.MPI.Allreduce(send, wrong_dtype, "MPI_SUM", mpi)
+    # Undersized recv buffer
+    wrong_shape = np.zeros(1, dtype=np.float64)
+    with pytest.raises(RuntimeError):
+        DNDS.MPI.Allreduce(send, wrong_shape, "MPI_SUM", mpi)
+    # Aliased send/recv
+    aliased = np.array([1.0, 2.0], dtype=np.float64)
+    with pytest.raises(RuntimeError):
+        DNDS.MPI.Allreduce(aliased, aliased, "MPI_SUM", mpi)
+    # Non-contiguous recv
+    non_contig = np.zeros(4, dtype=np.float64)[::2]
+    with pytest.raises(RuntimeError):
+        DNDS.MPI.Allreduce(send, non_contig, "MPI_SUM", mpi)
+
+    # Mutable Array::data() must return a writable memoryview (PY-5)
+    arr = DNDS.Array_d_I_I_N()
+    arr.Resize(2, np.array([2, 2], dtype=np.int32))
+    mv = arr.data()
+    assert not mv.readonly
+    mv[0] = 42.0
+    assert arr[0, 0] == 42.0
+
+
 def test_array_trans(mpi: DNDS.MPIInfo, mode: str = "global"):
     arrayR3 = DNDS.ParArray("d", 3, init_args=(mpi,))
     if mpi.rank == 0:

@@ -47,12 +47,22 @@ namespace DNDS::Runtime
                 : prototype(source.New(RowLayout{}, destination))
             {
                 int compatible = schema.Compatible(ArrayTypeIdentity(source));
+                auto storage = source.SharedStorage();
+                py::gil_scoped_release release;
                 MPI_Allreduce(MPI_IN_PLACE, &compatible, 1, MPI_INT, MPI_MIN, route.Communicator());
                 DNDS_check_throw_info(compatible, "dynamic transfer source dtype differs from schema on a rank");
-                operation = std::make_unique<DynamicRowTransfer>(std::move(route), source.SharedStorage(), std::move(schema),
+                operation = std::make_unique<DynamicRowTransfer>(std::move(route), std::move(storage), std::move(schema),
                                                                  destination, transport, std::move(options), std::move(reducer), context, layout);
             }
-            PythonArray Commit() { return prototype.WithStorage(operation->Commit()); }
+            PythonArray Commit()
+            {
+                ArrayStorage::Shared result;
+                {
+                    py::gil_scoped_release release;
+                    result = operation->Commit();
+                }
+                return prototype.WithStorage(std::move(result));
+            }
         };
     }
     void BindMPIOptions(py::module_ &m)
@@ -64,10 +74,14 @@ namespace DNDS::Runtime
         py::class_<NCCLTransferProvider, TransferProvider, std::shared_ptr<NCCLTransferProvider>>(m, "NCCLTransferProvider",
                                                                                                   "Explicit stream-ordered CUDA payload provider. One rank per GPU; MPI only bootstraps setup. Match per-peer order and retain streams through completion.")
             .def(py::init([](const MPIInfo &mpi, Device device)
-                          { return NCCLTransferProvider::Create(mpi.comm, device); }),
+                          {
+                              py::gil_scoped_release release;
+                              return NCCLTransferProvider::Create(mpi.comm, device); }),
                  py::arg("mpi"), py::arg("device"))
             .def(py::init([](std::shared_ptr<CommunicationContext> context, Device device)
-                          { return NCCLTransferProvider::Create(std::move(context), device); }),
+                          {
+                              py::gil_scoped_release release;
+                              return NCCLTransferProvider::Create(std::move(context), device); }),
                  py::arg("context"), py::arg("device"))
             .def("bind_allreduce", [](const NCCLTransferProvider &provider, const PythonArray &input, const PythonArray &output, Reduction operation)
                  { return BindGlobalReduction(provider.ControlContext()->Communicator(), input, output,
@@ -81,7 +95,9 @@ namespace DNDS::Runtime
                                                                                 "Match setup order and selected policy on all ranks; use distinct matched tags for concurrent bindings. "
                                                                                 "With safety agreement disabled, rejected local MPI launches abort the communicator. Local access/readiness checks remain.")
             .def(py::init([](const MPIInfo &mpi, bool collectivePreflight)
-                          { return std::make_shared<CommunicationContext>(mpi.comm, collectivePreflight); }),
+                          {
+                              py::gil_scoped_release release;
+                              return std::make_shared<CommunicationContext>(mpi.comm, collectivePreflight); }),
                  py::arg("mpi"), py::arg("collective_preflight") = true)
             .def("bind_allreduce", [](std::shared_ptr<CommunicationContext> context, const PythonArray &input, const PythonArray &output, Reduction operation)
                  { return BindGlobalReduction(context->Communicator(), input, output,

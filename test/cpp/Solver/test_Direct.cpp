@@ -22,6 +22,7 @@
 #include "DNDS/Core/Defines.hpp"
 #include "DNDS/MPI/MPI.hpp"
 #include "Solver/Direct.hpp"
+#include "Solver/BlockInverse.hpp"
 #include "DNDS/Algebra/BlockMatrixStorage.hpp"
 #include "Solver/NativeBlockLU.hpp"
 #include <Eigen/Dense>
@@ -1011,6 +1012,25 @@ TEST_CASE("Native triangular phases retain owners and advance independent local 
     for (DNDS::index i = 0; i < 2; ++i)
         for (DNDS::index j = 0; j < 2; ++j)
             CHECK(read.View()(i, j) == .5 * (i + j + 1));
+}
+
+TEST_CASE("Direct empty localPartStarts defaults to 1 partition and BlockInverse catches post-unscale overflow")
+{
+    auto symLU = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, NCells);
+    auto adj = build2DPeriodicAdj();
+    std::vector<DNDS::WorkerRowRanges> workers{{{0, NCells}, {}}};
+    symLU->ObtainSymmetricSymbolicFactorization(adj, {}, 0, false, workers);
+    REQUIRE(symLU->localPartStarts.size() == 2);
+    CHECK(symLU->localPartStarts[0] == 0);
+    CHECK(symLU->localPartStarts[1] == NCells);
+
+    // Block whose normalized inverse is well-conditioned (~5e5), but unscaling by 1e305 overflows to Inf.
+    Eigen::Matrix<DNDS::real, 2, 2> tiny;
+    tiny << 1e-305, 0.999999e-305,
+        0.999999e-305, 1e-305;
+    auto inverted = Direct::TryInvertDiagonalBlock(tiny);
+    CHECK_FALSE(bool(inverted.status));
+    CHECK(inverted.status.code == NumericalError::InvalidState);
 }
 
 int main(int argc, char **argv)

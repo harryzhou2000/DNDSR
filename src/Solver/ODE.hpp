@@ -410,7 +410,7 @@ namespace DNDS::ODE
             index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {},
             index k = 2) : DOF(NDOF), cnPrev(0), prevStart(k - 2), kBDF(k)
         {
-            assert(k > 0 && k <= 4);
+            DNDS_assert(k > 0 && k <= 4);
 
             xPrevs.resize(k - 1);
             dtPrevs.resize(k - 1);
@@ -439,7 +439,7 @@ namespace DNDS::ODE
             index kCurrent = cnPrev + 1;
             index prevSiz = kBDF - 1;
             for (index iPrev = 0; iPrev < cnPrev; iPrev++)
-                assert(prevSiz && std::abs(dtPrevs[mod(iPrev + prevStart, prevSiz)] - dt) < dt * 1e-8);
+                DNDS_assert(prevSiz && std::abs(dtPrevs[mod(iPrev + prevStart, prevSiz)] - dt) < dt * 1e-8);
 
             xLast = x;
             // x = xLast;
@@ -511,7 +511,7 @@ namespace DNDS::ODE
             index kCurrent = cnPrev + 1;
             index prevSiz = kBDF - 1;
             for (index iPrev = 0; iPrev < cnPrev; iPrev++)
-                assert(prevSiz && std::abs(dtPrevs[mod(iPrev + prevStart, prevSiz)] - dt) < dt * 1e-8);
+                DNDS_assert(prevSiz && std::abs(dtPrevs[mod(iPrev + prevStart, prevSiz)] - dt) < dt * 1e-8);
 
             xLast = x;
             // x = xLast;
@@ -656,7 +656,7 @@ namespace DNDS::ODE
             index NDOF, Finit &&finit = [](TDATA &) {}, FinitDtau &&finitDtau = [](TDTAU &) {},
             index k = 2) : DOF(NDOF), cnPrev(0), prevStart(k - 2), kBDF(k)
         {
-            assert(k > 0 && k <= 4);
+            DNDS_assert(k > 0 && k <= 4);
 
             xPrevs.resize(k - 1);
             dtPrevs.resize(k - 1);
@@ -1050,7 +1050,7 @@ namespace DNDS::ODE
             real alpha = alphaHM3;
             int mask = maskHM3;
             maskHM3Exe = mask;
-            assert(alpha > 0 && alpha < 1);
+            DNDS_assert(alpha > 0 && alpha < 1);
             cInter.setZero();
             switch (mask)
             {
@@ -1148,6 +1148,7 @@ namespace DNDS::ODE
                     rhsFull.addTo(x, -1. / dt);
                     rhsFull += rhsbuf[1];
                     fsolve(x, rhsFull, resOther, dTau, dt, 1.0, xinc, iter, 1.0, 0);
+                    fincrement(x, xinc, 1.0, 0);
                 }
                 else
                 {

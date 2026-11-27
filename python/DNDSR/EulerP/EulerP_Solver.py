@@ -524,7 +524,7 @@ class Solver:
 
         # data = self.data
         data = (
-            self.data.Wrapped()
+            self.data.Wrapped() if hasattr(self.data, "Wrapped") else self.data
         )  # !caution, the wrapped objects cannot be put into pybind11 fields
         eval.RecGradient(solver.LoadArg_RecGradient())
         # print(data["p"].min())
