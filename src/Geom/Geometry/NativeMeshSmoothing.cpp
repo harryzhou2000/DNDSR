@@ -209,11 +209,12 @@ namespace DNDS::Geom
                 real result = 0;
                 const index workers = OMP::DistributedThreads();
                 std::vector<real> partials(size_t(workers > 1 ? workers : 0));
-                OMP::SumRows(values.RowCount(), {&result, 1}, {partials.data(), index(partials.size())}, [&](index row, auto sum) noexcept -> NumericalStatus
-                             {
+                const auto sumStatus = OMP::SumRows(values.RowCount(), {&result, 1}, {partials.data(), index(partials.size())}, [&](index row, auto sum) noexcept -> NumericalStatus
+                                                    {
                     for (size_t component = 0; component < 3; ++component)
                         sum[0] += a.View()(row, component) * b.View()(row, component);
                     return {}; });
+                DNDS_check_throw_info(sumStatus, "native smoothing dot product failed");
                 // The team is joined before the controller's distributed dot.
                 MPI_Allreduce(MPI_IN_PLACE, &result, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
                 return result;

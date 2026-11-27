@@ -1,5 +1,5 @@
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Compute.hpp"
-#include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Compute_Impl.cu.inc"
+#include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Compute_Impl.cuh"
 
 namespace DNDS::Cauchy::CUDA::Detail
 {

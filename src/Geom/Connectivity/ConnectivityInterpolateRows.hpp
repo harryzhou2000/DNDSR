@@ -426,6 +426,8 @@ namespace DNDS::Geom::ConnectivityRows
                        : SubEntityEnumerationMode::Append;
         if (mode == SubEntityEnumerationMode::Append)
             return detail::EnumerateSubEntitiesAppend(reader, query, nParent, nNode);
+        DNDS_check_throw_info(!query.matchExtra || query.matchExtraSupportsParallelGrouping,
+                              "RecordPrefix sub-entity enumeration requires a parallel-safe matchExtra predicate");
         return detail::EnumerateSubEntitiesRecords(reader, query, nParent, nNode);
     }
 }

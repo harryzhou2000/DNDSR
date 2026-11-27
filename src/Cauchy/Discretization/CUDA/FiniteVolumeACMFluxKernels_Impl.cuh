@@ -1,3 +1,4 @@
+#pragma once
 #include "Cauchy/Discretization/CUDA/FiniteVolumeACMFluxKernels.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Inputs.hpp"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Reconstruction.hpp"

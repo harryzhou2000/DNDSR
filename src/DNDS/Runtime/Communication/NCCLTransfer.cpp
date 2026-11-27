@@ -24,10 +24,6 @@ namespace DNDS::Runtime
 #ifdef DNDS_USE_NCCL
     namespace
     {
-        void CheckCUDA(cudaError_t error)
-        {
-            DNDS_check_throw_info(error == cudaSuccess, cudaGetErrorString(error));
-        }
         void CheckNCCL(ncclResult_t error)
         {
             DNDS_check_throw_info(error == ncclSuccess, ncclGetErrorString(error));

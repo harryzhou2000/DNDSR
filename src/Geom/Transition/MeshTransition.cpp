@@ -92,11 +92,15 @@ namespace DNDS::Geom
                 auto periodic = view.Periodic();
                 periodic.WriteSerializer(serializer, "periodicInfo");
             }
-            for (const auto &[kind, field] : std::array<std::pair<EntityKind, const char *>, 3>{
+            for (const auto &entry : std::array<std::pair<EntityKind, const char *>, 3>{
                      {{EntityKind::Bnd, "bnd2bndOrig"}, {EntityKind::Cell, "cell2cellOrig"}, {EntityKind::Node, "node2nodeOrig"}}})
+            {
+                const auto kind = entry.first;
+                const auto *field = entry.second;
                 write(tAdj1Pair{}, kind, field, one,
                       [&](index row, rowsize)
                       { return source.OriginalEntityId(kind, row); });
+            }
         }
 
         void CheckInventory(const UnstructuredMesh &mesh, const UnstructuredMeshView &view, const ReorderInput &input,

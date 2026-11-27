@@ -79,7 +79,7 @@ interior constraints in the routine tier. No large numerical tolerance or
 iteration cap was reduced.
 
 The topology-incidence integration case runs once by default. Repeated timing
-is opt-in through `geom_benchmark_topology_np2`, or
+is opt-in through
 `DNDS_TEST_TOPOLOGY_REPETITIONS=3 mpiexec -np N geom_test_mesh_pipeline
 --test-case="Native inverse compose and face topology match independent incidences"`.
 Use the runner's normal allocation and affinity policy for measurements.

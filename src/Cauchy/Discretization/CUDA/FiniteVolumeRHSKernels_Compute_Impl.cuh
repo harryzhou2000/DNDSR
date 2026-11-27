@@ -1,3 +1,4 @@
+#pragma once
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 // Private CUDA comparison implementation, included only by its scalar TUs.
 #include <cuda_runtime.h>

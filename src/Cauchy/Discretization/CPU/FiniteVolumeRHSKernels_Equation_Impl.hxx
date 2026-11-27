@@ -1,3 +1,4 @@
+#pragma once
 #include "Cauchy/Discretization/CPU/FiniteVolumeFluxShapes.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeSampleKernels.hpp"
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"

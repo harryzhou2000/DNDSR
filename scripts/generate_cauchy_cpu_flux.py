@@ -23,7 +23,7 @@ def generate(manifest, directory, families, dimensions):
                 tag = f"EquationPhysicsProfile::{profile}, ReconstructionForm::{form}"
                 path = directory / f"FiniteVolumeCPUFluxCatalog_{name}.cpp"
                 write_if_changed(path, f'''// Generated CPU specialization.
-#include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation_Impl.cpp.inc"
+#include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation_Impl.hxx"
 namespace DNDS::Cauchy::CPU
 {{
     NumericalResult<index> {name}(const FluxRowsRequest &a) noexcept

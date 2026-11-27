@@ -168,8 +168,5 @@ provides the rank-local operator and handles inter-rank coupling.
 
 `solver_aggregation_amg` checks a two-level V-cycle and numeric refresh against
 independently assembled dense operators, including nonsymmetric blocks, padded
-rows and singular diagonal handling. CUDA builds with AmgX also provide the
-manual benchmark target `dnds_benchmark_aggregation_amg`. Its arguments are
-grid side length, repeat count and CUDA ordinal. It reports relative residual
-and timing for each implementation. Multi-level results may differ because the
-aggregate selectors are independent.
+rows and singular diagonal handling. For end-to-end timing comparisons against
+AmgX, run the canonical `cauchy_solver` CLI with Caliper (`DNDS_TIMELINE=1`).

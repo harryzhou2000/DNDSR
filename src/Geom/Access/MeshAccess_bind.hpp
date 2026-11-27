@@ -313,8 +313,12 @@ namespace DNDS::Geom
             .def("cell_is_face_back", &PythonMeshReadAccess::IsFaceBack, py::arg("cell"), py::arg("face"), py::arg("slot"));
         const std::pair<const char *, MeshRelation> methods[]{
             {"cell_nodes", MeshRelation::CellNodes}, {"boundary_nodes", MeshRelation::BoundaryNodes}, {"boundary_cells", MeshRelation::BoundaryCells}, {"cell_cells", MeshRelation::CellCells}, {"node_cells", MeshRelation::NodeCells}, {"node_boundaries", MeshRelation::NodeBoundaries}, {"cell_faces", MeshRelation::CellFaces}, {"face_nodes", MeshRelation::FaceNodes}, {"face_cells", MeshRelation::FaceCells}, {"face_boundaries", MeshRelation::FaceBoundaries}, {"boundary_faces", MeshRelation::BoundaryFaces}, {"cell_edges", MeshRelation::CellEdges}, {"edge_nodes", MeshRelation::EdgeNodes}, {"edge_cells", MeshRelation::EdgeCells}, {"cell_face_cells", MeshRelation::CellFaceCells}};
-        for (auto [name, kind] : methods)
+        for (const auto &entry : methods)
+        {
+            const auto name = entry.first;
+            const auto kind = entry.second;
             read.def(name, [kind](const PythonMeshReadAccess &self, index row)
                      { return self.Relation(kind, row); }, py::arg("row"));
+        }
     }
 }

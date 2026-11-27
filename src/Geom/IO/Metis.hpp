@@ -10,7 +10,7 @@ namespace METIS
 
 namespace METIS
 {
-    static idx_t indexToIdx(DNDS::index v)
+    inline idx_t indexToIdx(DNDS::index v)
     {
         if constexpr (sizeof(DNDS::index) <= sizeof(idx_t))
             return v;

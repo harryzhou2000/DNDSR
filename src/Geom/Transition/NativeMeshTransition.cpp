@@ -1066,8 +1066,10 @@ namespace DNDS::Geom
         std::map<EntityKind, std::vector<index>> sendOld2New;
         std::map<EntityKind, PermutationTransfer> allTransfers;
         const auto anchor = oldSpaces.begin()->second;
-        for (const auto &[kind, old] : oldSpaces)
+        for (const auto &entry : oldSpaces)
         {
+            const auto kind = entry.first;
+            const auto &old = entry.second;
             auto assigned = placements.find(kind);
             const auto targets = assigned == placements.end() ? std::vector<MPI_int>(size_t(old.NumOwned()), mpi.rank) : assigned->second;
             PermutationTransfer transfer;
@@ -1111,8 +1113,10 @@ namespace DNDS::Geom
                 serialRemaps[kind].newGlobals = &allTransfers.at(kind).newGlobalIndices;
             }
         else
-            for (const auto &[kind, old] : oldSpaces)
+            for (const auto &spaceEntry : oldSpaces)
             {
+                const auto kind = spaceEntry.first;
+                const auto &old = spaceEntry.second;
                 // Only Cell numbering changes during a local cell permutation.
                 // Per-descriptor validation below still checks every input row;
                 // building identity maps for other target families adds no proof.
@@ -1208,8 +1212,10 @@ namespace DNDS::Geom
                                               { return row >= 0; }),
                                   "owned cell permutation is incomplete");
         }
-        for (const auto &[key, values] : original)
+        for (const auto &entry : original)
         {
+            const auto &key = entry.first;
+            const auto &values = entry.second;
             const auto identity = payloadKey(key, values);
             const MeshAdjacencyRead *read = nullptr;
             source.LocalStage(mpi, [&]
@@ -1346,8 +1352,10 @@ namespace DNDS::Geom
         companion(owned.faceNodesPbi, source.faceNodesPbi, EntityKind::Face, bits);
         companion(owned.cellEdgesPbi, source.cellEdgesPbi, EntityKind::Cell, bits);
         companion(owned.edgeNodesPbi, source.edgeNodesPbi, EntityKind::Edge, bits);
-        for (const auto &[kind, old] : oldSpaces)
+        for (const auto &entry : oldSpaces)
         {
+            const auto kind = entry.first;
+            const auto &old = entry.second;
             const auto &originalIds = source.ids.at(kind);
             if (cellOld2New && kind != EntityKind::Cell)
             {

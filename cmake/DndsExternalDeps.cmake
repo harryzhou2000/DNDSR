@@ -301,13 +301,10 @@ foreach(LIB ${DNDS_EXTERNAL_LIBS})
     list(APPEND DNDS_EXTERNAL_LIBS_REAL ${LIB_REAL})
 endforeach()
 
-# Install only the bundled libs (not MPI/libstdc++) into dndsr_external/
+# Install only the bundled libs (not MPI/libstdc++) into dndsr_external/ at install time
 foreach(LIB ${DNDS_BUNDLED_LIBS})
-    file(INSTALL ${LIB} DESTINATION ${CMAKE_INSTALL_PREFIX}/DNDSR/lib/dndsr_external FOLLOW_SYMLINK_CHAIN)
-endforeach()
-# Also copy bundled libs into python package tree for editable installs
-foreach(LIB ${DNDS_BUNDLED_LIBS})
-    file(INSTALL ${LIB} DESTINATION ${PROJECT_SOURCE_DIR}/python/DNDSR/_lib/dndsr_external FOLLOW_SYMLINK_CHAIN)
+    install(CODE "file(INSTALL \"${LIB}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}/DNDSR/lib/dndsr_external\" FOLLOW_SYMLINK_CHAIN)" COMPONENT py)
+    install(CODE "file(INSTALL \"${LIB}\" DESTINATION \"${PROJECT_SOURCE_DIR}/python/DNDSR/_lib/dndsr_external\" FOLLOW_SYMLINK_CHAIN)" COMPONENT py)
 endforeach()
 
 list(REMOVE_DUPLICATES DNDS_EXTERNAL_LIBS_DIRS)
@@ -331,7 +328,7 @@ elseif(WIN32)
     # Generate the shell script
     set(SCRIPT_NAME "${CMAKE_INSTALL_PREFIX}/DNDSR/set_library_path.bat")
     file(WRITE ${SCRIPT_NAME} "@echo off\n")
-    file(APPEND ${SCRIPT_NAME} "set PATH=%PATH%;${LIBRARY_PATH}\n")
+    file(APPEND ${SCRIPT_NAME} "set PATH=%PATH%;${DNDS_EXTERNAL_LIBS_DIRS_SHELL_LIST}\n")
     message(STATUS "Generated LIBRARY script: ${SCRIPT_NAME}")
 else()
     message(WARNING "The list of libraries might need be aded to dynamic linking: \n"

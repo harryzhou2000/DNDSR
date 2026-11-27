@@ -882,9 +882,11 @@ TEST_CASE("Cauchy AMG reconstruction matches explicit CFV composition and omits 
         return;
     }
     auto mesh = CFVTest::CartesianHexes(mpi, 3);
-    for (const auto &[storage, overlap] : std::vector<std::pair<std::string, bool>>{
+    for (const auto &cfg : std::vector<std::pair<std::string, bool>>{
              {"native", false}, {"native", true}, {"upload", false}})
     {
+        const auto &storage = cfg.first;
+        const bool overlap = cfg.second;
         CAPTURE(storage);
         CAPTURE(overlap);
         C::DomainSettings settings;

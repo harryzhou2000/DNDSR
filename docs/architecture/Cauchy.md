@@ -256,12 +256,6 @@ change donor multiple times across non-monotone stage visits. Initial maps do
 not count as donor changes. Counter updates occur during map construction, not
 inside FV kernels, and diagnostics never refresh fields or alter trajectories.
 
-The excluded `cauchy_experiment_multidomain_iv` target provides a bounded
-deterministic sliding-IV evidence driver. It emits controls/history as JSON lines
-and final owned CSV fields keyed by domain and persistent cell ID into its CWD.
-Those keys permit comparison across decompositions; local row order does not.
-It is a research fixture, not the general production output/restart frontend.
-
 ```text
 Python Simulation handle ----owns----> C++ Simulation
 Python borrowed Domain ------retains----^     |

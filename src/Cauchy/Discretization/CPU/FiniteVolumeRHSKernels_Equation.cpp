@@ -1,5 +1,5 @@
 #include "Cauchy/Config/BuildFeatures.hpp"
-#include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation_Impl.cpp.inc"
+#include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation_Impl.hxx"
 #include "FiniteVolumeCPUFluxCatalog.hpp"
 
 namespace DNDS::Cauchy::CPU

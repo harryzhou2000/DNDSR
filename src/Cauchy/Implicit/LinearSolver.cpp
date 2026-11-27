@@ -738,6 +738,9 @@ namespace DNDS::Cauchy
                     engine.Synchronize();
                     data.problem->ObserveDiagonalInverse();
                 }
+            }
+            {
+                auto engine = data.compute.LockEngine();
                 data.problem->ResetQueuedActionStatus(engine, data.compute);
             } });
                 try

@@ -1,3 +1,4 @@
+#pragma once
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 // Private CUDA implementation: included only by generated one-shape TUs.
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels_Shapes.hpp"

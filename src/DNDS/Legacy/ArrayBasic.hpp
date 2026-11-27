@@ -432,7 +432,7 @@ namespace DNDS
                                  iRow, _size);
             DNDS_HD_assert_infof(iCol < RowSize(iRow) && iCol >= 0,
                                  "query position j[%lld] out of range [0, %lld)",
-                                 iCol, RowSize(iRow));
+                                 static_cast<long long>(iCol), static_cast<long long>(RowSize(iRow)));
             index pos = -1;
             if constexpr (_dataLayout == TABLE_StaticFixed)
                 pos = iRow * rs + iCol;

@@ -14,7 +14,6 @@ ${DNDS_EXTERNAL_LIBS}
 
 set(CPPS
 Legacy/FiniteVolume.cpp
-Legacy/VRDefines.cpp
 Legacy/VariationalReconstruction.cpp
 Legacy/ModelEvaluator.cpp
 Prepare/FiniteVolumePlan.cpp
@@ -52,7 +51,7 @@ Operators/FiniteVolumePlan_Reconstruction.cpp
 Operators/FiniteVolumePlan_Linear.cpp
 )
 if (DNDS_USE_CUDA)
-list(APPEND CPPS Operators/CUDA/CharacteristicKernels_CUDA.cu Operators/CUDA/GradientKernels_CUDA.cu Operators/CUDA/LimitedVRKernels_CUDA.cu Operators/CUDA/PolynomialSamplingKernels_CUDA.cu Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu)
+list(APPEND CPPS Operators/CUDA/CharacteristicKernels_CUDA.cu Operators/CUDA/GradientKernels_CUDA.cu Operators/CUDA/LimitedVRKernels_CUDA.cu Operators/CUDA/PolynomialSamplingKernels_CUDA.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu)
 option(DNDS_CFV_CUDA_ENABLE_V1_KERNELS "Build historical CFV CUDA sweep comparison kernels" OFF)
 list(APPEND CPPS Operators/CUDA/ReconstructionDeviceKernels_Staged.cu Operators/CUDA/ReconstructionDevice_General_FP64.cu
     Operators/CUDA/ReconstructionSweepV2.cu)
@@ -113,13 +112,13 @@ target_link_libraries(${LIBNAME}_shared PUBLIC DNDS::ComputeScalar)
 install(TARGETS ${LIBNAME}_shared
     LIBRARY DESTINATION "DNDSR/lib"
     ARCHIVE DESTINATION "DNDSR/lib"
-    COMPONENT py
+    COMPONENT py OPTIONAL
 )
 
 # Also install into the python package tree for editable installs
 install(TARGETS ${LIBNAME}_shared
     LIBRARY DESTINATION "${PROJECT_SOURCE_DIR}/python/DNDSR/_lib"
-    COMPONENT py
+    COMPONENT py OPTIONAL
 )
 
 set(CPPS_BIND
@@ -128,7 +127,6 @@ Plans/FiniteVolumePlan_bind.cpp
 Bindings/cfv_pybind11.cpp
 Legacy/FiniteVolume_bind.cpp
 Legacy/ModelEvaluator_bind.cpp
-Legacy/VariationalReconstruction_bind.cpp
 )
 
 if(DNDS_USE_CUDA)
@@ -140,7 +138,11 @@ dnds_add_py_module(${LIBNAME}_pybind11 "${CPPS_BIND}" "${LIBNAME}_shared;${LINKS
 
 install(
     TARGETS ${LIBNAME}_pybind11
+    DESTINATION "DNDSR/CFV/_ext"
+    COMPONENT py OPTIONAL
+)
+install(
+    TARGETS ${LIBNAME}_pybind11
     DESTINATION "${PROJECT_SOURCE_DIR}/python/DNDSR/CFV/_ext"
-    RUNTIME_DEPENDENCY_SET DNDS_LIB_DEPENDENCY_XXX
-    COMPONENT py
+    COMPONENT py OPTIONAL
 )

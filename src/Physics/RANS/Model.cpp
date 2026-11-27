@@ -74,10 +74,35 @@ namespace DNDS::Physics::RANS
                 viscosity / std::max(point.state[0] * _settings.turbulentSchmidt, verySmallReal)};
     }
 
+    namespace
+    {
+        NumericalStatus CheckRealizableKEPoint(const Point &point) noexcept
+        {
+            if (!(point.state[0] > 0 && point.molecularViscosity > 0 && point.wallDistance > 0) ||
+                !std::isfinite(point.molecularViscosity) || !std::isfinite(point.wallDistance) ||
+                (!point.incompressible && (!(point.cp > 0 && point.gamma > 1) || !std::isfinite(point.cp) || !std::isfinite(point.gamma))))
+                return {NumericalError::InvalidState, 1};
+            for (int j = 0; j < 7; ++j)
+            {
+                if (point.incompressible && j == 4)
+                    continue;
+                if (!std::isfinite(point.state[j]))
+                    return {NumericalError::InvalidState, 10 + j};
+                for (int d = 0; d < 3; ++d)
+                    if (!std::isfinite(point.gradient(d, j)))
+                        return {NumericalError::InvalidState, 20 + 3 * j + d};
+            }
+            return {};
+        }
+    }
+
     NumericalResult<TurbulentTransport> Model::TryTransport(const Point &point, real preparedViscosity) const noexcept
     {
         if (_parameters.Supported())
             return RANS::TryTransport(_parameters, point, preparedViscosity);
+        const auto checked = CheckRealizableKEPoint(point);
+        if (!checked)
+            return checked;
         const auto result = preparedViscosity < 0 ? Transport(point) : // CPU-only legacy RealizableKE.
                                 TransportFromViscosity(point, preparedViscosity, _settings.turbulentPrandtl, _settings.turbulentSchmidt);
         if (!std::isfinite(result.viscosity) || !std::isfinite(result.conductivity) || !std::isfinite(result.speciesDiffusivity))
@@ -89,6 +114,11 @@ namespace DNDS::Physics::RANS
     {
         if (_parameters.Supported())
             return RANS::TryDiffusionFlux(_parameters, point, normal, turbulentViscosity);
+        const auto checked = CheckRealizableKEPoint(point);
+        if (!checked)
+            return checked;
+        if (!normal.allFinite() || !std::isfinite(turbulentViscosity))
+            return NumericalStatus{NumericalError::InvalidInput};
         const auto result = DiffusionFlux(point, normal, turbulentViscosity);
         if (!std::isfinite(result[0]) || !std::isfinite(result[1]))
             return NumericalStatus{NumericalError::InvalidState};
@@ -101,6 +131,9 @@ namespace DNDS::Physics::RANS
             return RANS::TrySource(_parameters, point, mode);
         if (mode != 0 && mode != 1)
             return NumericalStatus{NumericalError::InvalidInput};
+        const auto checked = CheckRealizableKEPoint(point);
+        if (!checked)
+            return checked;
         // RealizableKE does not enter the DES/SST cellLength throw path.
         const auto result = EvaluateSource(point, mode);
         if (!std::isfinite(result[0]) || !std::isfinite(result[1]))

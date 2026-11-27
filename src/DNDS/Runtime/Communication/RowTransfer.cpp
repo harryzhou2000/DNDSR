@@ -581,7 +581,6 @@ namespace DNDS::Runtime
         bool started = false, destinationReady = false;
         bool sendsStarted = false, unpackStarted = false, packingSubmitted = false;
         Completion packedReady, unpackReady;
-        std::exception_ptr error;
         AccessTrackingContext::Submission checked;
         std::shared_ptr<const AccessOrder> order;
         bool Prepare(bool scheduled, bool checkedAccess, bool callerValid);
@@ -1288,8 +1287,6 @@ namespace DNDS::Runtime
     }
     bool TransferOperation::CompleteDestination(bool wait)
     {
-        if (_state && _state->error)
-            std::rethrow_exception(_state->error);
         if (!_state || !_state->started || _state->destinationReady)
             return true;
         if (!PostPackedSends(wait))
@@ -1399,8 +1396,6 @@ namespace DNDS::Runtime
             _provider->Wait();
             return;
         }
-        if (_state && _state->error)
-            std::rethrow_exception(_state->error);
         if (!_state || !_state->started)
             return;
         WaitDestinationReady();
@@ -1425,8 +1420,6 @@ namespace DNDS::Runtime
             std::lock_guard<std::mutex> lock(b.mutex);
             b.active = false;
         }
-        if (s.error)
-            std::rethrow_exception(s.error);
     }
     bool TransferOperation::Test()
     {
@@ -1438,8 +1431,6 @@ namespace DNDS::Runtime
             return _worker->Test();
         if (_provider)
             return _provider->Test();
-        if (_state && _state->error)
-            std::rethrow_exception(_state->error);
         if (!_state || !_state->started)
             return true;
         auto &b = *_state->binding;

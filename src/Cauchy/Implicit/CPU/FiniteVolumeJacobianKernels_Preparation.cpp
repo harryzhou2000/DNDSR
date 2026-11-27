@@ -189,7 +189,8 @@ namespace DNDS::Cauchy::CPU
             return boundaryStatus;
         struct PreparedValues
         {
-            const decltype(inputValues) &cells;
+            using InputValues = std::remove_reference_t<decltype(inputValues)>;
+            const InputValues &cells;
             const Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> &boundary;
             index firstBoundary;
             real operator()(index iRow, index j) const

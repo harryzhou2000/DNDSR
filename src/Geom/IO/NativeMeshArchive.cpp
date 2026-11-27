@@ -291,8 +291,9 @@ namespace DNDS::Geom
                      { metadata = Metadata(owned, mpi, serializer->IsPerRank()); encoded = metadata.dump(); });
         Agree(mpi, encoded);
         size_t familyNumber = 0;
-        for (const auto &[kind, space] : owned.spaces)
+        for (const auto &entry : owned.spaces)
         {
+            const auto &space = entry.second;
             std::vector<index> counts;
             ArchiveStage(mpi, [&]
                          { counts.resize(size_t(mpi.size)); });
@@ -480,8 +481,10 @@ namespace DNDS::Geom
             } });
         for (const auto &[kind, total] : totals)
             owned.ids.emplace(kind, ReadRows<index>(serializer, "ids_" + std::to_string(int(kind)), mpi, partition, 1, R::ArraySchema<index>()));
-        for (const auto &[kind, width] : provenanceWidths)
+        for (const auto &entry : provenanceWidths)
         {
+            const auto kind = entry.first;
+            const auto width = entry.second;
             auto values = ReadRows<index>(serializer, "ancestry_" + std::to_string(int(kind)), mpi, partition, width, R::ArraySchema<index>());
             ArchiveStage(mpi, [&]
                          {

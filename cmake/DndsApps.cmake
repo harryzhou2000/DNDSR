@@ -67,13 +67,6 @@ jacobiLUTest
 oneDimProfileTest
 )
 
-# -------------------------------------------------------------------
-# Symlinks for in-place development
-# -------------------------------------------------------------------
-if (NOT SKBUILD_PROJECT_NAME) # do not create links for SCIKIT-BUILD build
-    install(CODE "file(CREATE_LINK ${CMAKE_INSTALL_PREFIX}/DNDSR/bin ${CMAKE_SOURCE_DIR}/src/bin SYMBOLIC)" COMPONENT py)
-    install(CODE "file(CREATE_LINK ${CMAKE_INSTALL_PREFIX}/DNDSR/lib ${CMAKE_SOURCE_DIR}/src/lib SYMBOLIC)" COMPONENT py)
-endif()
 # Stub generation runs automatically as the final step of
 # `cmake --install build --component py` (see DndsTooling.cmake).
 # The generated .pyi files in python/DNDSR/ should be committed to git.
@@ -142,6 +135,15 @@ add_executable(cauchy_solver EXCLUDE_FROM_ALL app/Cauchy/cauchy.cpp)
 target_include_directories(cauchy_solver PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_solver PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 set_target_properties(cauchy_solver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/app RUNTIME_OUTPUT_NAME "cauchy${EXE_SUFFIX}")
+if(DNDS_RECORD_COMMIT)
+    target_compile_definitions(cauchy_solver PRIVATE DNDS_CURRENT_COMMIT_HASH=${DNDS_RECORDED_COMMIT_HASH})
+endif()
+target_compile_definitions(cauchy_solver PRIVATE DNDS_VERSION_STRING="${DNDS_VERSION_FULL}")
+if(DNDS_USE_CCACHE)
+    set_property(TARGET cauchy_solver PROPERTY C_COMPILER_LAUNCHER ${DNDS_CCACHE_EXEC})
+    set_property(TARGET cauchy_solver PROPERTY CXX_COMPILER_LAUNCHER ${DNDS_CCACHE_EXEC})
+    set_property(TARGET cauchy_solver PROPERTY CUDA_COMPILER_LAUNCHER ${DNDS_CCACHE_EXEC})
+endif()
 
 
 

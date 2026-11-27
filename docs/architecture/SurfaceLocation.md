@@ -204,22 +204,10 @@ patch = Geom.BoundaryPatch.Create(mesh, boundaries,
 patch = patch.WithBackend(Geom.BoundingBoxBackend.CGAL)
 ```
 
-The opt-in `geom_benchmark_bounding_box_tree` measures the **production compiled
-wrappers**, alongside inlined controls with matching ownership/splitting. Run
-`... 1048576 1000000 5 pair` for native-wrapper, CGAL-wrapper, native-inline and
-CGAL-inline comparisons. Without `pair` it also exercises default CGAL queries,
-custom Euclidean predicates and centroid-native controls. Timings include public
-validation, backend dispatch and callback costs. They exclude exact element
-projection and MPI and therefore do not claim whole matching speedup.
-
-The 2026-10-31 actual-wrapper study records400 trials at4k/65k/262k/1M boxes,
-five distributions and five repeats. At1M boxes/queries, median CGAL/native
-query ratios are0.877 (wavy surface),0.839 (shell),0.841 (regular volume),0.478
-(anisotropic) and1.086 (clustered). Retained heap is120 vs144 MiB. Native remains
-useful for clustered workloads. Wrapper/control query differences are small
-relative to those workload effects; a4k regular-volume control shows about6%
-native wrapper overhead. Runs are pinned/single-threaded on a shared host,
-with candidate oracles and order rotation, not an exclusive performance claim.
+In earlier 1M-box/query wrapper studies across wavy-surface, shell,
+regular-volume, anisotropic and clustered distributions, CGAL was faster on
+anisotropic and regular geometries while the native tree remained competitive on
+clustered workloads with lower retained heap.
 
 No new dependency is introduced: CGAL already supplies other Geom utilities.
 Triangle/segment nearest-point or ray searches may use separate typed trees;

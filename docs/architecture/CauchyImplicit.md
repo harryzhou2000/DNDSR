@@ -1929,9 +1929,9 @@ cmake --build build --target dnds_test_cauchy_finite_volume_physics dnds_test_ca
 ctest --test-dir build -R '^dnds_cauchy_(finite_volume_physics|nonlinear)_np(1|2|4|8)$' --output-on-failure -j1
 ```
 
-## Frozen-state phase benchmark
+## Timing and Caliper instrumentation
 
-For mesh inputs, invocation and timer interpretation, see the [frozen-state benchmark guide](../guides/cauchy_implicit_benchmarks.md).
+For canonical `cauchy_solver` CLI profiling and timeline interpretation, see the [Cauchy timing and Caliper guide](../guides/cauchy_implicit_benchmarks.md).
 
 ### Linear algebra and controller instrumentation
 

@@ -773,8 +773,10 @@ namespace DNDS::Geom
                 data.LocalStage(mpi, [&]
                                 { AddIdentity(data, edges.entities, generatedIdStarts); });
         }
-        for (const auto &[key, original] : previous.namedRelations)
+        for (const auto &entry : previous.namedRelations)
         {
+            const auto &key = entry.first;
+            const auto &original = entry.second;
             if (data.namedRelations.count(key) || regenerated.count(key))
                 continue;
             // An explicit fixed-slot alias means the current physical facade
