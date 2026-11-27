@@ -12,7 +12,7 @@ namespace DNDS::CFV::Detail
                                       a.plan.n > 0 && a.mean.owned.Width() > 0 &&
                                       a.output.Width() == a.mean.owned.Width() * a.plan.n,
                                   "general FP64 reconstruction requires FP64 arithmetic and matching field widths");
-            const index bytes = a.output.Width() * index(sizeof(real));
+            const index bytes = a.plan.raw ? a.output.Width() * index(sizeof(real)) : 0;
             static thread_local int ordinal = -1;
             static thread_local size_t sharedLimit = 0;
             if (ordinal != a.context.device.ordinal)

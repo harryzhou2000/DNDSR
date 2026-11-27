@@ -506,6 +506,39 @@ TEST_CASE("Physical-gradient WBAP is direct, characteristic-optional, and split-
     }
 }
 
+TEST_CASE("GradientPlan evaluates and limits non-[4..7] component counts (scalar C=1 and reactive C=9)")
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false, 8);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+    auto plan = C::GradientPlan::Prepare(*fixture.mesh, metrics);
+    const I dim = metrics.Dimension();
+    for (I components : {I(1), I(9)})
+    {
+        auto mean = metrics.BuildField(components);
+        auto grad = metrics.BuildField(components * dim);
+        auto limited = metrics.BuildField(components * dim);
+        auto boundary = plan.BuildBoundaryValues(components);
+        {
+            auto mw = mean.Owned().Write();
+            for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                for (I c = 0; c < components; ++c)
+                    mw.View()(iCell, c) = 1.0 + 0.1 * double(c) + 0.01 * double(metrics.Cells().LocalToGlobal(iCell));
+            auto bw = boundary.Write();
+            for (I iPt = 0; iPt < boundary.RowCount(); ++iPt)
+                for (I c = 0; c < components; ++c)
+                    bw.View()(iPt, c) = 1.0 + 0.1 * double(c);
+        }
+        metrics.BindHalo(mean).Begin().Wait();
+        plan.Evaluate(mean, boundary, grad);
+        metrics.BindHalo(grad).Begin().Wait();
+        plan.LimitWBAP3(grad, limited);
+        auto lr = limited.Owned().Read();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            for (I j = 0; j < components * dim; ++j)
+                CHECK(std::isfinite(lr.View()(iCell, j)));
+    }
+}
+
 int main(int argc, char **argv)
 {
     // Native row kernels may create OMP/CPU workers even with controller MPI.

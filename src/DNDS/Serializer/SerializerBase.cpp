@@ -14,7 +14,7 @@ namespace DNDS::Serializer
         if (IsPerRank())
             return value;
         int local = value, global = 0;
-        MPI::Allreduce(&local, &global, 1, MPI_INT, MPI_MIN, getMPI().comm);
+        MPI::Allreduce(&local, &global, 1, MPI_INT, MPI_MIN, getComm());
         return global != 0;
     }
 
@@ -29,10 +29,10 @@ namespace DNDS::Serializer
             return true;
         RowStartCheck(path.size() <= size_t(std::numeric_limits<int>::max()), "Row-start reference path is too long");
         int size = int(path.size());
-        MPI::Bcast(&size, 1, MPI_INT, 0, getMPI().comm);
+        MPI::Bcast(&size, 1, MPI_INT, 0, getComm());
         std::string rootPath = path;
         rootPath.resize(size);
-        MPI::Bcast(rootPath.data(), size, MPI_CHAR, 0, getMPI().comm);
+        MPI::Bcast(rootPath.data(), size, MPI_CHAR, 0, getComm());
         return RowStartAll(path == rootPath);
     }
 

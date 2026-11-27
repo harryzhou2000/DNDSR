@@ -1027,6 +1027,23 @@ TEST_CASE("Optional nonlinear phase output preserves exact corrections and recor
     for (int phase = C::NonlinearProfile::Residual; phase < C::NonlinearProfile::Total; ++phase)
         CHECK(profile->seconds[phase] == 0);
 }
+
+TEST_CASE("NonlinearSolveGroup::PublishIteration does not interrupt already-terminal iterations")
+{
+    C::NonlinearSolveGroup group;
+    bool callbackCalled = false;
+    group.stopAfterCorrection = [&]()
+    {
+        callbackCalled = true;
+        return true;
+    };
+    CHECK(group.PublishIteration(true));
+    CHECK_FALSE(callbackCalled);
+    CHECK_FALSE(group.Interrupted());
+    CHECK(group.PublishIteration(false));
+    CHECK(callbackCalled);
+    CHECK(group.Interrupted());
+}
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

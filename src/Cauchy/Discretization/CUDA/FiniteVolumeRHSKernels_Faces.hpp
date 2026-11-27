@@ -31,9 +31,12 @@ namespace DNDS::Cauchy::CUDA::Detail
                                                                        const RHSKernelControls &controls,
                                                                        const Fields &fields, const FiniteVolumeDetail::SampleRecord &sample,
                                                                        const PerfectGasKernelPoint<Components> &left,
-                                                                       const PerfectGasKernelPoint<Components> &right) noexcept
+                                                                       const PerfectGasKernelPoint<Components> &right,
+                                                                       const FlowState &convectiveLeft,
+                                                                       const FlowState &convectiveRight) noexcept
     {
         const bool internal = sample.other != UnInitIndex;
+        const auto &condition = geometry.conditions(sample.condition, 0);
         const auto &gas = parameters.physics.gas;
         auto primitive = gas.Primitive(left.Flow());
         PerfectGasKernelPoint<Components> mean;
@@ -87,13 +90,13 @@ namespace DNDS::Cauchy::CUDA::Detail
             for (int d = 0; d < 3; ++d)
                 primitive.velocity[d] = .5 * (primitive.velocity[d] + otherPrimitive.velocity[d]);
         }
-        else
+        else if (condition.kind == BoundaryKind::NoSlipWall)
         {
             FlowState average;
             for (int j = 0; j < 5; ++j)
-                average[j] = .5 * (left.values[j] + right.values[j]);
+                average[j] = .5 * (convectiveLeft[j] + convectiveRight[j]);
             primitive = gas.Primitive(average);
-            if (!geometry.conditions(sample.condition, 0).isothermal)
+            if (!condition.isothermal)
             {
                 real heat = 0;
                 for (int d = 0; d < 3; ++d)
@@ -269,7 +272,9 @@ namespace DNDS::Cauchy::CUDA::Detail
         {
             if (controls.primitiveGradient)
             {
-                const auto diffusion = PrimitiveDiffusion(geometry, parameters, controls, fields, sample, left, right);
+                const auto diffusion = PrimitiveDiffusion(geometry, parameters, controls, fields, sample, left, right,
+                                                          wallFluxState ? face.Flow() : left.Flow(),
+                                                          wallFluxState ? face.Flow() : right.Flow());
                 if (!diffusion)
                     return diffusion.status.At(sample.cell, sample.point);
                 for (int j = 0; j < 5; ++j)
@@ -282,11 +287,26 @@ namespace DNDS::Cauchy::CUDA::Detail
             else
             {
                 const real inverseDistance = wall && controls.fluxPolicy.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
-                const auto &vLeft = separateViscous ? leftViscous : left.values;
+                auto vLeft = separateViscous ? leftViscous : left.values;
                 if (!internal && inverseDistance != 0)
                 {
+                    const bool allowFallback = controls.faceFallback || controls.positivity;
+                    if (separateViscous && wall && allowFallback)
+                    {
+                        const bool viscousAdmissible = controls.positivity
+                                                           ? parameters.thermal.ClippedReferenceAdmissible(vLeft)
+                                                           : parameters.thermal.Admissible(vLeft);
+                        if (!viscousAdmissible)
+                            vLeft = left.values;
+                    }
                     rightViscous = vLeft;
-                    const auto status = BoundaryPointValues<Components>(geometry, parameters, controls, fields, sample, rightViscous, false);
+                    auto status = BoundaryPointValues<Components>(geometry, parameters, controls, fields, sample, rightViscous, false);
+                    if (!status && separateViscous && wall && allowFallback && Physics::AllowsMeanFallback(status))
+                    {
+                        vLeft = left.values;
+                        rightViscous = vLeft;
+                        status = BoundaryPointValues<Components>(geometry, parameters, controls, fields, sample, rightViscous, false);
+                    }
                     if (!status)
                         return status.At(sample.cell, sample.point);
                 }

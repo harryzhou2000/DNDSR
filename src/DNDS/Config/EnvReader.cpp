@@ -33,9 +33,10 @@ namespace DNDS
         /// Return true if MPI is initialised and we are world rank 0.
         bool isWorldRank0()
         {
-            int initialized = 0;
+            int initialized = 0, finalized = 0;
             MPI_Initialized(&initialized);
-            if (!initialized)
+            MPI_Finalized(&finalized);
+            if (!initialized || finalized)
                 return false;
             int rank = 0;
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);

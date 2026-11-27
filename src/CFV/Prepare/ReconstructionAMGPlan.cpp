@@ -48,7 +48,7 @@ namespace DNDS::CFV
         DNDS_check_throw_info(!space.Distributed() || MPIInfo(space.Communicator()).size == 1,
                               "VR AMG currently supports one rank/device; no hidden principal extraction");
         const index rows = host.metrics.NumCell(), n = host.n;
-        DNDS_check_throw_info(n > 0 && n <= 19 && rows <= INT_MAX / n, "VR AMG rows/modes exceed provider extent");
+        DNDS_check_throw_info(rows > 0 && n > 0 && n <= 19 && rows <= INT_MAX / n, "VR AMG rows/modes exceed provider extent");
         const auto offsetRead = host.offsets.Read(), neighborRead = host.neighbors.Read(), faceRead = host.faces.Read();
         const auto boundaryRead = host.boundaryOffsets.Read();
         const auto offsets = offsetRead.View(), neighbors = neighborRead.View(), faces = faceRead.View(), boundary = boundaryRead.View();
@@ -224,7 +224,7 @@ namespace DNDS::CFV
                 data->provider->ApplyBorrowed(stream.Context(), read.View(), write.View());
             }
             R::SubmitArrays(engine, stream, [data, component](R::ExecutionContext context, auto source, auto packed, auto destination)
-                            { Detail::ScatterReconstructionAMGComponent(context, source, packed, destination, component, data->modes); }, R::Read(input.Owned()), R::Read(work.packedCorrection), R::Write(output.Owned()));
+                            { Detail::ScatterReconstructionAMGComponent(context, source, packed, destination, component, data->modes); }, R::Read(input.Owned()), R::Read(work.packedCorrection), component == 0 ? R::Write(output.Owned()) : R::ReadWrite(output.Owned()));
         }
     }
     Algebra::AmgXMemorySnapshot ReconstructionAMGPlan::MemorySnapshot() const

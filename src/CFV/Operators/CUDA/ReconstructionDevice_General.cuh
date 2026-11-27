@@ -32,9 +32,12 @@ namespace DNDS::CFV::Detail
             const index iCell = selection.RowAt(iWork);
             const real penalty = limited ? alpha(iCell, 0) : 0;
             const real scale = plan.relax * (1 - penalty);
-            for (index i = threadIdx.x; i < width; i += blockDim.x)
-                right[i] = 0;
-            __syncthreads();
+            if (raw)
+            {
+                for (index i = threadIdx.x; i < width; i += blockDim.x)
+                    right[i] = 0;
+                __syncthreads();
+            }
             if (scale != 0)
                 for (index i = threadIdx.x; i < width; i += blockDim.x)
                 {
@@ -84,28 +87,44 @@ namespace DNDS::CFV::Detail
                         }
                         value += plan.vectors(entry, mode) * (average - mean(iCell, component));
                     }
-                    right[i] = value;
-                }
-            __syncthreads();
-            for (index i = threadIdx.x; i < width; i += blockDim.x)
-            {
-                real value = (1 - plan.relax) * input(iCell, i);
-                if (limited && penalty > 0)
-                    value += plan.relax * penalty * target(iCell, i);
-                if (scale != 0)
-                {
-                    real update = right[i];
                     if (raw)
+                        right[i] = value;
+                    else
                     {
-                        update = 0;
+                        real outVal = (1 - plan.relax) * input(iCell, i);
+                        if (limited && penalty > 0)
+                            outVal += plan.relax * penalty * target(iCell, i);
+                        outVal += scale * value;
+                        output(iCell, i) = outVal;
+                    }
+                }
+            else if (!raw)
+                for (index i = threadIdx.x; i < width; i += blockDim.x)
+                {
+                    real outVal = (1 - plan.relax) * input(iCell, i);
+                    if (limited && penalty > 0)
+                        outVal += plan.relax * penalty * target(iCell, i);
+                    output(iCell, i) = outVal;
+                }
+            if (raw)
+            {
+                __syncthreads();
+                for (index i = threadIdx.x; i < width; i += blockDim.x)
+                {
+                    real value = (1 - plan.relax) * input(iCell, i);
+                    if (limited && penalty > 0)
+                        value += plan.relax * penalty * target(iCell, i);
+                    if (scale != 0)
+                    {
+                        real update = 0;
                         for (index j = 0; j < n; ++j)
                             update += Math::ReconstructionInverseEntry(plan.inverse, iCell, i % n, j, n, plan.triangle) * right[(i / n) * n + j];
+                        value += scale * update;
                     }
-                    value += scale * update;
+                    output(iCell, i) = value;
                 }
-                output(iCell, i) = value;
+                __syncthreads();
             }
-            __syncthreads();
         }
     }
 

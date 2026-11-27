@@ -9,7 +9,12 @@ namespace DNDS::Physics
     template <class Scalar>
     DNDS_DEVICE_CALLABLE inline bool RiemannRotationSmallJump(Scalar jump, Scalar speedSum) noexcept
     {
-        return jump <= Scalar(1000 * smallReal) * speedSum || jump <= Scalar(1e-98);
+        Scalar absFloor = Scalar(0);
+        if constexpr (sizeof(Scalar) < sizeof(double))
+            absFloor = Math::ScalarMinPositive<Scalar>();
+        else
+            absFloor = Scalar(1e-98);
+        return jump <= Scalar(1000 * smallReal) * speedSum || jump <= absFloor;
     }
 
     /// Blend the face-center normal toward the consistently oriented velocity
@@ -19,7 +24,12 @@ namespace DNDS::Physics
     DNDS_DEVICE_CALLABLE inline Vector RiemannVelocityJumpAxis(
         const Vector &velocityJump, Scalar jump, Scalar speedSum, const Vector &faceNormal) noexcept
     {
-        const Scalar relativeJump = jump / (speedSum + Scalar(verySmallReal));
+        Scalar denomFloor = Scalar(0);
+        if constexpr (sizeof(Scalar) < sizeof(double))
+            denomFloor = Math::ScalarMinPositive<Scalar>();
+        else
+            denomFloor = Scalar(verySmallReal);
+        const Scalar relativeJump = jump / (speedSum + denomFloor);
         if (relativeJump <= Scalar(1e-3))
             return faceNormal;
 

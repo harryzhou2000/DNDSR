@@ -202,9 +202,9 @@ namespace DNDS::Geom
     }
     std::shared_ptr<UnstructuredMesh> UnstructuredMesh::ExtractBoundary() const
     {
+        DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native boundary extraction requires a communicator");
         const auto communication = PreparationCommunication();
         Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
-        DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native boundary extraction requires a communicator");
         std::shared_ptr<const UnstructuredMeshState> source;
         FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { source = CurrentNativeState(); });
@@ -268,16 +268,20 @@ namespace DNDS::Geom
             } });
         // These vectors are setup-only compatibility caches. They do not
         // change the source query authority or invalidate retained reads.
+        auto sourceGuard = versions.Read();
         MeshMutationToken destination(&bMesh, bMesh.versions, Runtime::Change::All);
         bMesh._entityIdentity = nodes._identity;
         bMesh.isPeriodic = state->BorrowHostView().IsPeriodic();
         bMesh.periodicInfo = state->BorrowHostView().Periodic();
         bMesh._nativeState.Store(state->BindEpoch(bMesh.versions, destination.Underlying()));
         bMesh._nativeSmoothing.Reset();
-        bMesh.node2parentNode.swap(boundaryToSource);
-        bMesh.cell2parentCell.swap(cellParents);
-        bMesh.node2bndNode.clear();
-        node2bndNode.swap(sourceToBoundary);
+        {
+            std::scoped_lock lock(_cacheMutex, bMesh._cacheMutex);
+            bMesh.node2parentNode.swap(boundaryToSource);
+            bMesh.cell2parentCell.swap(cellParents);
+            bMesh.node2bndNode.clear();
+            node2bndNode.swap(sourceToBoundary);
+        }
         destination.Commit();
     }
     void UnstructuredMesh::ObtainSymmetricSymbolicFactorization(Direct::SerialSymLUStructure &symLU, Direct::DirectPrecControl control) const

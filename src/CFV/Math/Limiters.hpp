@@ -135,8 +135,8 @@ namespace DNDS::CFV
     /**
      * @brief input vector<Eigen::Array-like>
      */
-    template <typename TinOthers, typename Tout>
-    static inline void FWBAP_L2_Multiway_Polynomial2D(const TinOthers &uOthers, int Nother, Tout &uOut, real n1 = 1)
+    template <int dim, typename TinOthers, typename Tout>
+    static inline void FWBAP_L2_Multiway_Polynomial(const TinOthers &uOthers, int Nother, Tout &uOut, real n1 = 1)
     {
         using namespace DNDS;
         static const int p = 4;
@@ -158,7 +158,7 @@ namespace DNDS::CFV
         {
             Eigen::ArrayXd thetaNorm;
             Eigen::ArrayXXd theta = uOthers[iOther] / uMax;
-            thetaNorm = PolynomialSquaredNorm<2>(theta);
+            thetaNorm = PolynomialSquaredNorm<dim>(theta);
             thetaNorm += verySmallReal_pDiP;
             thetaNorm = thetaNorm.pow(-p / 2);
 
@@ -169,48 +169,13 @@ namespace DNDS::CFV
 
         uOut *= uUp.rowwise() / (uDown.transpose() + verySmallReal);
 
-        // * Do cut off
-        // for (int iOther = 0; iOther < Nother; iOther++)
-        // {
-        //     Eigen::ArrayXd uDotuOut;
-        //     switch (uOut.rows())
-        //     {
-        //     case 2:
-        //         uDotuOut =
-        //             uOthers[iOther](0, EigenAll) * uOut(0, EigenAll) +
-        //             uOthers[iOther](1, EigenAll) * uOut(1, EigenAll);
-        //         break;
-        //     case 3:
-        //         uDotuOut =
-        //             uOthers[iOther](0, EigenAll) * uOut(0, EigenAll) +
-        //             uOthers[iOther](1, EigenAll) * uOut(1, EigenAll) * 0.5 +
-        //             uOthers[iOther](2, EigenAll) * uOut(2, EigenAll);
-        //         break;
-        //     case 4:
-        //         uDotuOut =
-        //             uOthers[iOther](0, EigenAll) * uOut(0, EigenAll) +
-        //             uOthers[iOther](1, EigenAll) * uOut(1, EigenAll) * (1. / 3.) +
-        //             uOthers[iOther](2, EigenAll) * uOut(2, EigenAll) * (1. / 3.) +
-        //             uOthers[iOther](3, EigenAll) * uOut(3, EigenAll);
-        //         break;
+        DNDS_check_throw_info(!uOut.hasNaN(), "Limiter FWBAP_L2_Multiway_Polynomial produced NaN");
+    }
 
-        //     default:
-        //         DNDS_assert(false);
-        //         break;
-        //     }
-
-        //     uOut.rowwise() *= 0.5 * (uDotuOut.sign().transpose() + 1);
-        // }
-        // // * Do cut off
-
-        if (uOut.hasNaN())
-        {
-            std::cout << "Limiter FWBAP_L2_Multiway Failed" << std::endl;
-            std::cout << uMax.transpose() << std::endl;
-            std::cout << uUp.transpose() << std::endl;
-            std::cout << uDown.transpose() << std::endl;
-            abort();
-        }
+    template <typename TinOthers, typename Tout>
+    static inline void FWBAP_L2_Multiway_Polynomial2D(const TinOthers &uOthers, int Nother, Tout &uOut, real n1 = 1)
+    {
+        FWBAP_L2_Multiway_Polynomial<2>(uOthers, Nother, uOut, n1);
     }
 
     /**

@@ -337,6 +337,8 @@ namespace DNDS::Serializer
         virtual int GetMPISize() = 0;
         /// @brief MPI context the serializer was opened with.
         virtual const MPIInfo &getMPI() = 0;
+        /// @brief Internal MPI communicator for serializer collectives.
+        virtual MPI_Comm getComm() { return getMPI().comm; }
 
         /// @brief Write a scalar int under `name` at the current path.
         virtual void WriteInt(const std::string &name, int v) = 0;

@@ -4,6 +4,7 @@
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "Cauchy/Physics/RANSPoint.hpp"
+#include "Physics/RANS/PointKernels.hpp"
 #include "Cauchy/Boundary/CPU/RANSWallKernels.hpp"
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
@@ -269,5 +270,34 @@ TEST_CASE("RANS no-slip targets retain conservative density and viscosity conven
                                                                                                         : 800 * mu / (.02 * .02);
             CHECK(wall[1] == doctest::Approx(expected));
         }
+    }
+}
+
+TEST_CASE("SA-neg chi <= 0 avoids chi == -7.1 singularity and spurious positive nuTur")
+{
+    DNDS::Physics::RANS::PointParameters params;
+    params.kind = DNDS::Physics::RANS::ModelKind::SA;
+    params.viscosityReference = 1.0;
+    params.desScale = 0.65;
+    params.desMode = DNDS::Physics::RANS::SAHybridMode::DDES;
+    DNDS::Physics::RANS::Point point;
+    point.state.setZero();
+    point.state[0] = 1.0;
+    point.state[4] = 2.5;
+    point.cp = 3.5;
+    point.gamma = 1.4;
+    point.molecularViscosity = 1.0;
+    point.wallDistance = 0.1;
+    point.cellLength = 0.05;
+    point.gradient.setZero();
+    point.gradient(0, 1) = 1.0;
+    for (double chi : {-7.1, -3.5, 0.0})
+    {
+        point.state[5] = chi;
+        const auto shield = DNDS::Physics::RANS::TryDESShield(params, point);
+        REQUIRE(bool(shield));
+        CHECK(std::isfinite(shield.value));
+        CHECK(shield.value >= 0.0);
+        CHECK(shield.value <= 1.0);
     }
 }

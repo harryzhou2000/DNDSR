@@ -929,7 +929,7 @@ namespace DNDS::Serializer
             offset = ArrayGlobalOffset{index(size), offset.offset()};
         ssp<tValue> result;
         int cached = sharedReadLookup(refPath, offset, result), allCached = 0;
-        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, commDup);
         if (!allCached)
         {
             result = std::make_shared<tValue>(size);
@@ -963,7 +963,7 @@ namespace DNDS::Serializer
             offset = ArrayGlobalOffset{index(size), offset.offset()};
         ssp<tValue> result;
         int cached = sharedReadLookup(refPath, offset, result), allCached = 0;
-        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, commDup);
         if (!allCached)
         {
             result = std::make_shared<tValue>(size);

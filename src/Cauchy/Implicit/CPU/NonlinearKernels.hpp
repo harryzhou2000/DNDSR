@@ -112,13 +112,13 @@ namespace DNDS::Cauchy::CPU
     /// Write (M U)/dt - rhsScale * R_int/V. The fused variant also
     /// publishes R_int/V, including the continuity rate at the pressure row.
     template <StageAssembly Op, PhysicalAccumulationKind Accumulation, int Width, class Mean, class Residual, class Output, class Rate, class Metric>
-    void AssembleEquationRows(Mean mean, Residual residual, Output output, Rate rate, const Metric &metric,
-                              index components, real inverseDt, real rhsScale)
+    [[nodiscard]] NumericalStatus AssembleEquationRows(Mean mean, Residual residual, Output output, Rate rate, const Metric &metric,
+                                                       index components, real inverseDt, real rhsScale)
     {
-        OMP::ForRows(0, mean.RowCount(), [&](index iCell)
-                     {
+        return OMP::ForRowsStatus(0, mean.RowCount(), [&](index iCell)
+                                  {
             const real volume = metric.GetCellVol(iCell);
-            AssembleStageRow<Op, Accumulation, Width>(
+            return AssembleStageRow<Op, Accumulation, Width>(
                 iCell, components, volume, inverseDt, rhsScale, mean, residual, nullptr, rate,
                 [&](index j, real value) -> NumericalStatus
                 {

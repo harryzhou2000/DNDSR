@@ -305,14 +305,22 @@ namespace DNDS::Cauchy::CPU
                             return NumericalStatus{NumericalError::InvalidState, 13, iCell, sample.point};
                         const bool wall = !internal && boundaryKind == BoundaryKind::NoSlipWall;
                         const real inverseDistance = wall && noGRPOnWall ? 0 : 1 / sample.viscousDistance;
+                        FlowState viscousLeft = left.viscousState;
                         if (!internal && inverseDistance != 0)
                         {
-                            const auto trace = FiniteVolumeDetail::BoundaryGradientValue(sample, gas, left.viscousState, request.time, frame, incoming);
+                            if (distinctViscousState && wall && !ThermallyAdmissible(viscousLeft, thermalBounds))
+                                viscousLeft = left.state;
+                            auto trace = FiniteVolumeDetail::BoundaryGradientValue(sample, gas, viscousLeft, request.time, frame, incoming);
+                            if (!trace && distinctViscousState && wall && Physics::AllowsMeanFallback(trace.status))
+                            {
+                                viscousLeft = left.state;
+                                trace = FiniteVolumeDetail::BoundaryGradientValue(sample, gas, viscousLeft, request.time, frame, incoming);
+                            }
                             if (!trace)
                                 return trace.status.At(iCell, sample.point);
                             viscousRight = trace.value;
                         }
-                        const auto diffusion = PolynomialViscousFlux(equation, convectiveLeft, rightLinearization, left.viscousState, viscousRight,
+                        const auto diffusion = PolynomialViscousFlux(equation, convectiveLeft, rightLinearization, viscousLeft, viscousRight,
                                                                      left.gradient, rightGradient, normal, inverseDistance, wall && !sample.boundary.isothermal);
                         for (int component = 0; component < 5; ++component)
                         {

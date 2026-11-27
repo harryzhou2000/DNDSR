@@ -303,8 +303,24 @@ namespace DNDS::Cauchy::CPU
                         return status;
                     if (viscous && (acm ? boundaryKind != BoundaryKind::SlipWall : !request.primitiveGradient && (boundaryKind == BoundaryKind::Interface || (boundaryKind == BoundaryKind::NoSlipWall && !noGRPOnWall))))
                     {
+                        if (distinctViscous && !acm && boundaryKind == BoundaryKind::NoSlipWall && allowPointFallback)
+                        {
+                            const bool viscousAdmissible = request.positivity
+                                                               ? thermalBounds.ClippedReferenceAdmissible(left.viscousValues)
+                                                               : thermalBounds.Admissible(left.viscousValues);
+                            if (!viscousAdmissible)
+                                left.viscousValues = left.values;
+                        }
                         right.viscousValues = distinctViscous ? left.viscousValues : left.values;
-                        if (const auto status = evaluateBoundary(right.viscousValues, BoundaryPointStateKind::ViscousPenaltyTrace); !status)
+                        auto status = evaluateBoundary(right.viscousValues, BoundaryPointStateKind::ViscousPenaltyTrace);
+                        if (!status && distinctViscous && !acm && boundaryKind == BoundaryKind::NoSlipWall &&
+                            allowPointFallback && Physics::AllowsMeanFallback(status))
+                        {
+                            left.viscousValues = left.values;
+                            right.viscousValues = left.values;
+                            status = evaluateBoundary(right.viscousValues, BoundaryPointStateKind::ViscousPenaltyTrace);
+                        }
+                        if (!status)
                             return status;
                     }
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
@@ -575,7 +591,7 @@ namespace DNDS::Cauchy::CPU
                             for (int d = 0; d < 3; ++d)
                                 primitive.velocity[d] = .5 * (primitive.velocity[d] + other.velocity[d]);
                         }
-                        else
+                        else if (wall)
                         {
                             FlowState faceMean{};
                             for (int j = 0; j < 5; ++j)

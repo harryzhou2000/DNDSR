@@ -10,24 +10,24 @@ namespace DNDS::Geom::detail
 {
     NativePartitionGraph BuildOwnedPrimaryCellGraph(const NativeOwnedMeshData &source, const MPIInfo &mpi)
     {
-        const auto found = source.relations[size_t(MeshRelation::CellCells)];
-        const auto cones = source.relations[size_t(MeshRelation::CellNodes)];
-        DNDS_check_throw_info(found && cones && source.cellInfo, "primary owned partition requires cell nodes, types and Cell2Cell rows");
-        const auto cells = source.spaces.at(EntityKind::Cell);
-        DNDS_check_throw_info(cells.Valid() && cells.NumGhost() == 0, "primary owned partition requires owned cells");
-        auto neighborRows = found->Read();
-        auto nodeRows = cones->Read();
-        auto metadata = source.cellInfo->Read();
-        const auto numbering = cells.ReadNumbering();
-        std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> nodeBits;
-        if (source.periodic)
-        {
-            DNDS_check_throw_info(source.cellNodesPbi, "periodic primary partition requires cell-node frame bits");
-            nodeBits.emplace(source.cellNodesPbi->Read());
-        }
         NativePartitionGraph graph;
         source.LocalStage(mpi, [&]
                           {
+            const auto found = source.relations[size_t(MeshRelation::CellCells)];
+            const auto cones = source.relations[size_t(MeshRelation::CellNodes)];
+            DNDS_check_throw_info(found && cones && source.cellInfo, "primary owned partition requires cell nodes, types and Cell2Cell rows");
+            const auto cells = source.spaces.at(EntityKind::Cell);
+            DNDS_check_throw_info(cells.Valid() && cells.NumGhost() == 0, "primary owned partition requires owned cells");
+            auto neighborRows = found->Read();
+            auto nodeRows = cones->Read();
+            auto metadata = source.cellInfo->Read();
+            const auto numbering = cells.ReadNumbering();
+            std::optional<Runtime::Array<NodePeriodicBits>::ReadLease> nodeBits;
+            if (source.periodic)
+            {
+                DNDS_check_throw_info(source.cellNodesPbi, "periodic primary partition requires cell-node frame bits");
+                nodeBits.emplace(source.cellNodesPbi->Read());
+            }
             const size_t cellCount = size_t(cells.NumOwned());
             constexpr size_t maxVertices = size_t(Elem::CellNumNodeMax);
             DNDS_check_throw_info(cellCount == 0 || maxVertices <= SIZE_MAX / cellCount,
@@ -36,19 +36,15 @@ namespace DNDS::Geom::detail
             std::vector<uint8_t> frames;
             if (nodeBits) frames.resize(cellCount * maxVertices);
             std::vector<uint8_t> vertexCounts(cellCount);
-            int invalid = 0;
-#pragma omp parallel for if (cellCount >= 4096) schedule(static) reduction(| : invalid)
-            for (size_t cell = 0; cell < cellCount; ++cell)
-            {
+            OMP::ForSetupRows(0, cells.NumOwned(), [&](index cellIdx)
+                              {
+                const size_t cell = size_t(cellIdx);
                 const auto element = Elem::Element{metadata.View()(cell, 0).getElemType()};
                 const auto nodeCount = nodeRows.View().RowSize(cell);
-                if (!(element.GetNumVertices() > 0 &&
-                      size_t(element.GetNumVertices()) <= maxVertices &&
-                      nodeCount == size_t(element.GetNumNodes())))
-                {
-                    invalid = 1;
-                    continue;
-                }
+                DNDS_check_throw_info(element.GetNumVertices() > 0 &&
+                                          size_t(element.GetNumVertices()) <= maxVertices &&
+                                          nodeCount == size_t(element.GetNumNodes()),
+                                      "primary partition cell has an invalid element cone");
                 vertexCounts[cell] = uint8_t(element.GetNumVertices());
                 auto *sorted = vertices.data() + cell * maxVertices;
                 std::copy_n(nodeRows.View().Row(cell), element.GetNumVertices(), sorted);
@@ -73,9 +69,7 @@ namespace DNDS::Geom::detail
                     std::copy_n(frameCopy.begin(), element.GetNumVertices(), frame);
                 }
                 else
-                    std::sort(sorted, sorted + element.GetNumVertices());
-            }
-            DNDS_check_throw_info(!invalid, "primary partition cell has an invalid element cone");
+                    std::sort(sorted, sorted + element.GetNumVertices()); });
             const auto fillNeighbors = [&](index cell, std::vector<index> &cellNeighbors)
             {
                 const auto *current = vertices.data() + size_t(cell) * maxVertices;

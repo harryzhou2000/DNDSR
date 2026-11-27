@@ -181,3 +181,14 @@ TEST_CASE("Shared Riemann formulas support explicit kernel-local arithmetic type
     CheckTypedRiemann<DNDS::Math::real_f32f32>(2e-11);
 #endif
 }
+
+TEST_CASE("FP32 RiemannRotation avoids underflow and stagnant divide-by-zero")
+{
+    CHECK(DNDS::Physics::RiemannRotationSmallJump<float>(0.0f, 0.0f));
+    CHECK(DNDS::Physics::RiemannRotationSmallJump<float>(1e-40f, 0.0f));
+    const std::array<float, 3> jump{1e-20f, 0.0f, 0.0f};
+    const std::array<float, 3> normal{0.0f, 1.0f, 0.0f};
+    const auto axis = DNDS::Physics::RiemannVelocityJumpAxis<3>(jump, 1e-20f, 0.0f, normal);
+    for (int d = 0; d < 3; ++d)
+        CHECK(std::isfinite(axis[d]));
+}

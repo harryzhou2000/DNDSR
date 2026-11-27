@@ -425,7 +425,7 @@ namespace DNDS::Cauchy
     {
         if (projectPressure)
             projectPressure();
-        if (stopAfterCorrection)
+        if (!terminal && stopAfterCorrection)
             _interrupted = stopAfterCorrection();
         for (auto reference : domains)
             reference.get().FinishIteration(terminal);

@@ -647,11 +647,7 @@ namespace DNDS::CFV
             SubmitDeviceReconstructionIterTo(engine, stream, mean, input, work, boundary, region, kernel);
             return;
         }
-        DNDS_check_throw_info(kernel != ReconstructionDeviceKernel::FP32FullAccumulation &&
-                                  kernel != ReconstructionDeviceKernel::FP32FloatFloatAccumulation &&
-                                  kernel != ReconstructionDeviceKernel::FloatFloatPipelined &&
-                                  kernel != ReconstructionDeviceKernel::FP32Pipelined && kernel != ReconstructionDeviceKernel::TF32Pipelined,
-                              "reduced arithmetic reconstruction requires explicit CUDA placement");
+        DNDS_check_throw_info(SupportsKernel(kernel), "host reconstruction only supports the FP64 kernel selector");
         Require(ReconstructionOperation::Sweep);
         Validate();
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
@@ -670,6 +666,7 @@ namespace DNDS::CFV
             SubmitDeviceReconstructionIterLimitedTo(engine, stream, mean, input, work, boundary, target, alpha, region, kernel);
             return;
         }
+        DNDS_check_throw_info(SupportsKernel(kernel), "host limited reconstruction only supports the FP64 kernel selector");
         Require(ReconstructionOperation::Sweep);
         Validate();
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
@@ -731,11 +728,7 @@ namespace DNDS::CFV
             CheckStatus(work);
             return;
         }
-        DNDS_check_throw_info(kernel != ReconstructionDeviceKernel::FP32FullAccumulation &&
-                                  kernel != ReconstructionDeviceKernel::FP32FloatFloatAccumulation &&
-                                  kernel != ReconstructionDeviceKernel::FloatFloatPipelined &&
-                                  kernel != ReconstructionDeviceKernel::FP32Pipelined && kernel != ReconstructionDeviceKernel::TF32Pipelined,
-                              "reduced arithmetic reconstruction requires explicit CUDA placement");
+        DNDS_check_throw_info(SupportsKernel(kernel), "host reconstruction only supports the FP64 kernel selector");
         DoReconstructionIterTo(mean, coefficients, work, boundary);
         CommitReconstruction(coefficients, work);
     }
@@ -1002,6 +995,7 @@ namespace DNDS::CFV
     ReconstructionBasisRead VariationalReconstructionPlan::AcquireBasisRead() const
     {
         Validate();
+        DNDS_check_throw_info(_data, "host basis read requires retained host payloads");
         return ReconstructionBasisRead(_data);
     }
 }

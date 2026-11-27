@@ -725,6 +725,9 @@ namespace DNDS::CFV
         ValidateDeviceStream(*this, stream);
         DNDS_check_throw_info(SupportsKernel(kernel), "requested CUDA reconstruction kernel is unavailable on this device/build (legacy selectors require DNDS_CFV_CUDA_ENABLE_V1_KERNELS)");
         ValidateDeviceWorkspace(_device, work, input);
+        if (kernel == ReconstructionDeviceKernel::FP64V2SIMT || kernel == ReconstructionDeviceKernel::FP64V2MMA)
+            DNDS_check_throw_info(work.components >= 4 && work.components <= 7,
+                                  "forced V2 sweep requires 4..7 components; use FP64V2 or FP64 for general component counts");
         ValidateDeviceField(*this, mean, work.components);
         ValidateDeviceField(*this, input, work.components * _device->view.n);
         for (const auto *array : {&mean.Owned(), &mean.Ghost(), &input.Owned(), &input.Ghost(), &boundary.values})
@@ -794,6 +797,9 @@ namespace DNDS::CFV
         ValidateDeviceStream(*this, stream);
         DNDS_check_throw_info(SupportsKernel(kernel), "requested limited CUDA reconstruction kernel is incompatible with resident storage or build (V1 requires DNDS_CFV_CUDA_ENABLE_V1_KERNELS)");
         ValidateDeviceWorkspace(_device, work, input);
+        if (kernel == ReconstructionDeviceKernel::FP64V2SIMT || kernel == ReconstructionDeviceKernel::FP64V2MMA)
+            DNDS_check_throw_info(work.components >= 4 && work.components <= 7 && _device->view.n >= 5,
+                                  "forced V2 limited sweep requires 4..7 components and M >= 5; use FP64V2 or FP64 for general shapes");
         ValidateDeviceField(*this, mean, work.components);
         ValidateDeviceField(*this, input, work.components * _device->view.n);
         ValidateDeviceField(*this, target, work.components * _device->view.n);
@@ -818,12 +824,12 @@ namespace DNDS::CFV
         if (region == ReconstructionRegion::Core)
             R::SubmitArrays(engine, stream, [launch](R::ExecutionContext c, auto mo, auto ro, auto bc, auto wanted, auto penalty, auto output, auto blocks, auto status)
                             { launch(c, mo, R::ArrayView<const real>{}, ro, R::ArrayView<const real>{}, bc,
-                                     wanted, penalty, output, blocks, status); }, R::Read(mean.Owned()), R::Read(input.Owned()), R::Read(boundary.values), R::Read(target.Owned()), R::Read(alpha), R::Write(work.temporary.Owned()), R::Read(work.devicePeriodicVectorStarts), R::Write(work.deviceStatus));
+                                     wanted, penalty, output, blocks, status); }, R::Read(mean.Owned()), R::Read(input.Owned()), R::Read(boundary.values), R::Read(target.Owned()), R::Read(alpha), R::Write(work.temporary.Owned()), R::Read(work.devicePeriodicVectorStarts), R::ReadWrite(work.deviceStatus));
         else
             R::SubmitArrays(engine, stream, launch, R::Read(mean.Owned()), R::Read(mean.Ghost()),
                             R::Read(input.Owned()), R::Read(input.Ghost()), R::Read(boundary.values),
                             R::Read(target.Owned()), R::Read(alpha), R::Write(work.temporary.Owned()),
-                            R::Read(work.devicePeriodicVectorStarts), R::Write(work.deviceStatus));
+                            R::Read(work.devicePeriodicVectorStarts), R::ReadWrite(work.deviceStatus));
     }
     void VariationalReconstructionPlan::SubmitDeviceCommitReconstruction(
         R::EagerEngine &engine, const R::ExecutionStream &stream, FVField &coefficients,

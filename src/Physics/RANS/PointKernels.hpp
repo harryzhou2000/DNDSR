@@ -69,19 +69,24 @@ namespace DNDS::Physics::RANS
 
         const real chi = point.state[5] * parameters.viscosityReference / point.molecularViscosity;
         const real chi3 = cube(chi);
-        const real fnu1 = chi3 / (chi3 + cube(SA::cnu1));
-        const real nuTur = nu * std::max(chi * fnu1, 0.0);
+        const real fnu1 = chi > 0 ? chi3 / (chi3 + cube(SA::cnu1)) : 0.0;
+        const real nuTur = chi > 0 ? nu * chi * fnu1 : 0.0;
         const Eigen::Vector3d velocity = point.state.template segment<3>(1) / rho;
         const Eigen::Matrix3d velocityGradient =
             (point.gradient.template block<3, 3>(0, 1) - point.gradient.col(0) * velocity.transpose()) / rho;
         const real denominator = SADESDenominator(d, velocityGradient.norm());
+        real shield = 0;
         if (parameters.desMode == SAHybridMode::DDES)
         {
             const real ft2 = parameters.sa.useFt2 ? 1.2 * std::exp(-.5 * sqr(chi)) : 0.0;
             const real psi = SADESPsi(chi, fnu1, 1 - chi / (1 + chi * fnu1), ft2);
-            return d <= lesLength * psi ? 1.0 : SADDESShield((nuTur + nu) / denominator);
+            shield = d <= lesLength * psi ? 1.0 : SADDESShield((nuTur + nu) / denominator);
         }
-        return SAIDDESShield(.25 - d / point.cellLength, nuTur / denominator, parameters.desMode);
+        else
+            shield = SAIDDESShield(.25 - d / point.cellLength, nuTur / denominator, parameters.desMode);
+        if (!std::isfinite(shield))
+            return NumericalStatus{NumericalError::InvalidState};
+        return shield;
     }
 
     /// Euler turbulent transport formulas. The false diagnostic template

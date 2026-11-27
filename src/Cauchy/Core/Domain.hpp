@@ -60,7 +60,7 @@ namespace DNDS::Cauchy
         index _lastCharacteristicFallbacks = 0;
         StepResult UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
         void ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt);
-        void FinishChemicalStep();
+        [[nodiscard]] StepResult FinishChemicalStep();
         void PublishTrial(real time, StateEpoch epoch);
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);

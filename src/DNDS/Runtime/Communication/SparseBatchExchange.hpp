@@ -75,7 +75,7 @@ namespace DNDS::Runtime
         /// transport. Repeated asynchronous payloads can bind Route() directly.
         /// A fixed record may be a POD element or a table row of components.
         template <class T>
-        Array<T> Exchange(const Array<T> &source, int tag = 0) const
+        Array<T> Exchange(const Array<T> &source, int tag = -1) const
         {
             MPIInfo mpi;
             mpi.comm = _route.Communicator();
@@ -97,8 +97,14 @@ namespace DNDS::Runtime
             DNDS_check_throw_info(controls[0] == -controls[1] && controls[2] == -controls[3],
                                   "batch record widths or tags differ between ranks");
             PayloadPlan payload(_route, source.Layout(), destination.Layout(), *schema);
-            auto binding = payload.Bind(source, destination, TransferTransport::Direct,
-                                        {TransferMode::Transient, _route.Context(), tag});
+            TransferOptions options{};
+            options.mode = TransferMode::Transient;
+            if (tag >= 0)
+            {
+                options.context = _route.Context();
+                options.tag = tag;
+            }
+            auto binding = payload.Bind(source, destination, TransferTransport::Direct, std::move(options));
             binding.Begin().Wait();
             return destination;
         }

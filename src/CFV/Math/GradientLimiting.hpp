@@ -99,15 +99,18 @@ namespace DNDS::CFV::Math
             for (index j = 0; j < width; ++j)
             {
                 const real value = limited[j];
-                const real ratio = center[j] / (std::abs(value) + epsilon) * ((value > 0) - (value < 0));
-                up[j] += ratio * ratio * ratio;
-                const real r2 = ratio * ratio;
-                down[j] += r2 * r2;
                 if (value == 0)
+                {
                     valid[j] = 0;
+                    continue;
+                }
+                const real ratio = WBAPClampedRatio(center[j], value, epsilon);
+                const real r2 = ratio * ratio;
+                up[j] += r2 * ratio;
+                down[j] += r2 * r2;
             }
         }
         for (index j = 0; j < width; ++j)
-            result[j] = center[j] * valid[j] * up[j] / down[j];
+            result[j] = valid[j] == 0 ? 0 : center[j] * up[j] / down[j];
     }
 }

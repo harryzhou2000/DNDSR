@@ -1,4 +1,5 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 #include "DNDS/Runtime/Storage/BufferAlias.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "DNDS/Runtime/Communication/DevicePacking.hpp"
@@ -191,7 +192,7 @@ namespace DNDS::Runtime
         {
             DNDS_check_throw_info(payload.route.Valid(), "NCCL row mapping is stale");
             DNDS_check_throw_info(context.device == owner->device, "NCCL execution placement mismatch");
-            CheckCUDA(cudaSetDevice(owner->device.ordinal));
+            ::DNDS::Device::CUDADeviceScope deviceScope(owner->device.ordinal);
             std::lock_guard<std::mutex> lock(owner->submission);
             owner->Check();
             try
@@ -504,7 +505,7 @@ namespace DNDS::Runtime
                     if (!count) return;
                     auto *out = operands->destination.Pointer(scalarBytes, scalarBytes);
                     const auto *in = inPlace ? out : operands->source.Pointer(scalarBytes, scalarBytes);
-                    CheckCUDA(cudaSetDevice(ctx.device.ordinal));
+                    ::DNDS::Device::CUDADeviceScope deviceScope(ctx.device.ordinal);
                     std::lock_guard<std::mutex> lock(owner->submission);
                     owner->Check();
                     CheckNCCL(ncclAllReduce(in, out, count, type, operation, owner->comm, CUDAStream(ctx))); }, [operands, pending](std::exception_ptr error) noexcept
@@ -597,7 +598,7 @@ namespace DNDS::Runtime
                                         comm, "NCCL setup needs a valid rank-local CUDA device");
         auto state = std::make_shared<State>();
         state->device = device;
-        CheckCUDA(cudaSetDevice(device.ordinal));
+        ::DNDS::Device::CUDADeviceScope deviceScope(device.ordinal);
         state->controlOwner = std::move(context);
         state->control = comm;
         int rank = 0, size = 0;

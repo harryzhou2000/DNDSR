@@ -1139,7 +1139,7 @@ namespace DNDS::Physics::RANS
 
         const real Chi = (UMeanXy(I4 + 1) * muRef / mufPhy);
         const real Chi3 = cube(Chi);
-        const real fnu1 = Chi3 / (Chi3 + cube(cnu1));
+        const real fnu1 = Chi > 0 ? Chi3 / (Chi3 + cube(cnu1)) : 0.0;
         const real fnu2 = 1 - Chi / (1 + Chi * fnu1);
 
         const Eigen::Matrix<real, dim, 1> velo = UMeanXy.template segment<dim>(1) / UMeanXy(0);
@@ -1181,7 +1181,7 @@ namespace DNDS::Physics::RANS
         // Preserve the disabled-DES RANS path without evaluating hybrid functions.
         if (cDES <= 100)
         {
-            const real nuTur = mufPhy / UMeanXy(0) * std::max((Chi * fnu1), 0.0);
+            const real nuTur = Chi > 0 ? mufPhy / UMeanXy(0) * (Chi * fnu1) : 0.0;
             const real nufPhy = mufPhy / UMeanXy(0);
             const real psi = SADESPsi(Chi, fnu1, fnu2, ft2);
             lDES = GetLength_SA_DES(d, hMax, cDES, DESMode, nuTur, nufPhy, diffUNorm, psi);

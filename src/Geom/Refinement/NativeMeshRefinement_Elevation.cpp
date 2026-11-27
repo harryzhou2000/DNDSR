@@ -66,6 +66,11 @@ namespace DNDS::Geom
 
         owned.LocalStage(mpi, [&]
                          {
+            DNDS_check_throw_info(owned.cellInfo && owned.bndInfo && owned.coords &&
+                                      owned.relations[size_t(MeshRelation::BoundaryCells)] &&
+                                      owned.relations[size_t(MeshRelation::BoundaryNodes)] &&
+                                      (!owned.periodic || (owned.cellNodesPbi && owned.bndNodesPbi)),
+                                  "native elevation requires complete owned cell/boundary metadata, coordinates, and relations");
             for (const auto *metadata : {&*owned.cellInfo, &*owned.bndInfo})
             {
                 auto read = metadata->Read();
@@ -77,7 +82,7 @@ namespace DNDS::Geom
                                           "native elevation requires supported first-order cells and boundaries");
                 }
             } });
-        auto closure = BuildNativeCellClosure(source, mpi);
+        auto closure = BuildNativeCellClosure(owned, mpi);
         auto cone = closure.cellNodes.Read();
         auto metadata = closure.cellInfo.ReadCombined();
         const auto cellInfoView = metadata.View();
@@ -118,7 +123,7 @@ namespace DNDS::Geom
         // as the new mesh's edge family; every span becomes one new node.
         auto spans = AdjacencyRegistry::Interpolate(cone, EntityKind::Edge, query, [mpi](const std::vector<index> &, const std::vector<MPI_int> &ranks, index)
                                                     { return OwnershipDecision{*std::min_element(ranks.begin(), ranks.end()) == mpi.rank, {}}; }, periodic ? &*periodic : nullptr);
-        const auto oldNodes = source.spaces.at(EntityKind::Node);
+        const auto oldNodes = owned.spaces.at(EntityKind::Node);
         const index nOld = oldNodes.NumOwned();
         index nNew = 0;
         owned.LocalStage(mpi, [&]
@@ -142,8 +147,8 @@ namespace DNDS::Geom
         auto newNode = [&](index span)
         { const auto owner = spans.entities.Owner(span); return starts[size_t(owner)] + oldCounts[size_t(owner)] + spans.entities.OwnerLocalRow(span); };
         const auto nodes = EntitySpace::CreateOwned(EntityKind::Node, mpi, nNew);
-        const auto cells = nodes.CreateSibling(EntityKind::Cell, source.spaces.at(EntityKind::Cell).NumOwned());
-        const auto boundaries = nodes.CreateSibling(EntityKind::Bnd, source.spaces.at(EntityKind::Bnd).NumOwned());
+        const auto cells = nodes.CreateSibling(EntityKind::Cell, owned.spaces.at(EntityKind::Cell).NumOwned());
+        const auto boundaries = nodes.CreateSibling(EntityKind::Bnd, owned.spaces.at(EntityKind::Bnd).NumOwned());
         const auto expandedNodes = closure.cellNodes.Target();
         EntityGhostMapping nodeRoute(expandedNodes);
         auto ghostCoords = nodeRoute.TransferRows(expandedNodes, *owned.coords, Runtime::ElementSchema::Arithmetic<real>());
@@ -228,7 +233,7 @@ namespace DNDS::Geom
         owned.LocalStage(mpi, [&]
                          {
             auto parents = owned.relations[size_t(MeshRelation::BoundaryCells)]->Read();
-            const auto sourceCells = source.spaces.at(EntityKind::Cell);
+            const auto sourceCells = owned.spaces.at(EntityKind::Cell);
             requests.resize(size_t(boundaries.NumOwned()));
             OMP::ForSetupRows(0, boundaries.NumOwned(), [&](index boundary)
             {

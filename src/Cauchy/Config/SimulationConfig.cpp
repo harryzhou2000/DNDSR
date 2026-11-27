@@ -372,6 +372,8 @@ namespace DNDS::Cauchy
                                   "Strang source splitting requires a configured chemical source");
             DNDS_check_throw_info(data->time.method != "bdf2",
                                   "Strang source splitting only supports single-step time methods (multistep BDF2 is forbidden)");
+            DNDS_check_throw_info(!data->time.steady,
+                                  "Strang source splitting is incompatible with steady BDF1 mode");
         }
         if (data->time.steady)
         {

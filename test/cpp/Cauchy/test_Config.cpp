@@ -557,6 +557,10 @@ TEST_CASE("Steady config resolves Euler's BDF1 infinite timestep override with p
     CHECK(config.Root()["time"]["method"] == "bdf1");
     CHECK(config.Provenance().at("/time/method") == "BDF1 steady limit");
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"consoleInterval", -1}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve(
+        {{"time", {{"steady", true}, {"sourceSplitting", "strang"}}},
+         {"defaults", {{"equation", {{"source", "chemical"}}}}}},
+        2));
 }
 TEST_CASE("Deprecated time and output aliases are exclusive with their canonical controls")
 {

@@ -3,6 +3,7 @@
 #ifndef CORRECTRCM_H
 #    define CORRECTRCM_H
 
+#    include "DNDS/Core/OMP.hpp"
 #    include <iostream>
 #    include <map>
 #    include <exception>
@@ -46,7 +47,9 @@ namespace CorrectRCM
         [[nodiscard]] int CheckAdj(bool checkParallel = true, bool checkSymmetry = true) const
         {
             int invalid = 0;
-#    pragma omp parallel for if (nVertices >= 4096) schedule(static) reduction(| : invalid)
+#    if defined(DNDS_USE_OMP)
+#        pragma omp parallel for if (nVertices >= 4096) num_threads(DNDS::OMP::DistributedThreads()) schedule(static) reduction(| : invalid)
+#    endif
             for (index i = 0; i < nVertices; ++i)
             {
                 const auto row = GetAdj(i);

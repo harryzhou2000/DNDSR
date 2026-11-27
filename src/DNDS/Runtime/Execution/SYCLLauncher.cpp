@@ -159,7 +159,9 @@ namespace DNDS::Runtime
                 }
                 catch (...)
                 {
-                    command.error = _error = std::current_exception();
+                    if (!_error)
+                        _error = std::current_exception();
+                    command.error = _error;
                 }
                 _issuing = false;
             }
@@ -194,7 +196,8 @@ namespace DNDS::Runtime
                 Poll();
                 if (_batch.commands.empty() && _batch.dependencies.empty())
                     return _previous;
-                if (_previous.Provider())
+                const bool pushedPrevious = bool(_previous.Provider());
+                if (pushedPrevious)
                     _batch.dependencies.push_back(_previous);
                 // Reserve the owner before taking the batch from the launcher.
                 _issued.emplace_back();
@@ -205,6 +208,8 @@ namespace DNDS::Runtime
                 catch (...)
                 {
                     _issued.pop_back();
+                    if (pushedPrevious && !_batch.dependencies.empty())
+                        _batch.dependencies.pop_back();
                     throw;
                 }
                 _previous = StreamEvent(_issued.back());

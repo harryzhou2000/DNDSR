@@ -30,10 +30,6 @@ namespace DNDS::CFV
                                   (metrics.Device() == R::Device::Host() || sourceContext.device == metrics.Device()),
                               "sampling setup needs matching metric space and source context");
         auto geometry = metrics.AcquireRead(metrics.Device() == R::Device::Host() ? R::ExecutionContext::Host() : sourceContext);
-        const auto &sourceMoments = reconstruction.SamplingMoments();
-        const auto hostMoments = sourceMoments.GetDevice() == R::Device::Host() ? sourceMoments : sourceMoments.To(R::Device::Host(), sourceContext);
-        const auto hostCent = metrics.Device() == R::Device::Host() ? metrics._data->cellCent : metrics._data->cellCent.To(R::Device::Host(), sourceContext);
-        const auto hostScale = metrics.Device() == R::Device::Host() ? metrics._data->cellScale : metrics._data->cellScale.To(R::Device::Host(), sourceContext);
         Validate();
         DNDS_check_throw_info(cells.GetDevice() == R::Device::Host() && points.GetDevice() == R::Device::Host() &&
                                   cells.Layout().Kind() == R::RowLayoutKind::Table && cells.Layout().Width() == 1 &&
@@ -48,6 +44,15 @@ namespace DNDS::CFV
         DNDS_check_throw_info(_cachedDerivatives >= 0 && _cachedDerivatives <= _modes + 1,
                               "sampling cache derivative count outside polynomial space");
         const bool direct = _cachedDerivatives <= _maximumDerivative;
+        const bool needsGeometry = direct || (_cachedDerivatives && _ownsBasis);
+        std::optional<R::Array<real>> hostMoments, hostCent, hostScale;
+        if (needsGeometry)
+        {
+            const auto &sourceMoments = reconstruction.SamplingMoments();
+            hostMoments.emplace(sourceMoments.GetDevice() == R::Device::Host() ? sourceMoments : sourceMoments.To(R::Device::Host(), sourceContext));
+            hostCent.emplace(metrics.Device() == R::Device::Host() ? metrics._data->cellCent : metrics._data->cellCent.To(R::Device::Host(), sourceContext));
+            hostScale.emplace(metrics.Device() == R::Device::Host() ? metrics._data->cellScale : metrics._data->cellScale.To(R::Device::Host(), sourceContext));
+        }
         _cells = R::Array<index>(R::RowLayout::Dense(cells.RowCount(), 1));
         if (sharedBasis)
         {
@@ -82,9 +87,9 @@ namespace DNDS::CFV
         if (direct)
         {
             _points = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), 3));
-            _moments = hostMoments;
-            _cellCent = hostCent;
-            _cellScale = hostScale;
+            _moments = *hostMoments;
+            _cellCent = *hostCent;
+            _cellScale = *hostScale;
         }
         const auto cellRead = cells.Read();
         const auto pointRead = points.Read();
@@ -103,13 +108,18 @@ namespace DNDS::CFV
             const auto snapshot = cellWrite.View<R::FixedRows<1>>();
             const auto positions = pointWrite.View<R::FixedRows<3>>();
             const auto cached = basisWrite ? basisWrite->View<R::TableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::TableRows>{};
-            const auto momentRead = hostMoments.Read();
-            const auto moments = momentRead.View<R::TableRows>();
-            const auto centReadGeometry = hostCent.Read();
-            const auto scaleReadGeometry = hostScale.Read();
+            std::optional<R::Array<real>::ReadLease> momentRead, centReadGeometry, scaleReadGeometry;
+            R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows> moments{};
             FiniteVolumeHostView geom;
-            geom.cellCent = centReadGeometry.View<R::FixedRows<3>, false>();
-            geom.cellScale = scaleReadGeometry.View<R::FixedRows<1>, false>();
+            if (_cachedDerivatives && _ownsBasis)
+            {
+                momentRead.emplace(hostMoments->Read());
+                moments = momentRead->View<R::TableRows>();
+                centReadGeometry.emplace(hostCent->Read());
+                scaleReadGeometry.emplace(hostScale->Read());
+                geom.cellCent = centReadGeometry->View<R::FixedRows<3>, false>();
+                geom.cellScale = scaleReadGeometry->View<R::FixedRows<1>, false>();
+            }
             OMP::ForSetupRows(0, ids.RowCount(), [&](index iPoint)
                               {
             const index iCell = ids(iPoint, 0);

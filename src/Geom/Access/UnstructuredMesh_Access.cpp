@@ -120,9 +120,12 @@ namespace DNDS::Geom
             _mpiOwner = communication;
         _nativeState.Store(std::move(prepared));
         _nativeSmoothing.Reset();
-        node2bndNode.clear();
-        node2parentNode.clear();
-        cell2parentCell.clear();
+        {
+            std::lock_guard<std::mutex> lock(_cacheMutex);
+            node2bndNode.clear();
+            node2parentNode.clear();
+            cell2parentCell.clear();
+        }
         mutation.Commit();
     }
 
@@ -133,7 +136,6 @@ namespace DNDS::Geom
                             {
             DNDS_check_throw_info(current, "publish native mesh state before placement");
             return current->WithPlacement(device, context); });
-        _nativeSmoothing.Reset();
     }
 
 }

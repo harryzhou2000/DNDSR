@@ -47,6 +47,7 @@ namespace DNDS::Geom
         // replacement, including replacement by a caller-managed publication.
         std::shared_ptr<Runtime::CommunicationContext> _mpiOwner;
         LockedSharedPtr<const NativeSmoothingWorkspace> _nativeSmoothing;
+        mutable std::mutex _cacheMutex;
         friend class UnstructuredMeshState;
         friend class MeshEdit;
         friend class PreparedMeshTransition;
