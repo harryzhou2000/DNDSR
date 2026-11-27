@@ -584,7 +584,9 @@ TEST_CASE("Device publications retain actual mesh metrics and basis with explici
 {
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
-    auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics);
+    C::ReconstructionSettings settings;
+    settings.cacheDiffBase = true;
+    auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
     auto resident = plan.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0), {true, true, true});
     auto read = resident.AcquireResidentRead();
     auto mesh = resident.MeshSnapshot().AcquireRead(R::ExecutionContext::CUDA(0));

@@ -327,7 +327,7 @@ TEST_CASE("Rank-local AmgX upload extracts owned blocks and refreshes their valu
     options.rowMajorBlocks = true;
     options.indices = C::LinearIndexStorage::Int32;
     constexpr int n = 6;
-    C::LinearProblemContext problem(space, n, {{2, 1}, {0}}, {1}, C::DiagonalStorage::Block,
+    C::LinearProblemContext problem(space, n, {{1, 2}, {0}}, {1}, C::DiagonalStorage::Block,
                                     C::OffDiagonalStorage::Assembled, device, {}, options);
     R::EagerEngine engine;
     const auto lane = engine.CreateStream(std::make_shared<R::CUDALauncher>(device.ordinal));
@@ -335,7 +335,7 @@ TEST_CASE("Rank-local AmgX upload extracts owned blocks and refreshes their valu
     {
         auto w = strengths.Write(), d = diagonal.Write();
         for (int slot = 0; slot < 3; ++slot)
-            w.View()(slot, 0) = slot ? 1 : 20;
+            w.View()(slot, 0) = slot == 1 ? 20 : 1;
         for (int row = 0; row < 2; ++row)
             for (int k = 0; k < n * n; ++k)
                 d.View()(row, k) = k % (n + 1) == 0 ? 4 : 0;
@@ -353,7 +353,7 @@ TEST_CASE("Rank-local AmgX upload extracts owned blocks and refreshes their valu
             auto a = blocks.Write(), b = rhs.Write();
             for (int slot = 0; slot < 3; ++slot)
                 for (int k = 0; k < n * n; ++k)
-                    a.View()(slot, k) = k % (n + 1) == 0 ? (slot ? coupling : -20.) : 0.;
+                    a.View()(slot, k) = k % (n + 1) == 0 ? (slot == 1 ? -20. : coupling) : 0.;
             for (int row = 0; row < 2; ++row)
                 for (int j = 0; j < n; ++j)
                     b.View()(row, j) = 4 * Exact(mpi.rank, row, j) + coupling * Exact(mpi.rank, 1 - row, j);

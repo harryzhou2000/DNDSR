@@ -979,8 +979,10 @@ TEST_CASE("P1 WBAP_Barth limits the WBAP result before gradient PP on CPU and CU
     for (const bool cuda : {false, true})
     {
         const auto device = cuda ? R::Device::CUDA(0) : R::Device::Host();
-        CauchyTest::NonDefaultCUDAStream nonDefaultStream;
-        const auto context = nonDefaultStream.Context();
+        std::optional<CauchyTest::NonDefaultCUDAStream> nonDefaultStream;
+        if (cuda)
+            nonDefaultStream.emplace();
+        const auto context = cuda ? nonDefaultStream->Context() : R::ExecutionContext{};
         auto plan = cuda ? cpu.Placed(device, context) : cpu;
         auto state = C::EquationDofs::Coupled(equation.Schema(), plan.Metrics().BuildField(5));
         state.CoupledField().Owned().CopyFrom(mean.CoupledField().Owned(), context).Wait();
@@ -1091,8 +1093,10 @@ TEST_CASE("Managed characteristics feed WBAP without a host observation between 
     {
         CAPTURE(backend);
         const auto device = backend == 2 ? R::Device::CUDA(0) : R::Device::Host();
-        CauchyTest::NonDefaultCUDAStream nonDefaultTransferStream;
-        const auto transfer = nonDefaultTransferStream.Context();
+        std::optional<CauchyTest::NonDefaultCUDAStream> nonDefaultTransferStream;
+        if (backend == 2)
+            nonDefaultTransferStream.emplace();
+        const auto transfer = backend == 2 ? nonDefaultTransferStream->Context() : R::ExecutionContext{};
         auto plan = backend == 2 ? cpu.Placed(device, transfer) : cpu;
         auto state = C::EquationDofs::Coupled(equation.Schema(), plan.Metrics().BuildField(5));
         state.CoupledField().Owned().CopyFrom(means.CoupledField().Owned(), transfer).Wait();
