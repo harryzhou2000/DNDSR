@@ -1017,7 +1017,10 @@ TEST_CASE("Packed pressure stencil and LLF blending agree on CPU and CUDA")
         settings.numerics.cfv.maxOrder = modal ? 3 : 1;
         settings.numerics.cfv.SORInstead = false;
         settings.numerics.flux = "AUSMPWPlus";
-        settings.numerics.riemann.pressureLLFBlend = true;
+        settings.numerics.riemann.pressureLLFBlend = !modal;
+        settings.numerics.riemann.useStencil = !modal;
+        settings.numerics.riemann.dissipationMode = C::Riemann::DissipationMode::Constant;
+        settings.numerics.riemann.dissipationCoefficient = .25;
         settings.numerics.riemann.rotation = "velocityJump";
         settings.numerics.riemann.secondaryFlux = "Roe_M9";
         settings.execution.kernels.rhsMapping = modal ? "ctaSegments" : "thread";

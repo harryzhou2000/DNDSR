@@ -3,7 +3,7 @@
 
 namespace DNDS::Cauchy::FiniteVolumeDetail
 {
-    DNDS_DEVICE_CALLABLE inline real PressureLLFWeight(real minimum, real maximum, real start, real full) noexcept
+    DNDS_DEVICE_CALLABLE inline real PressureRatioWeight(real minimum, real maximum, real start, real full) noexcept
     {
         const real ratio = maximum / minimum;
         if (ratio <= start)
@@ -26,12 +26,14 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
             minimum = DNDS::Math::ScalarMin(minimum, bounds(other, 0));
         if (useStencil && policy.pressureStencil)
             settings.pressureStencilMin = DNDS::Math::ScalarMin(settings.pressureStencilMin, minimum);
-        if (!policy.pressureLLFBlend)
+        if (!policy.pressureLLFBlend && settings.dissipationScale == 1)
             return 0;
         real maximum = bounds(own, 1);
         if (other != UnInitIndex)
             maximum = DNDS::Math::ScalarMax(maximum, bounds(other, 1));
-        return PressureLLFWeight(minimum, maximum, policy.pressureLLFBlendStart, policy.pressureLLFBlendFull);
+        const real weight = PressureRatioWeight(minimum, maximum, policy.pressureRatioStart, policy.pressureRatioFull);
+        settings.dissipationScale += weight * (1 - settings.dissipationScale);
+        return policy.pressureLLFBlend ? weight : 0;
     }
 
     DNDS_DEVICE_CALLABLE inline real BlendFluxValue(real flux, real llf, real weight) noexcept

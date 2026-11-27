@@ -2639,7 +2639,7 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
         {
             CAPTURE(generic);
             CAPTURE(ratio);
-            const auto evaluate = [&](bool blend, bool llf, double coefficient = 1)
+            const auto evaluate = [&](bool blend, bool llf, double coefficient = 1, bool smoothReference = false)
             {
                 C::DomainSettings settings;
                 settings.boundaries["7"].kind = "extrapolate";
@@ -2654,6 +2654,11 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
                     riemann.secondaryFlux = "Roe_M9";
                 }
                 riemann.pressureLLFBlend = blend;
+                if (smoothReference)
+                {
+                    riemann.pressureRatioStart = 3;
+                    riemann.pressureRatioFull = 4;
+                }
                 if (coefficient != 1)
                 {
                     riemann.dissipationMode = C::Riemann::DissipationMode::Constant;
@@ -2661,7 +2666,7 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
                 }
                 const auto equation = C::EquationSystem::Resolve(settings.equation);
                 C::FiniteVolume fv(mesh, settings, equation);
-                CHECK(fv.CompleteRHSAuxiliaryRequest().cellPressureMinimum == blend);
+                CHECK(fv.CompleteRHSAuxiliaryRequest().cellPressureMinimum == (blend || coefficient < 1));
                 auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
                 {
                     auto write = state.Owned().Write();
@@ -2697,15 +2702,16 @@ TEST_CASE("Pressure stencil blends the final rotated flux toward face-normal LLF
                 }
             MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
             CHECK(difference > 1e-5);
-            if (ratio == 1.525)
             {
-                const auto central = evaluate(false, false, 0), combined = evaluate(true, false, .25);
-                const auto d = central.Read(), e = combined.Read();
+                const auto central = evaluate(false, false, 0, true), guarded = evaluate(false, false, .25), combined = evaluate(true, false, .25);
+                const auto d = central.Read(), e = combined.Read(), g = guarded.Read();
+                const double alpha = .25 + .75 * weight;
                 for (DNDS::index cell = 0; cell < a.View().RowCount(); ++cell)
                     for (int j = 0; j < 5; ++j)
                     {
-                        const double scaled = .75 * d.View()(cell, j) + .25 * a.View()(cell, j);
-                        const double expected = .5 * scaled + .5 * b.View()(cell, j);
+                        const double scaled = (1 - alpha) * d.View()(cell, j) + alpha * a.View()(cell, j);
+                        CHECK(g.View()(cell, j) == doctest::Approx(scaled).epsilon(1e-11).scale(1));
+                        const double expected = (1 - weight) * scaled + weight * b.View()(cell, j);
                         CHECK(e.View()(cell, j) == doctest::Approx(expected).epsilon(1e-11).scale(1));
                     }
             }

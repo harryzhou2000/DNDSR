@@ -191,7 +191,9 @@ namespace DNDS::Cauchy
         real fixScale = 1, incrementScale = 1, dLambda = 0, referenceMach = .1, pressureStencilMin = 1e300;
         bool useStencil = true;
         bool pressureLLFBlend = false;
-        real pressureLLFBlendStart = 1.05, pressureLLFBlendFull = 2;
+        inline static constexpr std::pair<const char *, const char *> pressureRatioAliases[] = {
+            {"pressureLLFBlendStart", "pressureRatioStart"}, {"pressureLLFBlendFull", "pressureRatioFull"}};
+        real pressureRatioStart = 1.05, pressureRatioFull = 2;
         Riemann::DissipationMode dissipationMode = Riemann::DissipationMode::FullUpwind;
         real dissipationCoefficient = 1;
         std::string rotation = "none", secondaryFlux;
@@ -209,10 +211,10 @@ namespace DNDS::Cauchy
                                     return {{"default", "fullUpwind"},
                                             {"oneOf", {{{"type", "string"}, {"enum", {"fullUpwind", "constant", "DES"}}}, {{"type", "integer"}, {"minimum", 0}, {"maximum", 2}}}}};
                                 });
-            DNDS_FIELD(dissipationCoefficient, "Dissipation multiplier for constant mode or the unshielded DES region; 0 is central, 1 is full upwind", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(dissipationCoefficient, "Smooth-region multiplier in constant mode or the unshielded DES region. Pressure jumps restore full canonical upwinding", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(pressureLLFBlend, "Blend the final compressible convective flux toward face-normal LLF using the pressure stencil ratio, independently of useStencil");
-            DNDS_FIELD(pressureLLFBlendStart, "Pressure stencil max/min ratio at the start of LLF blending");
-            DNDS_FIELD(pressureLLFBlendFull, "Pressure stencil max/min ratio at full LLF blending");
+            DNDS_FIELD(pressureRatioStart, "Stencil max/min pressure ratio where full-upwind recovery and optional LLF blending begin");
+            DNDS_FIELD(pressureRatioFull, "Stencil max/min pressure ratio where canonical dissipation is fully restored and optional LLF blending reaches one");
             DNDS_FIELD(rotation, "Rotated flux axis: none, velocityJump (cell mean velocities), or faceNormal (face-center normal)");
             DNDS_FIELD(secondaryFlux, "Riemann solver along the rotation axis; empty uses the primary numerics.flux solver");
         }

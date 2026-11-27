@@ -648,16 +648,25 @@ positivity flux keeps its face-normal Rusanov definition. When the frozen
 Roe Jacobian is selected, it uses the combined wave magnitudes with the
 existing face-normal characteristic basis.
 
-`numerics.riemann.pressureLLFBlend` independently opts into a pressure-sensor
-blend of the final convective flux toward face-normal LLF. The sensor is
-the maximum divided by the minimum of the combined two-cell pressure
-stencil. `pressureLLFBlendStart` and `pressureLLFBlendFull` default to
-`1.05` and `2`. For the ratio mapped and clipped to $s\in[0,1]$ between
-these thresholds, the LLF fraction is $s^2(3-2s)$. LLF uses the same
-admissible face states as the canonical solver. The blend precedes addition
-of viscous fluxes, with its own pressure stencil request even when
-`useStencil=false`. The independent positivity flux and approximate
-Jacobian retain their existing definitions.
+The flow flux uses one pressure-ratio ramp for dissipation recovery and
+optional LLF blending. On an interior face, $r$ is the largest pressure
+divided by the smallest pressure across the two cells' pressure stencils.
+A boundary face uses its interior cell's stencil. Under `numerics.riemann`,
+`pressureRatioStart` and `pressureRatioFull` set the endpoints $r_0$ and
+$r_1$ (defaults 1.05 and 2). The old input names `pressureLLFBlendStart`
+and `pressureLLFBlendFull` are accepted. Both operations use the same weight
+$w=s^2(3-2s)$ with $s=\mathrm{clip}((r-r_0)/(r_1-r_0),0,1)$.
+
+For `constant` or `DES` dissipation, the solver first obtains the face
+coefficient $a$ from the configured value or the DES shielding. It then uses
+$a+(1-a)w$ in the canonical Riemann flux. At $r\ge r_1$ this gives full
+upwinding with the selected solver, including its configured rotation.
+Enabling `pressureLLFBlend` additionally mixes the resulting flux with the
+face-normal LLF flux using fraction $w$ and the same admissible states.
+Both operations request pressure bounds independently of `useStencil` and
+act on the five flow components before viscous fluxes are added. Scalar
+convection, the low-order positivity flux and the approximate Jacobian keep
+their existing definitions.
 
 With spatial preparation enabled, `dLambda` is a signal floor and
 `pressureStencilMin` a pressure upper bound. Set `useStencil=false` for exact

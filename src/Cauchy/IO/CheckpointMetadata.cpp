@@ -254,9 +254,21 @@ namespace DNDS::Cauchy::CheckpointMetadata
                             riemann->erase(name);
                     else
                         (*riemann)["dissipationMode"] = mode;
-                    if (!riemann->value("pressureLLFBlend", false))
-                        for (const auto *name : {"pressureLLFBlend", "pressureLLFBlendStart", "pressureLLFBlendFull"})
-                            riemann->erase(name);
+                    const bool blend = riemann->value("pressureLLFBlend", false);
+                    if (!blend)
+                        riemann->erase("pressureLLFBlend");
+                    const bool pressureRamp = blend || (mode != Riemann::DissipationMode::FullUpwind && riemann->value("dissipationCoefficient", 1.) < 1);
+                    for (const auto &[legacy, current] : RiemannSettings::pressureRatioAliases)
+                    {
+                        if (pressureRamp && riemann->contains(legacy) && !riemann->contains(current))
+                        {
+                            Json threshold = riemann->at(legacy);
+                            (*riemann)[current] = std::move(threshold);
+                        }
+                        riemann->erase(legacy);
+                        if (!pressureRamp)
+                            riemann->erase(current);
+                    }
                 }
             }
         }
