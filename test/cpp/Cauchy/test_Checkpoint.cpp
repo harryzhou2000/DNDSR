@@ -5,6 +5,7 @@
 #include "Cauchy/IO/StateArchive.hpp"
 #include "Cauchy/IO/CheckpointMetadata.hpp"
 #include "Cauchy/IO/AsyncOutput.hpp"
+#include "Cauchy/IO/OutputCoordinator.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Physics/Thermodynamics/ConservativeConversion.hpp"
 #include "CartesianFixture.hpp"
@@ -1449,6 +1450,78 @@ TEST_CASE("Exact internal checkpoints resume BDF DIRK and DITR nonlinear iterati
         Remove({path});
     }
 }
+TEST_CASE("A stop queued on one rank checkpoints the accepted step or steady correction")
+{
+    for (const bool steady : {false, true})
+    {
+        CAPTURE(steady);
+        const auto directory = Path(steady ? "cauchy-steady-stop-" : "cauchy-transient-stop-");
+        const auto prefix = directory + "/run";
+        const C::Json input{{"defaults", {{"mesh", {{"dimension", 2}}}, {"numerics", {{"reconstruction", "variational"}, {"cfv", {{"maxOrder", 2}}}}}, {"implicit", {{"iterations", 5}, {"minIterations", 5}, {"relativeTolerance", 1}}}}},
+                            {"time", {{"method", "bdf1"}, {"steady", steady}, {"dt", .002}, {"steps", 2}}},
+                            {"output", {{"prefix", prefix}, {"finalSnapshot", false}}}};
+        const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+        const auto factory = [](DNDS::index, const auto &, const DNDS::MPIInfo &domainMPI)
+        { return CauchyTest::PeriodicQuads(domainMPI, 4); };
+        C::Simulation simulation(config, mpi.comm, factory);
+        C::Simulation reference(config, mpi.comm, factory);
+        Initialize(simulation.GetDomain(0));
+        Initialize(reference.GetDomain(0));
+        REQUIRE(reference.Advance(.002).accepted);
+        C::RunControl control(config, mpi.rank);
+        CHECK(control.CurrentConfiguration() == config.Root());
+        int polls = 0;
+        {
+            C::OutputCoordinator outputs(simulation, config, mpi, MPI_Wtime(), &control, [&]
+                                         {
+                if (++polls == 2 && mpi.rank == mpi.size - 1)
+                    control.EnqueueStop(); });
+            CHECK(outputs.PollStop() == C::RunStop::None);
+            outputs.BeginAttempt(.002, 0, steady ? 0 : .002);
+            const auto outcome = simulation.Advance(.002);
+            outputs.FlushPending();
+            CHECK(outcome.interrupted == steady);
+            CHECK(outcome.accepted == !steady);
+            CHECK(simulation.Step() == (steady ? 0 : 1));
+            if (!steady)
+            {
+                CHECK_FALSE(outputs.CompleteAcceptedStep(.002, 0, {}, false, false));
+                CHECK(outputs.PollStop() == C::RunStop::Requested);
+            }
+            CHECK(outputs.Finalize(C::RunStop::Requested, false) == 0);
+            const auto history = control.CurrentHistory(1);
+            CHECK(history.at("rank") == mpi.rank);
+            CHECK(history.at("capacity") == C::RunControl::HistoryCapacity);
+            CHECK(history.at("records").size() == (mpi.rank == 0 ? 1 : 0));
+            if (mpi.rank == 0)
+            {
+                CHECK(history.at("records").front().at("domain") == 0);
+                CHECK(history.at("retained").get<size_t>() > 0);
+                CHECK(control.CurrentHistory(0).at("records").empty());
+            }
+        }
+        auto readSummary = std::ifstream(prefix + "-summary.json");
+        REQUIRE(bool(readSummary));
+        C::Json summary;
+        readSummary >> summary;
+        CHECK(summary.at("status") == "graceful-stop");
+        CHECK(summary.at("stopBoundary") == (steady ? "iteration" : "step"));
+        C::Simulation resumed(config, mpi.comm, factory);
+        resumed.ReadCheckpoint(summary.at("checkpoint").get<std::string>());
+        if (steady)
+        {
+            CHECK(resumed.Step() == 0);
+            REQUIRE(resumed.Advance(.002).accepted);
+        }
+        CHECK(resumed.Step() == 1);
+        CompareEquation(resumed.GetDomain(0).Dofs(), reference.GetDomain(0).Dofs(), 2e-13);
+        MPI_Barrier(mpi.comm);
+        if (mpi.rank == 0)
+            std::filesystem::remove_all(directory);
+        MPI_Barrier(mpi.comm);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

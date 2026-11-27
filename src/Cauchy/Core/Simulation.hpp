@@ -21,6 +21,7 @@ namespace DNDS::Cauchy
     /// A rejected StepResult certifies a collectively agreed numerical retry.
     class Simulation
     {
+        friend class OutputCoordinator;
         SimulationConfig _config;
         DomainPlacement _placement;
         NumericalReductions _controlReductions{_placement.Control()};
@@ -33,6 +34,7 @@ namespace DNDS::Cauchy
         real _time = 0;
         uint64_t _step = 0;
         std::optional<Json> _restoredOutputController;
+        std::function<bool()> _stopAfterCorrection;
 
     public:
         const DomainSetupTimings &SetupTimings(index iDomain) const { return _setupTimings.at(size_t(iDomain)); }

@@ -172,6 +172,7 @@ set(CPPS
     IO/CPU/OutputFieldsKernels.cpp
     IO/Simulation_Checkpoint.cpp
     IO/ProgressOutput.cpp
+    IO/RunControl.cpp
     IO/OutputPlan.cpp
     IO/OutputCoordinator.cpp
 

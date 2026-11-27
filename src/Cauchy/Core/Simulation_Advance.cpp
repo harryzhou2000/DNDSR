@@ -204,6 +204,7 @@ namespace DNDS::Cauchy
                 group.reductions = &_controlReductions;
                 group.policy = _updatePolicy;
                 group.collectiveChecks = _nonlinearCollectiveChecks;
+                group.stopAfterCorrection = _stopAfterCorrection;
                 for (auto &session : sessions)
                     if (session)
                         group.domains.emplace_back(*session);
@@ -236,6 +237,7 @@ namespace DNDS::Cauchy
                 // Exactly one dispatch. The selected policy owns its entire
                 // nonlinear loop and orders interface/domain sweeps itself.
                 SolveNonlinearGroup(group);
+                return group.Interrupted();
             };
             std::vector<std::optional<Domain::CandidateReservation>> candidates(_domains.size());
             const auto prepareAndCommit = [&]() -> StepResult
@@ -312,7 +314,8 @@ namespace DNDS::Cauchy
                             DNDS_check_throw_info(sessions[size_t(iDomain)],
                                                   "implicit group has no solve record"); },
                                    "nonlinear group preparation");
-                        solveGroup(sessions, group);
+                        if (solveGroup(sessions, group))
+                            return StepResult::Interrupted();
                         if (auto result = localPhase(
                                 [&](index iDomain, Domain &domain)
                                 { return domain.FinishGroupSolve(*sessions[size_t(iDomain)]); },
@@ -347,8 +350,8 @@ namespace DNDS::Cauchy
                 // and followed by an unrelated control reduction on local failure.
                 try
                 {
-                    _controlReductions.LocalStage( [&]
-                                    {
+                    _controlReductions.LocalStage([&]
+                                                  {
                     for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                         if (auto &domain = _domains[iDomain])
                             candidates[iDomain].emplace(domain->ReserveCandidate()); });

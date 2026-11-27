@@ -421,21 +421,22 @@ namespace DNDS::Cauchy
         return terminal != 0;
     }
 
-    void NonlinearSolveGroup::PublishIteration(bool terminal)
+    bool NonlinearSolveGroup::PublishIteration(bool terminal)
     {
         if (projectPressure)
             projectPressure();
+        if (stopAfterCorrection)
+            _interrupted = stopAfterCorrection();
         for (auto reference : domains)
             reference.get().FinishIteration(terminal);
         if (!terminal)
             ++_iteration;
+        return terminal || _interrupted;
     }
 
     bool NonlinearSolveGroup::FinishIteration()
     {
-        const bool terminal = AgreeTerminal();
-        PublishIteration(terminal);
-        return terminal;
+        return PublishIteration(AgreeTerminal());
     }
 
     void NonlinearSolveGroup::RefreshInterfaces(int coupledStage,

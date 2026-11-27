@@ -2,9 +2,17 @@
 
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/IO/OutputPlan.hpp"
+#include "Cauchy/IO/RunControl.hpp"
 
 namespace DNDS::Cauchy
 {
+    enum class RunStop
+    {
+        None,
+        WallLimit,
+        Requested
+    };
+
     /// Production output/progress owner. It installs and removes Domain
     /// observers, owns CSV/logger state and serializes accepted/internal output
     /// decisions without leaking file/control logic into the solver frontend.
@@ -18,7 +26,8 @@ namespace DNDS::Cauchy
 
     public:
         OutputCoordinator(Simulation &simulation, const SimulationConfig &config,
-                          MPIInfo mpi, real started);
+                          MPIInfo mpi, real started, RunControl *control = nullptr,
+                          std::function<void()> pollInput = {});
         ~OutputCoordinator();
         OutputCoordinator(const OutputCoordinator &) = delete;
         OutputCoordinator &operator=(const OutputCoordinator &) = delete;
@@ -37,8 +46,15 @@ namespace DNDS::Cauchy
             real dt, index retries,
             const std::vector<PhysicalStepLimit> &limits,
             bool useLimits, bool printConsole);
-        /// Always write final checkpoint+visualization and summary. Returns 2
-        /// for wall/step caps, otherwise zero.
-        int Finalize(bool wallStop, bool reached);
+        /// Collective check at a step boundary. A queued stop takes precedence
+        /// over a simultaneous wall cap so it is guaranteed a checkpoint.
+        RunStop PollStop(bool wallLimitReached = false);
+        /// Publish summary, flush output, and force a restart archive for a
+        /// requested stop. Returns 2 for wall/step caps, otherwise zero.
+        int Finalize(RunStop stop, bool reached);
+        int Finalize(bool wallStop, bool reached)
+        {
+            return Finalize(wallStop ? RunStop::WallLimit : RunStop::None, reached);
+        }
     };
 }

@@ -72,6 +72,8 @@ namespace DNDS::Cauchy
         const SimulationConfig &config;
         MPIInfo mpi;
         real started;
+        RunControl *control;
+        std::function<void()> pollInput;
         const std::chrono::steady_clock::time_point progressStart = std::chrono::steady_clock::now();
         const real progressOffset = MPI_Wtime() - started;
         std::optional<real> stepStarted;
@@ -88,12 +90,16 @@ namespace DNDS::Cauchy
         index internalCheckpointInterval = 0,
               internalVisualizationInterval = 0;
         bool continueOutput = false, finalized = false, allocationReportWritten = false;
+        bool iterationStop = false;
+        std::string stopCheckpoint;
         std::unique_ptr<AsyncOutput> asynchronous;
 
         Data(Simulation &simulationIn, const SimulationConfig &configIn,
-             MPIInfo mpiIn, real startedIn)
+             MPIInfo mpiIn, real startedIn, RunControl *controlIn,
+             std::function<void()> pollInputIn)
             : simulation(simulationIn), config(configIn), mpi(mpiIn),
-              started(startedIn), output(config.Output()), time(config.Time()),
+              started(startedIn), control(controlIn), pollInput(std::move(pollInputIn)),
+              output(config.Output()), time(config.Time()),
               domains(index(config.Domains().size())), plan(output, domains),
               progress(size_t(domains)), baselines(size_t(domains), 0),
               internalCheckpointInterval(output.implicit.checkpointInterval),
@@ -128,10 +134,18 @@ namespace DNDS::Cauchy
             // Publish callbacks only after fallible output/resource setup.
             // A failed constructor has no Data destructor to withdraw them.
             InstallObservers();
+            if (control && time.steady && domains == 1 &&
+                simulation.Placement().Group(0).ranks.size() == size_t(mpi.size))
+                simulation._stopAfterCorrection = [this]
+                {
+                    iterationStop = PollStop(false) == RunStop::Requested;
+                    return iterationStop;
+                };
         }
 
         ~Data()
         {
+            simulation._stopAfterCorrection = {};
             if (asynchronous)
             {
                 if (std::uncaught_exceptions())
@@ -144,6 +158,16 @@ namespace DNDS::Cauchy
                   {
                       domain.SetProgressObserver({});
                       domain.SetQuiescentObserver({}); });
+        }
+
+        RunStop PollStop(bool wallLimitReached)
+        {
+            if (pollInput)
+                pollInput();
+            const auto local = control && control->StopRequested() ? RunStop::Requested
+                               : wallLimitReached                  ? RunStop::WallLimit
+                                                                   : RunStop::None;
+            return RunStop(simulation._controlReductions.Value<Runtime::Reduction::Max>(int(local)));
         }
 
         template <class Action>
@@ -203,6 +227,10 @@ namespace DNDS::Cauchy
                         MPIInfo(domain.Discretization().Metrics().Communicator()),
                         [&]
                         {
+                            std::function<void(const CsvRow &)> retain;
+                            if (control)
+                                retain = [this, iDomain](const CsvRow &row)
+                                { control->RetainHistory(iDomain, row); };
                             progress[size_t(iDomain)] =
                                 std::make_unique<ProgressOutputController>(
                                     domain.Equation().Schema(), output,
@@ -212,7 +240,8 @@ namespace DNDS::Cauchy
                                     continueOutput
                                         ? std::optional(state.history.at(
                                               size_t(iDomain)))
-                                        : std::nullopt);
+                                        : std::nullopt,
+                                    std::move(retain));
                         }); });
             Json localDomains = Json::array();
             for (index iDomain = 0; iDomain < domains; ++iDomain)
@@ -327,8 +356,8 @@ namespace DNDS::Cauchy
             const auto selected = plan.SelectedSnapshots(step, nonlinear.stage, completedIteration);
             const auto intervalDue = [completedIteration](index interval)
             { return completedIteration > 0 && interval > 0 && completedIteration % interval == 0; };
-            const bool checkpoint = selected.checkpoint || intervalDue(internalCheckpointInterval);
-            const bool visualization = selected.visualization || intervalDue(internalVisualizationInterval);
+            const bool checkpoint = iterationStop || selected.checkpoint || intervalDue(internalCheckpointInterval);
+            const bool visualization = !iterationStop && (selected.visualization || intervalDue(internalVisualizationInterval));
             // Emit progress at the existing quiescent nonlinear boundary
             // before staging any output or entering file I/O.
             progress[size_t(iDomain)]->FlushIterations(checkpoint || visualization);
@@ -341,7 +370,10 @@ namespace DNDS::Cauchy
             if (!checkpoint && !visualization)
                 return;
             const bool writer = simulation.Placement().DomainRank(iDomain) == 0;
-            const auto token = OutputPlan::InternalToken(step, nonlinear.stage, completedIteration);
+            const auto token = OutputPlan::InternalToken(step, nonlinear.stage, completedIteration) +
+                               (iterationStop ? "-stop" : "");
+            if (iterationStop)
+                stopCheckpoint = plan.InternalCheckpointPath(iDomain, token);
             if (writer)
                 logger->Info(fmt::format("Writing {} D{}{}",
                                          checkpoint && visualization ? "checkpoint and visualization"
@@ -610,12 +642,22 @@ namespace DNDS::Cauchy
             return reached;
         }
 
-        int Finalize(bool wallStop, bool reached)
+        int Finalize(RunStop stop, bool reached)
         {
             DNDS_check_throw_info(!finalized,
                                   "Cauchy output coordinator finalized twice");
             finalized = true;
-            if (output.finalSnapshot)
+            if (stop == RunStop::Requested)
+            {
+                if (!iterationStop)
+                {
+                    const auto token = OutputPlan::StepToken(simulation.Step()) + "-stop";
+                    stopCheckpoint = plan.CheckpointPath(token);
+                    WriteSnapshot(token, true, false);
+                }
+                DNDS_check_throw_info(!stopCheckpoint.empty(), "Cauchy stop did not publish a checkpoint");
+            }
+            else if (output.finalSnapshot)
                 WriteSnapshot("-final", true, true);
             if (asynchronous)
                 asynchronous->Drain();
@@ -627,19 +669,21 @@ namespace DNDS::Cauchy
             const bool timeReached =
                 time.tEnd <= 0 || EquationTimeStepper::ReachedTimeTarget(
                                       simulation.Time(), time.tEnd);
+            const bool wallStop = stop == RunStop::WallLimit;
             const bool stepStop =
-                !wallStop &&
+                stop == RunStop::None &&
                 ((!timeReached && time.tEnd > 0) ||
                  ((time.steady || time.steadyTolerance > 0) && !reached));
             MPI::LocalStage(mpi, [&]
                             {
                 if (mpi.rank == 0)
                 {
-                    const Json result{
+                    Json result{
                         {"time", simulation.Time()},
                         {"steps", simulation.Step()},
                         {"wallSeconds", MPI_Wtime() - started},
-                        {"status", wallStop ? "wall-capped"
+                        {"status", stop == RunStop::Requested ? "graceful-stop"
+                                            : wallStop ? "wall-capped"
                                             : stepStop ? "step-capped"
                                                        : reached
                                                              ? "steady-converged"
@@ -648,6 +692,12 @@ namespace DNDS::Cauchy
                         {"steadyMode", time.steady},
                         {"physicalTimeTarget", time.tEnd},
                         {"steadyTolerance", time.steadyTolerance}};
+                    if (stop == RunStop::Requested)
+                    {
+                        result["stopBoundary"] = iterationStop ? "iteration" : "step";
+                        result["checkpoint"] = stopCheckpoint;
+                        logger->Info("Graceful stop checkpoint complete: " + stopCheckpoint);
+                    }
                     std::ofstream summary(plan.SummaryPath());
                     summary << result.dump(2) << '\n';
                     DNDS_check_throw_info(bool(summary),
@@ -659,8 +709,9 @@ namespace DNDS::Cauchy
 
     OutputCoordinator::OutputCoordinator(Simulation &simulation,
                                          const SimulationConfig &config,
-                                         MPIInfo mpi, real started)
-        : _data(std::make_unique<Data>(simulation, config, mpi, started)) {}
+                                         MPIInfo mpi, real started, RunControl *control,
+                                         std::function<void()> pollInput)
+        : _data(std::make_unique<Data>(simulation, config, mpi, started, control, std::move(pollInput))) {}
     OutputCoordinator::~OutputCoordinator() = default;
 
     OutputPlan::StepTarget OutputCoordinator::SnapStep(real proposedDt) const
@@ -691,8 +742,12 @@ namespace DNDS::Cauchy
         return _data->CompleteAcceptedStep(dt, retries, limits, useLimits,
                                            printConsole);
     }
-    int OutputCoordinator::Finalize(bool wallStop, bool reached)
+    RunStop OutputCoordinator::PollStop(bool wallLimitReached)
     {
-        return _data->Finalize(wallStop, reached);
+        return _data->PollStop(wallLimitReached);
+    }
+    int OutputCoordinator::Finalize(RunStop stop, bool reached)
+    {
+        return _data->Finalize(stop, reached);
     }
 }

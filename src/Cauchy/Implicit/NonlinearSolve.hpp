@@ -85,6 +85,9 @@ namespace DNDS::Cauchy
         /// the residual and finished its correction. Packet import alone must
         /// never mutate the means frozen by a pending spatial evaluation.
         std::function<void()> projectPressure;
+        /// Optional collective poll after a correction, before observers
+        /// publish its restart cursor. It does not change convergence state.
+        std::function<bool()> stopAfterCorrection;
 
         /// Begin one round and validate local cursors. Optional cross-rank
         /// diagnostics obey the Cauchy collective-check master switch.
@@ -93,13 +96,15 @@ namespace DNDS::Cauchy
         void ObserveAll();
         /// Agree termination, then publish every domain's iteration state.
         bool AgreeTerminal() const;
-        void PublishIteration(bool terminal);
+        bool PublishIteration(bool terminal);
         bool FinishIteration();
+        bool Interrupted() const { return _interrupted; }
         void RefreshInterfaces(int coupledStage, index iteration) const;
         void FinishInterfaces() const;
 
     private:
         index _iteration = 0;
+        bool _interrupted = false;
         friend void SolveNonlinearGroup(NonlinearSolveGroup &group);
     };
 

@@ -32,7 +32,7 @@ namespace DNDS::Cauchy
                         for (auto reference : group.domains)
                             if (!reference.get().LocalTerminal())
                                 reference.get().AdvanceStage(0);
-                    group.PublishIteration(complete);
+                    complete = group.PublishIteration(complete);
                 }
             }
         };
