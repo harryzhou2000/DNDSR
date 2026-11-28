@@ -1,4 +1,5 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 #include "DNDS/Runtime/Storage/BufferAlias.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "DNDS/Runtime/Communication/DevicePacking.hpp"
@@ -23,10 +24,6 @@ namespace DNDS::Runtime
 #ifdef DNDS_USE_NCCL
     namespace
     {
-        void CheckCUDA(cudaError_t error)
-        {
-            DNDS_check_throw_info(error == cudaSuccess, cudaGetErrorString(error));
-        }
         void CheckNCCL(ncclResult_t error)
         {
             DNDS_check_throw_info(error == ncclSuccess, ncclGetErrorString(error));
@@ -191,7 +188,7 @@ namespace DNDS::Runtime
         {
             DNDS_check_throw_info(payload.route.Valid(), "NCCL row mapping is stale");
             DNDS_check_throw_info(context.device == owner->device, "NCCL execution placement mismatch");
-            CheckCUDA(cudaSetDevice(owner->device.ordinal));
+            ::DNDS::Device::CUDADeviceScope deviceScope(owner->device.ordinal);
             std::lock_guard<std::mutex> lock(owner->submission);
             owner->Check();
             try
@@ -286,6 +283,45 @@ namespace DNDS::Runtime
                 receive.pending.Complete(!error);
                 finished = true;
             }
+            bool Finished() const noexcept override { return finished; }
+            void FailAndRetire(std::exception_ptr failure) noexcept
+            {
+                MPI::AbortIfSolverFailure("solver NCCL completion failed");
+                if (!error)
+                    error = std::move(failure);
+                binding->owner->Abort();
+                try
+                {
+                    source.Fail();
+                }
+                catch (...)
+                {
+                }
+                try
+                {
+                    destination.Fail();
+                }
+                catch (...)
+                {
+                }
+                try
+                {
+                    send.Fail();
+                }
+                catch (...)
+                {
+                }
+                try
+                {
+                    receive.Fail();
+                }
+                catch (...)
+                {
+                }
+                finished = true;
+                if (manual)
+                    binding->manualActive = false;
+            }
             void WaitDestinationReady() override { Wait(); }
             void Wait() override
             {
@@ -308,51 +344,28 @@ namespace DNDS::Runtime
                 }
                 catch (...)
                 {
-                    MPI::AbortIfSolverFailure("solver NCCL completion failed");
-                    error = std::current_exception();
-                    binding->owner->Abort();
-                    try
-                    {
-                        source.Fail();
-                    }
-                    catch (...)
-                    {
-                    }
-                    try
-                    {
-                        destination.Fail();
-                    }
-                    catch (...)
-                    {
-                    }
-                    try
-                    {
-                        send.Fail();
-                    }
-                    catch (...)
-                    {
-                    }
-                    try
-                    {
-                        receive.Fail();
-                    }
-                    catch (...)
-                    {
-                    }
+                    FailAndRetire(std::current_exception());
+                    std::rethrow_exception(error);
                 }
                 finished = true;
                 if (manual)
                     binding->manualActive = false;
-                if (error)
-                    std::rethrow_exception(error);
             }
             bool Test() override
             {
                 if (error)
                     std::rethrow_exception(error);
-                binding->owner->Check();
-                if (!finished && !completion.Ready())
-                    return false;
+                try
+                {
+                    binding->owner->Check();
+                    if (!finished && !completion.Ready())
+                        return false;
+                }
+                catch (...)
+                {
+                    FailAndRetire(std::current_exception());
+                    std::rethrow_exception(error);
+                }
                 Wait();
                 return true;
             }
@@ -488,7 +501,7 @@ namespace DNDS::Runtime
                     if (!count) return;
                     auto *out = operands->destination.Pointer(scalarBytes, scalarBytes);
                     const auto *in = inPlace ? out : operands->source.Pointer(scalarBytes, scalarBytes);
-                    CheckCUDA(cudaSetDevice(ctx.device.ordinal));
+                    ::DNDS::Device::CUDADeviceScope deviceScope(ctx.device.ordinal);
                     std::lock_guard<std::mutex> lock(owner->submission);
                     owner->Check();
                     CheckNCCL(ncclAllReduce(in, out, count, type, operation, owner->comm, CUDAStream(ctx))); }, [operands, pending](std::exception_ptr error) noexcept
@@ -581,7 +594,7 @@ namespace DNDS::Runtime
                                         comm, "NCCL setup needs a valid rank-local CUDA device");
         auto state = std::make_shared<State>();
         state->device = device;
-        CheckCUDA(cudaSetDevice(device.ordinal));
+        ::DNDS::Device::CUDADeviceScope deviceScope(device.ordinal);
         state->controlOwner = std::move(context);
         state->control = comm;
         int rank = 0, size = 0;

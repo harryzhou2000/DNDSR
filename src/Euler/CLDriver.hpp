@@ -202,12 +202,12 @@ namespace DNDS::Euler
                 real maxCLDeviation = std::max(CLHistory.maxCoeff() - curCL, curCL - CLHistory.minCoeff());
                 if (maxCLDeviation <= currentCLThreshold) // do AoA Update
                 {
-                    real CLSlope = (lastCL - CL) / (lastAOA - AOA);
                     real CLSlopeStandard = sqr(pi) / 90.;
-                    if (lastCL == veryLargeReal || lastAOA == veryLargeReal)
-                        CLSlope = CLSlopeStandard;
+                    real CLSlope = CLSlopeStandard;
+                    if (lastCL != veryLargeReal && lastAOA != veryLargeReal && std::abs(lastAOA - AOA) > smallReal)
+                        CLSlope = (lastCL - CL) / (lastAOA - AOA);
 
-                    if (CLSlope < 0)
+                    if (!std::isfinite(CLSlope) || CLSlope < 0)
                         CLSlope = CLSlopeStandard; //! warning, assuming positive CLSlope now
                     // if (std::abs(CLSlope) > 10 * CLSlopeStandard)
                     //     CLSlope = CLSlopeStandard;

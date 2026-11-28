@@ -15,8 +15,6 @@ dnds_add_lib(euler_library_chemical "Chemistry/ChemicalSource.cpp;Physics/ConstV
 target_compile_definitions(euler_library_chemical PUBLIC CT_USE_SYSTEM_FMT=1)
 list(APPEND LINKS euler_library_chemical)
 
-message(STATUS "here!!!! ${DNDS_Euler_Models_List}")
-
 foreach(item IN LISTS DNDS_Euler_Models_List)
     string(REPLACE "=" ";" keyval ${item})
     list(GET keyval 0 key)

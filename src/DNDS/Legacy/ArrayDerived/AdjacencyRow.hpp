@@ -67,7 +67,8 @@ namespace DNDS
         DNDS_DEVICE_CALLABLE void operator=(const AdjacencyRow &r)
         {
             DNDS_assert(Row_size == r.size());
-            std::copy(r.cbegin(), r.cend(), p_indices);
+            if (p_indices != r.p_indices)
+                std::copy(r.cbegin(), r.cend(), p_indices);
         }
 
         DNDS_DEVICE_CALLABLE index_T *begin() { return p_indices; }

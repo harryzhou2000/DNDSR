@@ -311,18 +311,20 @@ namespace DNDS::Cauchy
             {
                 const auto mean = u.Components<const real>(input), residual = r.Components<const real>(input);
                 const auto target = y.Components<real>(output);
+                NumericalStatus status;
                 DispatchStageShape(accumulation, index(u.columns.size()), [&](auto kind, auto width)
                 {
                     if (rateBinding)
                     {
                         const auto rate = rateBinding->Components<real>(output);
-                        CPU::AssembleEquationRows<StageAssembly::EquationAndRate, decltype(kind)::value, decltype(width)::value>(
+                        status = CPU::AssembleEquationRows<StageAssembly::EquationAndRate, decltype(kind)::value, decltype(width)::value>(
                             mean.View(), residual.View(), target.View(), rate.View(), geometry->HostView(), index(u.columns.size()), inverseDt, rhsScale);
                     }
                     else
-                        CPU::AssembleEquationRows<StageAssembly::Equation, decltype(kind)::value, decltype(width)::value>(
+                        status = CPU::AssembleEquationRows<StageAssembly::Equation, decltype(kind)::value, decltype(width)::value>(
                             mean.View(), residual.View(), target.View(), nullptr, geometry->HostView(), index(u.columns.size()), inverseDt, rhsScale);
                 });
+                DNDS_check_throw_info(status, "nonlinear equation row assembly failed");
             }
             else
             {

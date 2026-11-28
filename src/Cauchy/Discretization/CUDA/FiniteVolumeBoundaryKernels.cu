@@ -133,7 +133,9 @@ namespace DNDS::Cauchy::CUDA
                             status = NumericalStatus{NumericalError::UnsupportedRequest}.At(sample.cell, iPoint);
                         else
                             for (int j = 0; j < Components; ++j)
-                                request.output(iPoint, j) = request.exterior ? exterior[j] : .5 * (point[j] + exterior[j]);
+                                request.output(iPoint, j) = request.exterior
+                                                                ? exterior[j]
+                                                                : ACM::PenaltyFaceValue(condition.kind, point[j], exterior[j]);
                     }
                     else
                     {

@@ -226,23 +226,15 @@ unsupported SOR, invalid indicators, stale publications and optional query data.
 CTest includes one GPU and two ranks with one GPU each. Existing Runtime CUDA
 tests cover array indexing, alignment, async release, algebra and interop.
 
-`cfv_benchmark_reconstruction_cuda width degree components repetitions
-[direct|packed|nccl] [fp64|pipelined] [all|aos]` measures
-real wrappers on a connected Cartesian quad mesh. It checks CPU numerical
-oracles before timing. Setup/upload are separate from repeated resident Jacobi,
-highest-order WBAP, direct communication and integrated split iteration. Jacobi
-and WBAP microtimings read a fixed iterate; the integrated timing commits each
-iteration. Report these scopes separately. Local CPU timings are not substituted
-for matched, allocated-node CPU evidence.
-Use `aos` with the optimized pipelined path. The retained comparison selectors
-require the 3D C=5/M=19 fixture and belong in
-`cfv_benchmark_reconstruction_sweep`; the 2D wrapper benchmark cannot supply
-that modal shape.
+For end-to-end performance and communication-overlap measurements, run the
+canonical `cauchy_solver` CLI with Caliper (`DNDS_TIMELINE=1`) on an exclusive
+allocated node. Local CPU timings are not substituted for matched,
+allocated-node CPU evidence.
 
-The NCCL integrated timing queues ordered iterations before its final engine
+The NCCL integrated path queues ordered iterations before its final engine
 observation; portable MPI retains host progress/observation between iterations.
-Report that scheduling difference with communication and operator microtimings.
-Only compare actual completed numerical/timing rows. Graph capture is not used.
+Report that scheduling difference with communication and operator timings.
+Graph capture is not used.
 
 The historical general CUDA baseline used up to256 blocks,128 threads per
 block and grid-stride cell/entry traversal. Its sm80 Jacobi/WBAP resource

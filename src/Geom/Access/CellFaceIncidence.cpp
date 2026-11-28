@@ -92,16 +92,41 @@ namespace DNDS::Geom
         return CellFaceIncidenceStorage(std::move(data));
     }
 
-    CellFaceIncidenceRead::CellFaceIncidenceRead(std::shared_ptr<const Data> data)
+    struct CellFaceIncidenceRead::Scope
+    {
+        Runtime::ArrayPair<index>::ReadLease cellFaces, faceCells;
+        Runtime::ArrayPair<ElemInfo>::ReadLease faceInfo;
+        std::optional<Runtime::ArrayPair<NodePeriodicBits>::ReadLease> bits;
+        Scope(const CellFaceIncidenceRead::Data &data, Runtime::ExecutionContext context)
+            : cellFaces(data.cellFaces.values.ReadCombined(context)),
+              faceCells(data.faceCells.values.ReadCombined(context)),
+              faceInfo(data.faceInfo.values.ReadCombined(context))
+        {
+            if (data.bits)
+                bits.emplace(data.bits->values.ReadCombined(context));
+        }
+    };
+
+    CellFaceIncidenceRead::CellFaceIncidenceRead(std::shared_ptr<const Data> data, Runtime::ExecutionContext context)
         : _data(std::move(data)), _generation(_data->source->versions.Read())
     {
+        DNDS_check_throw_info(context.device == _data->device, "cell-face incidence read context device differs");
         _data->stamp.Validate();
+        if (context.stream)
+            _scope = std::make_unique<Scope>(*_data, context);
     }
+    CellFaceIncidenceRead::CellFaceIncidenceRead(CellFaceIncidenceRead &&) noexcept = default;
+    CellFaceIncidenceRead::~CellFaceIncidenceRead() = default;
     CellFaceIncidenceView CellFaceIncidenceRead::View() const { return _data->view; }
     CellFaceIncidenceRead CellFaceIncidenceStorage::AcquireRead() const
     {
         DNDS_check_throw_info(_data, "cell-face incidence publication is empty");
-        return CellFaceIncidenceRead(_data);
+        return CellFaceIncidenceRead(_data, {_data->device, nullptr});
+    }
+    CellFaceIncidenceRead CellFaceIncidenceStorage::AcquireRead(Runtime::ExecutionContext context) const
+    {
+        DNDS_check_throw_info(_data, "cell-face incidence publication is empty");
+        return CellFaceIncidenceRead(_data, context);
     }
     Runtime::Device CellFaceIncidenceStorage::GetDevice() const
     {

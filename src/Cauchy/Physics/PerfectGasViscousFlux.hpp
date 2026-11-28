@@ -42,8 +42,13 @@ namespace DNDS::Cauchy
                 temperatureDerivative[d] = (internalDerivative - internalEnergy * gradient[0][d]) / (state[0] * point.thermo.cv);
             }
         }
+        Scalar viscFloor = Scalar(0);
+        if constexpr (sizeof(Scalar) < sizeof(double))
+            viscFloor = DNDS::Math::ScalarMinPositive<Scalar>();
+        else
+            viscFloor = DNDS::Math::ScalarMax(Scalar(verySmallReal), DNDS::Math::ScalarMinPositive<Scalar>());
         const auto flux = Physics::Transport::NewtonianFourierNormalFlux(velocity, derivative, temperatureDerivative, normal,
-                                                                         viscosity, conductivity, useQCR, turbulentViscosity / (viscosity + DNDS::Math::ScalarMax(Scalar(verySmallReal), DNDS::Math::ScalarMinPositive<Scalar>())));
+                                                                         viscosity, conductivity, useQCR, turbulentViscosity / (viscosity + viscFloor));
         return {0, flux.traction[0], flux.traction[1], flux.traction[2], flux.energy};
     }
 

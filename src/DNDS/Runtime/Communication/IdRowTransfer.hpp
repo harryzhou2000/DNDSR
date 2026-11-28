@@ -98,7 +98,7 @@ namespace DNDS::Runtime
         MPI::LocalStage(mpi, [&]
                         { locations = Array<index>(RowLayout::Dense(targetIds.RowCount(), 2)); });
         PayloadPlan(queryRoute.Route().Reverse(), answers.Layout(), locations.Layout(), ElementSchema::Arithmetic<index>())
-            .Bind(answers, locations, TransferTransport::Direct, {TransferMode::Transient, context, 0})
+            .Bind(answers, locations, TransferTransport::Direct, {TransferMode::Transient})
             .Begin()
             .Wait();
         std::vector<RowRequest> requests;

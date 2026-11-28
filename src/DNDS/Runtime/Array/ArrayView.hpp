@@ -266,12 +266,12 @@ namespace DNDS::Runtime
             return {data, offsets, rows, width, stride, sizes, kind, device};
         }
         template <bool C = Checked, std::enable_if_t<C, int> = 0>
-        DNDS_DEVICE_CALLABLE operator ArrayView<T, false, LayoutPolicy>() const
+        DNDS_DEVICE_CALLABLE operator ArrayView<T, !C, LayoutPolicy>() const
         {
             return {data, offsets, rows, width, stride, sizes, kind, device};
         }
         template <class P = LayoutPolicy, std::enable_if_t<!std::is_same_v<P, RowLayout>, int> = 0>
-        DNDS_DEVICE_CALLABLE operator ArrayView<T, Checked>() const { return DynamicView(); }
+        DNDS_DEVICE_CALLABLE operator ArrayView<T, Checked, std::conditional_t<std::is_same_v<P, RowLayout>, void, RowLayout>>() const { return DynamicView(); }
     };
 
     namespace Detail
@@ -376,7 +376,7 @@ namespace DNDS::Runtime
         }
         DNDS_DEVICE_CALLABLE PairReadView<T, Checked> DynamicView() const { return {owned.DynamicView(), ghost.DynamicView()}; }
         template <class P = LayoutPolicy, std::enable_if_t<!std::is_same_v<P, RowLayout>, int> = 0>
-        DNDS_DEVICE_CALLABLE operator PairReadView<T, Checked>() const { return DynamicView(); }
+        DNDS_DEVICE_CALLABLE operator PairReadView<T, Checked, std::conditional_t<std::is_same_v<P, RowLayout>, void, RowLayout>>() const { return DynamicView(); }
     };
 
     /// Validate whole-array operands once at a numerical C++ entry boundary.

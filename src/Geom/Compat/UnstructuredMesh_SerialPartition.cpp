@@ -67,7 +67,6 @@ namespace DNDS::Geom
                                 {
                 DNDS_check_throw_info(current, "publish native mesh state before fill ordering");
                 return current->WithLocalCellNeighbors(std::move(localNeighbors)); });
-            _nativeSmoothing.Reset();
         }
 
         const auto &graph = LocalCellNeighbors();

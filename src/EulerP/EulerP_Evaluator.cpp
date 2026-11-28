@@ -257,6 +257,7 @@ namespace DNDS::EulerP
     {
         DeviceBackend B = this->device();
         arg.Validate(*this);
+        DNDS_check_throw_info(arg.muComp.empty(), "EulerP::Cons2PrimMu component viscosity output is not implemented");
         arg.WaitAllPull(B);
 
         auto execute = [&](auto b = std::integral_constant<DeviceBackend, DeviceBackend::Host>())
@@ -439,6 +440,7 @@ namespace DNDS::EulerP
     {
         DeviceBackend B = this->device();
         arg.Validate(*this);
+        DNDS_check_throw_info(arg.uScalar.empty(), "EulerP::Flux2nd scalar fluxes are not implemented");
         PrepareFaceBuffer(arg.uScalar.size());
         arg.WaitAllPull(B);
 

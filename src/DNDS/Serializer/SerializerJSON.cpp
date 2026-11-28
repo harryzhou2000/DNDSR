@@ -176,7 +176,7 @@ namespace DNDS::Serializer
     void SerializerJSON::ReadReal(const std::string &name, real &v)
     {
         auto cPointer = nlohmann::json::json_pointer(cP);
-        DNDS_assert(jObj[cPointer][name].is_number_float());
+        DNDS_assert(jObj[cPointer][name].is_number());
         v = jObj[cPointer][name].get<std::remove_reference_t<decltype(v)>>();
     }
     void SerializerJSON::ReadIndexVector(const std::string &name, std::vector<index> &v, ArrayGlobalOffset &offset)
@@ -448,16 +448,13 @@ namespace DNDS::Serializer
 
     void SerializerJSON::WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset)
     {
-        auto zlibCompressedSize = [&](index sizeC)
-        {
-            return sizeC + (sizeC + 999) / 1000 + 12; // form vtk
-        };
+        DNDS_check_throw_info(size >= 0, "SerializerJSON::WriteUint8Array requires non-negative size");
         int compressLevel = this->deflateLevel;
         auto zlibCompressData = [&](const uint8_t *buf, index sizeC)
         {
-            std::vector<uint8_t> ret(zlibCompressedSize(sizeC));
-            uLongf retSize = ret.size();
-            auto ret_v = compress2(ret.data(), &retSize, buf, sizeC, compressLevel);
+            uLongf retSize = compressBound(static_cast<uLong>(sizeC));
+            std::vector<uint8_t> ret(retSize);
+            auto ret_v = compress2(ret.data(), &retSize, buf, static_cast<uLong>(sizeC), compressLevel);
             if (ret_v != Z_OK)
                 DNDS_assert_info(false, "compression failed");
             ret.resize(retSize);
@@ -480,28 +477,34 @@ namespace DNDS::Serializer
         DNDS_assert(jObj[cPointer][name].is_object() || jObj[cPointer][name].is_array());
         if (jObj[cPointer][name].is_array())
         {
-            size = jObj[cPointer][name].size();
+            const index storedSize = index(jObj[cPointer][name].size());
             if (data != nullptr)
+            {
+                DNDS_check_throw_info(size >= storedSize, "SerializerJSON::ReadUint8Array destination buffer too small");
                 std::copy(jObj[cPointer][name].begin(), jObj[cPointer][name].end(), data);
+            }
+            size = storedSize;
         }
         else if (jObj[cPointer][name].is_object() &&
                  jObj[cPointer][name]["size"].is_number_integer() &&
                  jObj[cPointer][name]["encoded"].is_string())
         {
-            size = jObj[cPointer][name]["size"];
+            const index storedSize = jObj[cPointer][name]["size"];
+            DNDS_check_throw_info(storedSize >= 0, "SerializerJSON::ReadUint8Array negative stored size");
             auto &dataIn = jObj[cPointer][name]["encoded"].get_ref<nlohmann::json::string_t &>();
             if (data != nullptr)
             {
+                DNDS_check_throw_info(size >= storedSize, "SerializerJSON::ReadUint8Array destination buffer too small");
                 std::vector<uint8_t> decodedData;
                 cppcodec::base64_rfc4648::decode(decodedData, dataIn);
-                std::vector<uint8_t> decodedDataUncompress(size);
-                uLongf sizeU{(uLongf)size};
+                std::vector<uint8_t> decodedDataUncompress(static_cast<size_t>(storedSize));
+                uLongf sizeU{static_cast<uLongf>(storedSize)};
                 auto ret = uncompress(decodedDataUncompress.data(), &sizeU, decodedData.data(), decodedData.size());
                 DNDS_assert_info(ret == Z_OK, "zlib uncompress failed");
-                DNDS_assert_info(sizeU == size, "zlib uncompress failed");
-                // DNDS_assert(decodedData.size() == size);
+                DNDS_assert_info(index(sizeU) == storedSize, "zlib uncompress failed");
                 std::copy(decodedDataUncompress.begin(), decodedDataUncompress.end(), data);
             }
+            size = storedSize;
         }
         else
         {

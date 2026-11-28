@@ -556,10 +556,3 @@ different geometry/cell owners and agreement with replicated-boundary matching.
 owner-dependent values, moving poses, query ordering and persistent result
 transfer updates at np=1/2/4/8. Python tests exercise shared ownership,
 DNDS algebra reuse, two domain identities and the sampling chain.
-
-`cfv_benchmark_fv_facility` takes `mesh dim degree sweeps trials periodicLength`.
-Both methods run on the **same mesh instance** with the same five-component
-means, BC functional and halo schedule. It reports max-rank metric setup,
-coefficient setup, per-sweep time including halos, one WBAP application, and
-checks coefficient agreement. Alternate order per trial; use OMP=1 and a single
-exclusive node for comparisons. The evidence ledger records the actual runs.

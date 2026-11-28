@@ -155,7 +155,7 @@ namespace DNDS::Serializer
         else
             for (auto &name : pth)
                 newPath.push_back(name);
-        std::string nP = constructPath(cPathSplit);
+        std::string nP = constructPath(newPath);
         hid_t group_id = GetGroupOfFileIfExist(h5file, reading, nP, collectiveMetadataRW);
         herr = H5Gclose(group_id), H5CHECK_Close;
     }
@@ -215,47 +215,6 @@ namespace DNDS::Serializer
         {
             data->contents.groups.emplace_back(name);
             return 0;
-            //! now it seems obj_info is not correctly retrieved with type=Unknown
-            //! TODO: fix this and get actual object type
-            H5O_info_t obj_info;
-            hid_t lapl_id = H5Pcreate(H5P_LINK_ACCESS);
-            DNDS_assert(lapl_id >= 0);
-            herr = H5Pset_all_coll_metadata_ops(lapl_id, true), H5CHECK_Set;
-            // if (coll_on_meta)
-            //     herr = H5Pset_all_coll_metadata_ops(lapl_id, true), H5CHECK_Set;
-            if (H5Oget_info_by_name(group_id, name, &obj_info, H5P_DEFAULT, lapl_id) >= 0)
-            {
-                log() << "name is " << name << ", \n"
-                      << obj_info.type << "\n"
-                      << obj_info.mtime << "\n"
-                      << obj_info.rc << "\n"
-                      << obj_info.fileno << "\n"
-                      << std::endl;
-                switch (obj_info.type)
-                {
-                case H5O_TYPE_GROUP:
-                {
-                    data->contents.groups.emplace_back(name);
-                    // std::cout << data->get_indent() << "Group: " << full_name << std::endl;
-                    break;
-                }
-                case H5O_TYPE_DATASET:
-                {
-                    data->contents.datasets.emplace_back(name);
-                    // std::cout << data->get_indent() << "Dataset: " << full_name << std::endl;
-                    break;
-                }
-                default:
-                    // Other types (e.g., symbols, but less common for direct user interaction)
-                    break;
-                }
-            }
-            else
-            {
-                log() << "Error getting object info for: " << full_name << std::endl;
-                H5Eprint2(H5E_DEFAULT, stderr);
-            }
-            herr = H5Pclose(lapl_id), H5CHECK_Close;
         }
         else
         {
@@ -283,7 +242,7 @@ namespace DNDS::Serializer
         herr_t herr{0};
         herr = H5Aiterate(group_id, H5_INDEX_NAME, H5_ITER_INC, nullptr, attribute_iterate_cb, &data), H5CHECK_Iter;
         herr = H5Literate(group_id, H5_INDEX_NAME, H5_ITER_INC, nullptr, link_iterate_cb, &data), H5CHECK_Iter;
-        H5Gclose(group_id), H5CHECK_Close; // don't forget this
+        herr = H5Gclose(group_id), H5CHECK_Close; // don't forget this
         std::set<std::string> ret;
         for (auto &v : contents.attributes)
             ret.insert(v);
@@ -324,7 +283,6 @@ namespace DNDS::Serializer
         {
             herr_t herr{0};
             hid_t group_id = GetGroupOfFileIfExist(h5file, reading, cP, coll_on_meta);
-            hsize_t attr_size = 1;
             hid_t attr_space = H5Screate(H5S_SCALAR);
             hid_t aapl_id = H5Pcreate(H5P_ATTRIBUTE_ACCESS);
             if (coll_on_meta)
@@ -345,11 +303,12 @@ namespace DNDS::Serializer
             if (coll_on_meta)
                 herr = H5Pset_all_coll_metadata_ops(aapl_id, true), H5CHECK_Set;
             hid_t scalar_space = H5Screate(H5S_SCALAR);
-            hid_t string_type = H5Tcreate(H5T_STRING, v.length());
+            hid_t string_type = H5Tcreate(H5T_STRING, std::max<size_t>(v.length(), 1));
             herr = H5Tset_strpad(string_type, H5T_STR_NULLPAD), H5CHECK_Set;
             hid_t type_attr_id = H5Acreate(group_id, name.c_str(), string_type, scalar_space, H5P_DEFAULT, aapl_id);
             DNDS_assert_info(type_attr_id >= 0, fmt::format("{}, {}, {}", name, v, cP));
-            herr = H5Awrite(type_attr_id, string_type, v.data()), H5CHECK_Set;
+            const char emptyString[1] = {'\0'};
+            herr = H5Awrite(type_attr_id, string_type, v.empty() ? emptyString : v.data()), H5CHECK_Set;
 
             herr = H5Aclose(type_attr_id), H5CHECK_Close;
             herr = H5Tclose(string_type), H5CHECK_Close;
@@ -444,9 +403,13 @@ namespace DNDS::Serializer
 
         hid_t group_id = GetGroupOfFileIfExist(h5file, reading, cP, coll_on_meta);
         if (offset == ArrayGlobalOffset_One)
-            H5_WriteDataset(group_id, name.c_str(), size, 0, mpi.rank == 0 ? size : 0,
+        {
+            uint64_t nGlobalU = mpi.rank == 0 ? uint64_t(size) : 0;
+            MPI::Bcast(&nGlobalU, 1, MPI_UINT64_T, 0, commDup);
+            H5_WriteDataset(group_id, name.c_str(), index(nGlobalU), 0, mpi.rank == 0 ? index(size) : 0,
                             T_H5TYPE, T_H5TYPE, dxpl_id, dapl_id, chunksize, deflateLevel,
                             v);
+        }
         else if (offset == ArrayGlobalOffset_Parts) // now we force it to be
         {
             uint64_t sizeU{size}, sizeOff{0}, sizeGlobal{0};
@@ -547,18 +510,13 @@ namespace DNDS::Serializer
         else
             static_assert(std::is_same_v<T, real>);
 
-        // `vV` is addressed via `&vV` in the non-string `if constexpr` branch
-        // below; clang-tidy's check misses the template instantiation for
-        // `T != std::string`.
-        // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
-        T vV = v;
-
         if constexpr (!std::is_same_v<T, std::string>)
         {
             herr_t herr{0};
             hid_t group_id = GetGroupOfFileIfExist(h5file, reading, cP, coll_on_meta);
             hid_t aapl_id = H5Pcreate(H5P_ATTRIBUTE_ACCESS);
-            herr = H5Pset_all_coll_metadata_ops(aapl_id, true), H5CHECK_Set;
+            if (coll_on_meta)
+                herr = H5Pset_all_coll_metadata_ops(aapl_id, true), H5CHECK_Set;
             // herr = H5Pset_coll_metadata_write(aapl_id, true), H5CHECK_Set;  // setting to present in dapl
             hid_t attr_id = H5Aopen(group_id, name.c_str(), aapl_id);
             DNDS_assert_info(attr_id >= 0, fmt::format("attempting to open attribute [{}/{}] failed", cP, name));
@@ -808,25 +766,16 @@ namespace DNDS::Serializer
             // }
             else if (offset == ArrayGlobalOffset_EvenSplit)
             {
-                // Even-split read: each rank reads ~N_global/nRanks rows.
-                // First pass (v==nullptr): query global size, compute local range, set offset.
-                // Second pass (v!=nullptr): read the data slice.
+                // Even-split read: first pass (v==nullptr) queries global size,
+                // computes local range, and resolves offset to a distributed slice.
                 index nGlobal{-1};
                 int dim2{-1};
-                if (v == nullptr)
-                {
-                    H5_ReadDataset(group_id, name.c_str(), nGlobal, -1, -1, T_H5TYPE, dxpl_id, dapl_id, nullptr, dim2);
-                    DNDS_assert(dim2 == -1);
-                    auto [start, end] = EvenSplitRange(mpi.rank, mpi.size, nGlobal);
-                    size = end - start;
-                    offset = ArrayGlobalOffset{index(size), start};
-                }
-                else
-                {
-                    DNDS_assert_info(offset.isDist(), "EvenSplit second pass must have a resolved offset");
-                    H5_ReadDataset(group_id, name.c_str(), nGlobal, offset.offset(), size, T_H5TYPE, dxpl_id, dapl_id, v, dim2);
-                    DNDS_assert(dim2 == -1);
-                }
+                DNDS_assert_info(v == nullptr, "EvenSplit second pass must use the resolved distributed offset");
+                H5_ReadDataset(group_id, name.c_str(), nGlobal, -1, -1, T_H5TYPE, dxpl_id, dapl_id, nullptr, dim2);
+                DNDS_assert(dim2 == -1);
+                auto [start, end] = EvenSplitRange(mpi.rank, mpi.size, nGlobal);
+                size = end - start;
+                offset = ArrayGlobalOffset{index(size), start};
             }
             else if (offset.isDist())
             {
@@ -924,7 +873,7 @@ namespace DNDS::Serializer
             offset = ArrayGlobalOffset{index(size), offset.offset()};
         ssp<tValue> result;
         int cached = sharedReadLookup(refPath, offset, result), allCached = 0;
-        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, commDup);
         if (!allCached)
         {
             result = std::make_shared<tValue>(size);
@@ -958,7 +907,7 @@ namespace DNDS::Serializer
             offset = ArrayGlobalOffset{index(size), offset.offset()};
         ssp<tValue> result;
         int cached = sharedReadLookup(refPath, offset, result), allCached = 0;
-        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI::Allreduce(&cached, &allCached, 1, MPI_INT, MPI_MIN, commDup);
         if (!allCached)
         {
             result = std::make_shared<tValue>(size);

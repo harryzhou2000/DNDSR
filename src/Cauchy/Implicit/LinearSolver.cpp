@@ -623,7 +623,8 @@ namespace DNDS::Cauchy
                         engine.Synchronize();
                         valid = Ops::LocalFinite(x);
                     } });
-                if (finiteMinimum) return valid;
+                if (finiteMinimum)
+                    return valid;
                 if (execution.collectiveChecks)
                     valid = collectives.template Value<R::Reduction::Min>(valid);
                 else if (!valid)
@@ -737,6 +738,9 @@ namespace DNDS::Cauchy
                     engine.Synchronize();
                     data.problem->ObserveDiagonalInverse();
                 }
+            }
+            {
+                auto engine = data.compute.LockEngine();
                 data.problem->ResetQueuedActionStatus(engine, data.compute);
             } });
                 try
@@ -952,7 +956,9 @@ namespace DNDS::Cauchy
                                       (settings.cudaJacobiMapping == "thread" || settings.cudaJacobiMapping == "componentGroup") &&
                                       (prototype.Device() == R::Device::Host() || settings.cudaJacobiMapping == "thread" || problem->HasAssembledOffDiagonal()) &&
                                       (!settings.diagonalInverseRefinement || (!UsesILU(settings) && !UsesAMG(settings) && !UsesCPUAMG(settings) && problem->DiagonalMode() == DiagonalStorage::Block)) &&
-                                      (settings.iluOrdering == "natural" || settings.iluOrdering == "rcm") &&
+                                      (settings.iluOrdering == "natural" || settings.iluOrdering == "rcm" ||
+                                       settings.iluOrdering == "boostRcm" || settings.iluOrdering == "boostMmd" ||
+                                       settings.iluOrdering == "metis") &&
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
                                   "invalid linear solver controls");
@@ -969,7 +975,12 @@ namespace DNDS::Cauchy
                                                                                                                               : 0,
                                                    settings.maxIterations, settings.subspace,
                                                    settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
-                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps, settings.residualCheckInterval, int(prototype.Device().space), settings.diagonalInverseRefinement, settings.cudaDiagonalInverse == "guardedLU", settings.cudaJacobiMapping == "componentGroup", settings.amgxAggregateSize, settings.robustACMInverse};
+                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount",
+                                                   settings.iluOrdering == "rcm" ? 1 : settings.iluOrdering == "boostRcm" ? 2
+                                                                                   : settings.iluOrdering == "boostMmd"   ? 3
+                                                                                   : settings.iluOrdering == "metis"      ? 4
+                                                                                                                          : 0,
+                                                   settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps, settings.residualCheckInterval, int(prototype.Device().space), settings.diagonalInverseRefinement, settings.cudaDiagonalInverse == "guardedLU", settings.cudaJacobiMapping == "componentGroup", settings.amgxAggregateSize, settings.robustACMInverse};
             auto lowest = integers, highest = integers;
             const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
             auto lowTolerance = tolerances, highTolerance = tolerances;
@@ -1054,5 +1065,15 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_data, "linear solver was moved");
         auto session = _data->session.Acquire();
         return _data->Solve(rhs, initialGuess, componentScales, checks);
+    }
+    void DofLinearSolver::UpdateTolerances(index maxIterations, real relativeTolerance, real absoluteTolerance)
+    {
+        DNDS_check_throw_info(_data, "linear solver was moved");
+        DNDS_check_throw_info(maxIterations >= 1 && std::isfinite(relativeTolerance) && relativeTolerance >= 0 &&
+                                  std::isfinite(absoluteTolerance) && absoluteTolerance >= 0,
+                              "invalid live linear solver tolerances");
+        _data->settings.maxIterations = maxIterations;
+        _data->settings.relativeTolerance = relativeTolerance;
+        _data->settings.absoluteTolerance = absoluteTolerance;
     }
 }

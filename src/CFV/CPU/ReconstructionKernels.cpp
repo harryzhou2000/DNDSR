@@ -281,16 +281,20 @@ namespace DNDS::CFV::CPU
                     for (int mode = 0; mode < modes; ++mode)
                     {
                         const real value = limited(mode, v);
-                        const real ratio = out(begin + mode, v) / (std::abs(value) + epsilon) * ((value > 0) - (value < 0));
-                        up(mode, v) += ratio * ratio * ratio;
-                        down(mode, v) += sqr(sqr(ratio));
                         if (value == 0)
+                        {
                             valid(mode, v) = 0;
+                            continue;
+                        }
+                        const real ratio = Math::WBAPClampedRatio(out(begin + mode, v), value, epsilon);
+                        const real r2 = ratio * ratio;
+                        up(mode, v) += r2 * ratio;
+                        down(mode, v) += r2 * r2;
                     }
             }
             for (index v = 0; v < nv; ++v)
                 for (int mode = 0; mode < modes; ++mode)
-                    out(begin + mode, v) *= valid(mode, v) * up(mode, v) / down(mode, v);
+                    out(begin + mode, v) = valid(mode, v) == 0 ? 0 : out(begin + mode, v) * up(mode, v) / down(mode, v);
         };
         const auto rows = work.rows;
         const index count = rows.RowCount();

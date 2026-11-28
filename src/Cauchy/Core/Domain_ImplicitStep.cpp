@@ -25,9 +25,16 @@ namespace DNDS::Cauchy
         if (_stateBoundsHistoryInterval > 0)
             control.measureStateBounds = [this](index iteration, bool terminal)
             {
-                if (terminal || (iteration > 0 && iteration % _stateBoundsHistoryInterval == 0))
+                if (_stateBoundsHistoryInterval > 0 && (terminal || (iteration > 0 && iteration % _stateBoundsHistoryInterval == 0)))
                     return MeasureStateBounds(true);
                 return std::vector<real>{};
+            };
+        if (!_boundaryFluxZones.empty())
+            control.measureBoundaryFluxes = [this](index iteration, bool terminal)
+            {
+                if (_boundaryFluxHistoryInterval > 0 && (terminal || (iteration > 0 && iteration % _boundaryFluxHistoryInterval == 0)))
+                    return MeasureBoundaryFluxes(_boundaryFluxZones);
+                return std::vector<BoundaryFluxIntegral>{};
             };
         if (_positivity && _reportReconstructionPositivity)
             control.measureReconstructionPositivity = [this]
@@ -123,7 +130,9 @@ namespace DNDS::Cauchy
                 { return solver->ReconstructionStats(); },
                 multigrid ? multigrid->PrepareBoundaryInputBinding()
                           : std::function<void(const BoundaryInputs &)>{},
-                reconstruction};
+                reconstruction,
+                [solver](const ImplicitSettings &updated)
+                { solver->UpdateImplicitSettings(updated); }};
         };
         MPI::LocalStage(mpi, [&]
                         { _state.timeStepper = std::make_unique<EquationTimeStepper>(_state.trial, _steady ? "bdf1" : time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
@@ -136,6 +145,29 @@ namespace DNDS::Cauchy
             _execution.multigrid = std::make_unique<PolynomialMultigrid>(
                 mesh, _problem.finiteVolume, _state.trial, *_execution.implicit, _execution.Context(), settings);
     }
+    void Domain::UpdateImplicitSettings(const ImplicitSettings &settings)
+    {
+        _implicitControls.iterations = settings.iterations;
+        _implicitControls.minIterations = settings.minIterations;
+        _implicitControls.pseudoCFL = settings.pseudoCFL;
+        _implicitControls.maxPseudoCFL = settings.maxPseudoCFL;
+        _implicitControls.pseudoGrowth = settings.pseudoGrowth;
+        _implicitControls.pseudoGrowthStart = settings.pseudoGrowthStart;
+        _implicitControls.relaxation = settings.relaxation;
+        _implicitControls.ransRelaxation = settings.ransRelaxation;
+        _implicitControls.relativeTolerance = settings.relativeTolerance;
+        _implicitControls.absoluteTolerance = settings.absoluteTolerance;
+        _implicitControls.linear.iterations = settings.linear.iterations;
+        _implicitControls.linear.relativeTolerance = settings.linear.relativeTolerance;
+        _implicitControls.linear.absoluteTolerance = settings.linear.absoluteTolerance;
+        if (_execution.nonlinearSetup)
+            _execution.nonlinearSetup->settings = _implicitControls;
+        if (_execution.implicit)
+            _execution.implicit->UpdateImplicitSettings(_implicitControls);
+        if (_coupledMiddle && _coupledMiddle->updateSettings)
+            _coupledMiddle->updateSettings(_implicitControls);
+    }
+
     void Domain::EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage)
     {
         SetTimeStage(stage);
@@ -180,8 +212,8 @@ namespace DNDS::Cauchy
             _state.restoreReconstruction = true;
             return;
         }
-        _problem.finiteVolume.Reductions().LocalStage( [&]
-                        {
+        _problem.finiteVolume.Reductions().LocalStage([&]
+                                                      {
             if (_state.restoreReconstruction)
                 _problem.finiteVolume.RestoreReconstructionGuess(*_state.reconstruction, *_state.reconstructionBackup,
                                                _state.limitedVRBackup

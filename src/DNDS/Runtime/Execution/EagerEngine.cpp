@@ -390,6 +390,8 @@ namespace DNDS::Runtime
                     std::unique_lock<std::mutex> lock(_mutex);
                     _changed.wait(lock, [&]
                                   { return lane->completed >= prefix || _stopping; });
+                    DNDS_check_throw_info(lane->completed >= prefix || !_stopping,
+                                          "CPU execution runtime stopped before event completed");
                 }
             }
         };
@@ -525,6 +527,7 @@ namespace DNDS::Runtime
         : _runtime(std::move(runtime)), _context(context)
     {
         DNDS_check_throw_info(_runtime, "execution context no longer exists");
+        std::lock_guard<std::mutex> lock(_runtime->mutex);
         _runtime->CheckOpen();
         ++_runtime->openBorrows;
     }
@@ -558,6 +561,7 @@ namespace DNDS::Runtime
     }
     EagerEngine::EagerEngine(std::shared_ptr<ExecutionRuntime> state) : _state(std::move(state)), _shutdownOwner(false)
     {
+        std::lock_guard<std::mutex> lock(_state->mutex);
         _state->CheckOpen();
         ++_state->openBorrows;
     }

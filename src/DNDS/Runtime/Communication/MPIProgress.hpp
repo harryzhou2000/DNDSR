@@ -136,10 +136,21 @@ namespace DNDS::Runtime
             CheckThread();
             std::exception_ptr error;
             for (auto it = _managed.begin(); it != _managed.end();)
-                if (it->Ready())
+            {
+                try
+                {
+                    if (it->Ready())
+                        it = _managed.erase(it);
+                    else
+                        ++it;
+                }
+                catch (...)
+                {
+                    if (!error)
+                        error = std::current_exception();
                     it = _managed.erase(it);
-                else
-                    ++it;
+                }
+            }
             for (auto it = _pending.begin(); it != _pending.end();)
             {
                 (*it)->Finish(false);
@@ -160,7 +171,17 @@ namespace DNDS::Runtime
             CheckThread();
             std::exception_ptr error;
             for (const auto &event : _managed)
-                event.WaitHost();
+            {
+                try
+                {
+                    event.WaitHost();
+                }
+                catch (...)
+                {
+                    if (!error)
+                        error = std::current_exception();
+                }
+            }
             _managed.clear();
             for (const auto &pending : _pending)
             {

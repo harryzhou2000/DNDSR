@@ -398,6 +398,7 @@ namespace DNDS::Cauchy
         std::map<std::string, real> massFractions;
         std::map<std::string, real> ransConservative;
         real temperature = 1;
+        bool integrateFlux = false;
         FlowProfileSettings profile;
         DNDS_DECLARE_CONFIG(BoundarySettings)
         {
@@ -410,6 +411,7 @@ namespace DNDS::Cauchy
             config.field_schema(&T::ransConservative, "ransConservative", "Named conservative RANS values in code units for prescribed boundaries", SpeciesMassFractionsSchema);
             DNDS_FIELD(velocity, "Prescribed wall velocity in wallVelocityFrame; farfield/analytic data always use ground axes");
             DNDS_FIELD(temperature, "Positive isothermal wall temperature");
+            DNDS_FIELD(integrateFlux, "Integrate conservative face flux and tangential force on this boundary during RHS and emit per-boundary CSV at nonlinear history cadence");
             config.field_section(&T::profile, "profile", "Space/time input for analytic boundary values");
         }
     };
@@ -877,6 +879,24 @@ namespace DNDS::Cauchy
             DNDS_FIELD(iteration, "One-based completed nonlinear update; -1 selects an accepted step");
         }
     };
+    struct ControlSettings
+    {
+        bool enabled = true;
+        std::string host = "127.0.0.1";
+        int port = 53000;
+        int portScanCount = 100;
+        bool registerRun = true;
+        std::string registryDir;
+        DNDS_DECLARE_CONFIG(ControlSettings)
+        {
+            DNDS_FIELD(enabled, "Enable embedded rank-0 HTTP query and live steering server (non-fatal if bind fails)");
+            DNDS_FIELD(host, "Bind address for the embedded HTTP control server; loopback 127.0.0.1 by default");
+            DNDS_FIELD(port, "First port to try during auto-discovery (default 53000; zero selects an OS ephemeral port)");
+            DNDS_FIELD(portScanCount, "Number of sequential ports to try from port before ephemeral fallback");
+            DNDS_FIELD(registerRun, "Write a run-discovery entry into the user run registry while active");
+            DNDS_FIELD(registryDir, "Override run-registry directory; empty uses DNDS_RUN_REGISTRY_DIR or ~/.dndsr/runs");
+        }
+    };
     struct OutputSettings
     {
         std::string prefix = "cauchy";
@@ -908,6 +928,7 @@ namespace DNDS::Cauchy
         std::vector<int> forceZones;
         ImplicitOutputSettings implicit;
         DiagnosticOutputSettings diagnostics;
+        ControlSettings control;
         DNDS_DECLARE_CONFIG(OutputSettings)
         {
             DNDS_FIELD(prefix, "Output file prefix");
@@ -938,6 +959,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(forceZones, "Boundary zones on which pressure and viscous body force are integrated");
             config.field_section(&T::implicit, "implicit", "Nonlinear iteration history, console and internal artifact cadence");
             config.field_section(&T::diagnostics, "diagnostics", "Operational logging sinks independent of scientific history");
+            config.field_section(&T::control, "control", "Embedded rank-0 HTTP query and live steering endpoint");
         }
     };
     struct DomainConfig

@@ -22,7 +22,12 @@ set(DOCS_ELEMENTS_DIR  "${DOCS_GENERATED_DIR}/elements")
 set(DOCS_PRESENTATIONS_DIR "${DOCS_GENERATED_DIR}/presentations")
 set(DOCS_ASSETS_STAMP  "${CMAKE_CURRENT_BINARY_DIR}/docs/.docs_assets_stamp")
 set(DOCS_ELEMENTS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/docs/.docs_elements_stamp")
-set(DOCS_SLIDES_STAMP  "${CMAKE_CURRENT_BINARY_DIR}/docs/.docs_slides_stamp")
+find_program(MARP_EXECUTABLE marp)
+if(MARP_EXECUTABLE)
+    set(DOCS_SLIDES_STAMP  "${CMAKE_CURRENT_BINARY_DIR}/docs/.docs_slides_stamp")
+else()
+    set(DOCS_SLIDES_STAMP "")
+endif()
 
 # ===================================================================
 #  0. Element diagrams — regenerate from tools/elements/gen_diagrams.py
@@ -313,6 +318,13 @@ if(SPHINX_BUILD)
     file(MAKE_DIRECTORY "${DOCS_PRESENTATIONS_DIR}")
     file(MAKE_DIRECTORY "${DOCS_ELEMENTS_DIR}")
 
+    set(_SPHINX_DOXYGEN_COPY_CMD "")
+    if(DOXYGEN_FOUND)
+        set(_SPHINX_DOXYGEN_COPY_CMD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${DOXYGEN_HTML_DIR}" "${SPHINX_BUILD_DIR}/doxygen")
+    endif()
+
     add_custom_command(
         OUTPUT  "${SPHINX_STAMP}"
         COMMAND ${CMAKE_COMMAND} -E env
@@ -326,9 +338,8 @@ if(SPHINX_BUILD)
                 "${SPHINX_SOURCE}"
                 "${SPHINX_BUILD_DIR}"
                 -j 1
-        # Copy Doxygen HTML into the Sphinx output tree.
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${DOXYGEN_HTML_DIR}" "${SPHINX_BUILD_DIR}/doxygen"
+        # Copy Doxygen HTML into the Sphinx output tree when Doxygen is enabled.
+        ${_SPHINX_DOXYGEN_COPY_CMD}
         COMMAND ${CMAKE_COMMAND} -E touch "${SPHINX_STAMP}"
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         DEPENDS ${_SPHINX_XML_DEP} ${_SPHINX_DEPS}
@@ -350,8 +361,7 @@ if(SPHINX_BUILD)
                 "${SPHINX_SOURCE}"
                 "${SPHINX_BUILD_DIR}"
                 -j 1
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${DOXYGEN_HTML_DIR}" "${SPHINX_BUILD_DIR}/doxygen"
+        ${_SPHINX_DOXYGEN_COPY_CMD}
         COMMAND ${CMAKE_COMMAND} -E touch "${SPHINX_STAMP}"
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         COMMENT "Sphinx: building HTML documentation (forced)"

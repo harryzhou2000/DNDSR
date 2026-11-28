@@ -1139,8 +1139,6 @@ namespace DNDS::Geom
             for (const auto &entry : json.at("next")) identity.nextIds.emplace(EntityKind(entry.at(0).get<int>()), entry.at(1).get<index>()); });
         int isPeriodic = serial.periodic;
         MPI_Bcast(&isPeriodic, 1, MPI_INT, readerRank, mpi.comm);
-        index nodeHighWater = mpi.rank == readerRank && serial.identity.nextIds.count(EntityKind::Node) ? serial.identity.nextIds.at(EntityKind::Node) : 0;
-        MPI_Bcast(&nodeHighWater, 1, DNDS_MPI_INDEX, readerRank, mpi.comm);
         index counts[]{index(serial.cellNodes.RowCount()), index(serial.coordinates.RowCount()), index(serial.boundaryNodes.RowCount())};
         MPI_Bcast(counts, 3, MPI_INT64_T, readerRank, mpi.comm);
         auto context = options.communication ? options.communication : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
@@ -1217,7 +1215,6 @@ namespace DNDS::Geom
                 Runtime::Array<NodePeriodicBits> empty(Runtime::RowLayout::Ragged({}));
                 input.periodic = true;
                 input.periodicInfo = periodic->frames;
-                input.identity.nextIds.emplace(EntityKind::Node, nodeHighWater);
                 input.cellNodesPbi = localCopy(serial.cellNodesPbi ? *serial.cellNodesPbi : empty);
                 input.boundaryNodesPbi = localCopy(serial.boundaryNodesPbi ? *serial.boundaryNodesPbi : empty);
             }
@@ -1225,8 +1222,8 @@ namespace DNDS::Geom
         }
         auto route = [&](index total)
         {
-            const index length = distribution == NativeSerialDistribution::ReaderOwned ? (mpi.rank == readerRank ? total : 0) : total / mpi.size + (mpi.rank < total % mpi.size);
-            const index first = distribution == NativeSerialDistribution::ReaderOwned ? 0 : (total / mpi.size) * mpi.rank + std::min<index>(mpi.rank, total % mpi.size);
+            const index length = total / mpi.size + (mpi.rank < total % mpi.size);
+            const index first = (total / mpi.size) * mpi.rank + std::min<index>(mpi.rank, total % mpi.size);
             std::vector<Runtime::RowRequest> requests;
             FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                             {
@@ -1271,7 +1268,6 @@ namespace DNDS::Geom
             const auto bits = Runtime::ElementSchema::For<NodePeriodicBits>();
             input.periodic = true;
             input.periodicInfo = periodic->frames;
-            input.identity.nextIds.emplace(EntityKind::Node, nodeHighWater);
             input.cellNodesPbi = transfer(serial.cellNodesPbi ? *serial.cellNodesPbi : empty, cells, bits);
             input.boundaryNodesPbi = transfer(serial.boundaryNodesPbi ? *serial.boundaryNodesPbi : empty, boundaries, bits);
         }

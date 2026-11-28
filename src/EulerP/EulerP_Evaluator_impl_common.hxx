@@ -774,13 +774,14 @@ namespace DNDS::EulerP
         real volL = fv.GetCellVol(iCellL);
         real volR = volL;
         real vnL = U123(uL).dot(nFace) / uL[0];
-        real vnR = U123(uR).dot(nFace) / uR[0];
+        real vnR = vnL;
         real aL = aCell(iCellL);
         real aR = aL;
         real muFace = muCell(iCellL);
         if (iCellR != UnInitIndex)
         {
             uR = u[iCellR];
+            vnR = U123(uR).dot(nFace) / uR[0];
             aR = aCell(iCellR);
             muFace = 0.5 * (muFace + muCell(iCellR));
             volR = fv.GetCellVol(iCellR);
@@ -793,10 +794,9 @@ namespace DNDS::EulerP
         faceLamVisEst(iFace) = nuVis * fv.GetFaceArea(iFace) *
                                (1. / volL + 1. / volR);
 
-        //! need to verify this
         deltaLamFace(iFace) = std::max({std::abs(vnL - aL - vnR + aR),
                                         std::abs(vnL - vnR),
-                                        std::abs(vnL - aL - vnR + aR)});
+                                        std::abs(vnL + aL - vnR - aR)});
     }
 
     // only for intellisense hint

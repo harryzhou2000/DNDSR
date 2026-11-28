@@ -83,10 +83,15 @@ namespace DNDS
                 _ptr = std::move(R._ptr);
                 pool = std::move(R.pool);
             }
-            void operator=(ObjectPoolAllocated &&R) noexcept
+            ObjectPoolAllocated &operator=(ObjectPoolAllocated &&R) noexcept
             {
+                if (this == &R)
+                    return *this;
+                if (auto poolLocked = pool.lock(); poolLocked && _ptr)
+                    poolLocked->_pool.emplace_back(std::move(_ptr));
                 _ptr = std::move(R._ptr);
                 pool = std::move(R.pool);
+                return *this;
             }
             T &operator*() { return *_ptr; }
             const T &operator*() const { return *_ptr; }
@@ -112,7 +117,9 @@ namespace DNDS
             pPool->_pool.reserve(N);
             while (pPool->_pool.size() < N)
             {
-                uPtrResource p = std::make_unique<T>(std::forward<_CtorArgs>(__ctorArgs)...);
+                uPtrResource p = (pPool->_pool.size() + 1 == N)
+                                     ? std::make_unique<T>(std::forward<_CtorArgs>(__ctorArgs)...)
+                                     : std::make_unique<T>(__ctorArgs...);
                 pPool->_pool.emplace_back(std::move(p));
             }
         }
@@ -125,7 +132,9 @@ namespace DNDS
             pPool->_pool.reserve(N);
             while (pPool->_pool.size() < N)
             {
-                uPtrResource p = std::make_unique<T>(std::forward<_CtorArgs>(__ctorArgs)...);
+                uPtrResource p = (pPool->_pool.size() + 1 == N)
+                                     ? std::make_unique<T>(std::forward<_CtorArgs>(__ctorArgs)...)
+                                     : std::make_unique<T>(__ctorArgs...);
                 FInit(*p);
                 pPool->_pool.emplace_back(std::move(p));
             }

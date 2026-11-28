@@ -35,6 +35,8 @@ namespace DNDS::Cauchy
         std::vector<NonlinearIterationReport> _lastImplicit;
         std::function<void(const NonlinearProgress &)> _progressObserver;
         index _stateBoundsHistoryInterval = 0;
+        index _boundaryFluxHistoryInterval = 0;
+        std::vector<int> _boundaryFluxZones;
         bool _reportReconstructionPositivity = false;
         std::function<void(const NonlinearSolveState &)> _quiescentObserver;
         index _lastCoupledIterations = 0;
@@ -60,7 +62,7 @@ namespace DNDS::Cauchy
         index _lastCharacteristicFallbacks = 0;
         StepResult UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
         void ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt);
-        void FinishChemicalStep();
+        [[nodiscard]] StepResult FinishChemicalStep();
         void PublishTrial(real time, StateEpoch epoch);
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
@@ -210,6 +212,9 @@ namespace DNDS::Cauchy
         /// Domain-wide (min,max) pairs for all owned cell-mean components.
         /// A trial observation uses the active endpoint for coupled DITR.
         std::vector<real> MeasureStateBounds(bool trial);
+        /// Domain-wide integrated conservative flux, tangential force, and area
+        /// for each requested boundary zone from the last completed RHS evaluation.
+        std::vector<BoundaryFluxIntegral> MeasureBoundaryFluxes(const std::vector<int> &zones);
         /// Synchronous local point refresh using this domain's explicit worker
         /// capacity. No halo exchange; caller ensures ready ghosts when used.
         bool RefreshDerived(DerivedFields &fields, bool onlyIfStale = false) const;
@@ -228,18 +233,34 @@ namespace DNDS::Cauchy
         /// may buffer/report locally but must not enter unrelated collectives.
         void PrepareStateBounds();
         void SetProgressObserver(std::function<void(const NonlinearProgress &)> observer, index stateBoundsHistoryInterval = 0,
-                                 bool reportReconstructionPositivity = false)
+                                 bool reportReconstructionPositivity = false,
+                                 std::vector<int> boundaryFluxZones = {},
+                                 index boundaryFluxHistoryInterval = 0)
         {
             _progressObserver = std::move(observer);
             _stateBoundsHistoryInterval = stateBoundsHistoryInterval;
             if (_stateBoundsHistoryInterval > 0)
                 PrepareStateBounds();
             _reportReconstructionPositivity = reportReconstructionPositivity;
+            _boundaryFluxZones = std::move(boundaryFluxZones);
+            _boundaryFluxHistoryInterval = boundaryFluxHistoryInterval;
+        }
+        void UpdateProgressCadence(index stateBoundsHistoryInterval,
+                                   index boundaryFluxHistoryInterval,
+                                   bool reportReconstructionPositivity)
+        {
+            _stateBoundsHistoryInterval = stateBoundsHistoryInterval;
+            if (_stateBoundsHistoryInterval > 0)
+                PrepareStateBounds();
+            _boundaryFluxHistoryInterval = boundaryFluxHistoryInterval;
+            _reportReconstructionPositivity = reportReconstructionPositivity;
         }
         void SetQuiescentObserver(std::function<void(const NonlinearSolveState &)> observer)
         {
             _quiescentObserver = std::move(observer);
         }
+        /// Apply runtime-steered implicit controls for subsequent and active solves.
+        void UpdateImplicitSettings(const ImplicitSettings &settings);
         index LastCoupledIterations() const { return _lastCoupledIterations; }
         /// Shared nonlinear policy's selected-component ratio for I+H after
         /// the two DITR updates. Identical to its single solve report's ratio;

@@ -297,13 +297,16 @@ namespace DNDS::Runtime
             _state->pending.push_back({{}, [initialization, owner = result, context](std::exception_ptr error) mutable noexcept
                                        {
                                            initialization->Complete(!error);
-                                           try
+                                           if (!error)
                                            {
-                                               owner.ReleaseOn(context);
-                                           }
-                                           catch (...)
-                                           {
-                                               std::terminate();
+                                               try
+                                               {
+                                                   owner.ReleaseOn(context);
+                                               }
+                                               catch (...)
+                                               {
+                                                   std::terminate();
+                                               }
                                            }
                                        },
                                        false,
@@ -334,7 +337,9 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
-                command.error = _state->error = std::current_exception();
+                command.error = std::current_exception();
+                if (!_state->error)
+                    _state->error = command.error;
             }
     }
     void CUDALauncher::WaitFor(StreamEvent event)
@@ -444,6 +449,20 @@ namespace DNDS::Runtime
                     _state->error = std::current_exception();
             }
         _state->prefixes.clear();
+        if (!_state->error)
+        {
+            // Ensure any cudaFreeAsync ordered releases enqueued by prefix
+            // retirement callbacks have completed before Drain() returns.
+            DeviceScope device(_state->native->GetDevice().ordinal);
+            try
+            {
+                _state->native->Synchronize();
+            }
+            catch (...)
+            {
+                _state->error = std::current_exception();
+            }
+        }
         if (_state->error)
             std::rethrow_exception(_state->error);
     }

@@ -185,4 +185,15 @@ namespace DNDS::Cauchy
         return *_domains[iDomain];
     }
 
+    void Simulation::ApplyLiveImplicitSettings(index iDomain, const ImplicitSettings &settings, bool updatePseudoCFL)
+    {
+        DNDS_check_throw_info(iDomain >= 0 && iDomain < index(_domains.size()),
+                              "invalid Cauchy domain index");
+        if (!Local(iDomain))
+            return;
+        _domains[size_t(iDomain)]->UpdateImplicitSettings(settings);
+        if (_activeSessions && size_t(iDomain) < _activeSessions->size() && (*_activeSessions)[size_t(iDomain)])
+            (*_activeSessions)[size_t(iDomain)]->UpdateSettings(settings, updatePseudoCFL);
+    }
+
 }

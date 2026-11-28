@@ -20,7 +20,10 @@ namespace DNDS::Cauchy::Riemann::Math
     template <class Scalar>
     DNDS_DEVICE_CALLABLE inline Scalar DenominatorGuard() noexcept
     {
-        return DNDS::Math::ScalarMax(Scalar(verySmallReal), DNDS::Math::ScalarMinPositive<Scalar>());
+        if constexpr (sizeof(Scalar) < sizeof(double))
+            return DNDS::Math::ScalarMinPositive<Scalar>();
+        else
+            return DNDS::Math::ScalarMax(Scalar(verySmallReal), DNDS::Math::ScalarMinPositive<Scalar>());
     }
     template <class Scalar>
     DNDS_DEVICE_CALLABLE inline Scalar ScalarSignTol(Scalar value, Scalar tolerance) noexcept

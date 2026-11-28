@@ -796,8 +796,13 @@ namespace DNDS::Euler
             minDist.dint.d = dist;
             minDist.dint.i = mpi.rank;
             MPI::Allreduce(&minDist, &minDistall, 1, MPI_DOUBLE_INT, MPI_MINLOC, mpi.comm);
-            // std::cout << minDistall.dint.d << std::endl;
-            MPI::Bcast(val.data(), val.size(), DNDS_MPI_REAL, minDistall.dint.i, mpi.comm);
+            index valSize = index(val.size());
+            MPI::Bcast(&valSize, 1, DNDS_MPI_INDEX, minDistall.dint.i, mpi.comm);
+            if constexpr (nVarsFixed == Eigen::Dynamic)
+                if (val.size() != valSize)
+                    val.resize(valSize);
+            if (valSize > 0)
+                MPI::Bcast(val.data(), valSize, DNDS_MPI_REAL, minDistall.dint.i, mpi.comm);
         }
     };
 
@@ -1048,7 +1053,7 @@ namespace DNDS::Euler
                 o << "\n";
             }
             o << std::scientific << std::setprecision(precision);
-            for (index iN = 0; iN < v.cols(); iN++)
+            for (index iN = 0; iN < index(nodes.size()); iN++)
             {
                 o << nodes[iN];
                 auto val = GetPlain(nodes[iN]);

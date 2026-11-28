@@ -2,6 +2,7 @@
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Algebra/DeviceReduction.cuh"
 #include "DNDS/Device/CUDADeviceScope.hpp"
+#include "DNDS/Core/CheckedSize.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
 #include <cuda_runtime.h>
 #include <math_constants.h>
@@ -60,51 +61,58 @@ namespace DNDS::Algebra::Detail
         {
             __shared__ double tree[kReduceThreads];
             __shared__ bool lastBlock;
-            const size_t comp = size_t(blockIdx.y);
-            double sum = 0.0;
-            for (size_t row = size_t(blockIdx.x) * blockDim.x + threadIdx.x; row < x.rows; row += size_t(gridDim.x) * blockDim.x)
+            for (size_t comp = size_t(blockIdx.y); comp < x.width; comp += size_t(gridDim.y))
             {
-                const double item = double(x(row, comp));
-                sum += Squares ? item * item : item;
+                double sum = 0.0;
+                for (size_t row = size_t(blockIdx.x) * blockDim.x + threadIdx.x; row < x.rows; row += size_t(gridDim.x) * blockDim.x)
+                {
+                    const double item = double(x(row, comp));
+                    sum += Squares ? item * item : item;
+                }
+                tree[threadIdx.x] = sum;
+                BlockTreeReduce<kReduceThreads>(tree, SumMerge{});
+                if (threadIdx.x == 0)
+                {
+                    partials(blockIdx.x, comp) = tree[0];
+                    lastBlock = Device::ArriveReductionBlock(completed(comp, 0), gridDim.x);
+                }
+                __syncthreads();
+                if (lastBlock)
+                {
+                    tree[threadIdx.x] = threadIdx.x < gridDim.x ? partials(threadIdx.x, comp) : 0.0;
+                    BlockTreeReduce<kReduceThreads>(tree, SumMerge{});
+                    if (threadIdx.x == 0)
+                        result(0, comp) = tree[0];
+                }
+                __syncthreads();
             }
-            tree[threadIdx.x] = sum;
-            BlockTreeReduce<kReduceThreads>(tree, SumMerge{});
-            if (threadIdx.x == 0)
-            {
-                partials(blockIdx.x, comp) = tree[0];
-                lastBlock = Device::ArriveReductionBlock(completed(comp, 0), gridDim.x);
-            }
-            __syncthreads();
-            if (!lastBlock)
-                return;
-            tree[threadIdx.x] = threadIdx.x < gridDim.x ? partials(threadIdx.x, comp) : 0.0;
-            BlockTreeReduce<kReduceThreads>(tree, SumMerge{});
-            if (threadIdx.x == 0)
-                result(0, comp) = tree[0];
         }
 
         template <class T, bool IsMin>
         __global__ void ReduceComponentMinMaxKernel(Runtime::ArrayView<const T> x, Runtime::ArrayView<double> result)
         {
             __shared__ double tree[kReduceThreads];
-            const size_t comp = size_t(blockIdx.y);
-            double value = IsMin ? CUDART_INF : -CUDART_INF;
-            for (size_t row = size_t(blockIdx.x) * blockDim.x + threadIdx.x; row < x.rows; row += size_t(gridDim.x) * blockDim.x)
+            for (size_t comp = size_t(blockIdx.y); comp < x.width; comp += size_t(gridDim.y))
             {
-                const double item = double(x(row, comp));
-                value = IsMin ? fmin(value, item) : fmax(value, item);
-            }
-            tree[threadIdx.x] = value;
-            if constexpr (IsMin)
-                BlockTreeReduce<kReduceThreads>(tree, MinMerge{});
-            else
-                BlockTreeReduce<kReduceThreads>(tree, MaxMerge{});
-            if (threadIdx.x == 0)
-            {
+                double value = IsMin ? CUDART_INF : -CUDART_INF;
+                for (size_t row = size_t(blockIdx.x) * blockDim.x + threadIdx.x; row < x.rows; row += size_t(gridDim.x) * blockDim.x)
+                {
+                    const double item = double(x(row, comp));
+                    value = IsMin ? fmin(value, item) : fmax(value, item);
+                }
+                tree[threadIdx.x] = value;
                 if constexpr (IsMin)
-                    AtomicMinDouble(&result(0, comp), tree[0]);
+                    BlockTreeReduce<kReduceThreads>(tree, MinMerge{});
                 else
-                    AtomicMaxDouble(&result(0, comp), tree[0]);
+                    BlockTreeReduce<kReduceThreads>(tree, MaxMerge{});
+                if (threadIdx.x == 0)
+                {
+                    if constexpr (IsMin)
+                        AtomicMinDouble(&result(0, comp), tree[0]);
+                    else
+                        AtomicMaxDouble(&result(0, comp), tree[0]);
+                }
+                __syncthreads();
             }
         }
     }
@@ -149,7 +157,7 @@ namespace DNDS::Algebra::Detail
         Device::CUDADeviceScope deviceScope(context.device.ordinal);
         Runtime::ValidateViewDevices(context.device, output, x, y);
         Runtime::CheckKernelArgumentBudget<decltype(operation), decltype(output), decltype(x), decltype(y), T, T>();
-        const auto count = output.rows * output.width;
+        const auto count = CheckedSize::Multiply(output.rows, output.width);
         if (!count)
             return;
         const unsigned blocks = unsigned(std::min<size_t>(256, (count + 255) / 256));
@@ -159,7 +167,7 @@ namespace DNDS::Algebra::Detail
 
     size_t ReduceCUDABlockCount(Reduction operation, size_t rows, size_t width)
     {
-        const size_t work = operation == Reduction::Dot ? rows * width : rows;
+        const size_t work = operation == Reduction::Dot ? CheckedSize::Multiply(rows, width) : rows;
         if (work == 0)
             return 1;
         return std::min<size_t>(kMaxReduceBlocks, (work + kReduceThreads - 1) / kReduceThreads);
@@ -186,12 +194,14 @@ namespace DNDS::Algebra::Detail
             DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "DOF algebra empty reduction CUDA launch failed");
             return;
         }
+        (void)CheckedSize::Multiply(x.rows, x.width);
         const unsigned blocks = unsigned(ReduceCUDABlockCount(operation, x.rows, x.width));
+        const unsigned compBlocks = unsigned(std::min<size_t>(result.width, 65535));
         if (operation == Reduction::Min || operation == Reduction::Max)
         {
             const unsigned initBlocks = unsigned((result.width + 127) / 128);
             InitReductionOutputKernel<<<initBlocks, 128, 0, stream>>>(result, identity);
-            dim3 grid(blocks, unsigned(result.width));
+            dim3 grid(blocks, compBlocks);
             if (operation == Reduction::Min)
                 ReduceComponentMinMaxKernel<T, true><<<grid, kReduceThreads, 0, stream>>>(x, result);
             else
@@ -200,8 +210,9 @@ namespace DNDS::Algebra::Detail
             return;
         }
         Runtime::ValidateViewDevices(context.device, partials, completed);
-        DNDS_check_throw_info(partials.rows >= blocks && partials.width >= result.width && completed.rows >= result.width,
-                              "CUDA reduction scratch buffers are too small");
+        DNDS_check_throw_info(partials.rows >= blocks && partials.width >= result.width && completed.rows >= result.width &&
+                                  completed.kind == Runtime::RowLayoutKind::Table && completed.stride == 1,
+                              "CUDA reduction scratch buffers are too small or non-contiguous");
         DNDS_check_throw_info(cudaMemsetAsync(completed.data, 0, sizeof(unsigned int) * result.width, stream) == cudaSuccess,
                               "CUDA reduction completion counter reset failed");
         if (operation == Reduction::Dot)
@@ -210,12 +221,12 @@ namespace DNDS::Algebra::Detail
         }
         else if (operation == Reduction::Sum)
         {
-            dim3 grid(blocks, unsigned(result.width));
+            dim3 grid(blocks, compBlocks);
             ReduceComponentSumTreeKernel<T, false><<<grid, kReduceThreads, 0, stream>>>(x, partials, completed, result);
         }
         else
         {
-            dim3 grid(blocks, unsigned(result.width));
+            dim3 grid(blocks, compBlocks);
             ReduceComponentSumTreeKernel<T, true><<<grid, kReduceThreads, 0, stream>>>(x, partials, completed, result);
         }
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "DOF algebra tree reduction CUDA launch failed");
@@ -236,6 +247,7 @@ namespace DNDS::Algebra::Detail
         auto pW = partials.Write(context);
         auto cW = completed.Write(context);
         LaunchReductionWithScratch(context, operation, x, y, result, pW.View().DynamicView(), cW.View().DynamicView());
+        Device::CUDADeviceScope deviceScope(context.device.ordinal);
         DNDS_check_throw_info(cudaStreamSynchronize(::DNDS::Runtime::CUDAStream(context)) == cudaSuccess,
                               "CUDA reduction temporary scratch synchronization failed");
     }

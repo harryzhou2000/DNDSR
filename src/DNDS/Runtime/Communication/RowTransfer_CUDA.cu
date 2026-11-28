@@ -1,4 +1,5 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
+#include "DNDS/Device/CUDADeviceScope.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "DNDS/Runtime/Communication/DevicePacking.hpp"
 #include <cuda_runtime.h>
@@ -81,14 +82,10 @@ namespace DNDS::Runtime
             {
                 if (!count)
                     return;
-                int previous = 0;
-                DNDS_check_throw_info(cudaGetDevice(&previous) == cudaSuccess, "CUDA current device query failed");
-                DNDS_check_throw_info(cudaSetDevice(context.device.ordinal) == cudaSuccess, "CUDA reduction device selection failed");
+                ::DNDS::Device::CUDADeviceScope deviceScope(context.device.ordinal);
                 Reduce<<<unsigned(std::min(count, size_t(65535))), 128, 0, ::DNDS::Runtime::CUDAStream(context)>>>(
                     static_cast<const T *>(src), static_cast<T *>(dst), groups, count, op, init);
-                auto status = cudaGetLastError();
-                auto restored = cudaSetDevice(previous);
-                DNDS_check_throw_info(status == cudaSuccess && restored == cudaSuccess, "CUDA reduction launch failed");
+                DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA reduction launch failed");
             };
         }
     }
@@ -149,12 +146,10 @@ namespace DNDS::Runtime::Detail
     {
         if (!rowCount)
             return;
-        int previous = 0;
-        DNDS_check_throw_info(context.device.space == MemorySpace::CUDA && cudaGetDevice(&previous) == cudaSuccess, "CUDA packing context unavailable");
-        DNDS_check_throw_info(cudaSetDevice(context.device.ordinal) == cudaSuccess, "CUDA packing device selection failed");
+        DNDS_check_throw_info(context.device.space == MemorySpace::CUDA, "CUDA packing context unavailable");
+        ::DNDS::Device::CUDADeviceScope deviceScope(context.device.ordinal);
         PackRows<<<unsigned(std::min<index>(rowCount, 65535)), 128, 0, ::DNDS::Runtime::CUDAStream(context)>>>(
             static_cast<const uint8_t *>(source), static_cast<uint8_t *>(destination), rows, rowCount, fields, fieldCount, extent, unpack);
-        const auto launched = cudaGetLastError(), restored = cudaSetDevice(previous);
-        DNDS_check_throw_info(launched == cudaSuccess && restored == cudaSuccess, "CUDA packing launch failed");
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA packing launch failed");
     }
 }

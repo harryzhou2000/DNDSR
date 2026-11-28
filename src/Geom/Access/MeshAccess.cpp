@@ -231,7 +231,13 @@ namespace DNDS::Geom
     {
         // Keep the mesh/version lease until all device uses have finished, not
         // merely until launch returns. Worker CPU users retain this owner.
-        Wait();
+        try
+        {
+            Wait();
+        }
+        catch (...)
+        {
+        }
     }
     UnstructuredMeshView MeshReadAccess::HostView() const
     {

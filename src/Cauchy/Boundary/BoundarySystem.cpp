@@ -129,6 +129,8 @@ namespace DNDS::Cauchy
             return TryTotalInletValue(*this, gas, inside, normal, frame);
         if (kind == BoundaryKind::Extrapolate)
             return inside;
+        if (const auto checked = TryPerfectGasPoint(gas, inside, false); !checked)
+            return checked.status;
         const auto p = gas.Primitive(inside);
         const auto wallVelocity = WallVelocity(*this, point, frame);
         FlowState face{p.density, p.velocity[0], p.velocity[1], p.velocity[2], p.pressure};
@@ -164,6 +166,8 @@ namespace DNDS::Cauchy
             return TryTotalInletValue(*this, gas, inside, normal, frame);
         if (kind == BoundaryKind::Extrapolate)
             return inside;
+        if (const auto checked = TryPerfectGasPoint(gas, inside, false); !checked)
+            return checked.status;
         const auto p = gas.Primitive(inside);
         const auto wallVelocity = WallVelocity(*this, point, frame);
         FlowState exterior{p.density, p.velocity[0], p.velocity[1], p.velocity[2], p.pressure};

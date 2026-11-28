@@ -106,7 +106,8 @@ namespace DNDS::CFV
             const bool rawSweep = capabilities.sweeps && storage.Raw();
             DNDS_check_throw_info(!storage.Raw() || (!capabilities.linearSystem && !capabilities.localPreconditioner),
                                   "experimental raw VR storage requires a sweep-only capability profile");
-            DNDS_check_throw_info(settings.intOrder == geometry->intOrder, "VR quadrature differs from prepared metrics");
+            DNDS_check_throw_info(settings.intOrder == geometry->intOrder && settings.intOrder == geometry->faceIntOrder,
+                                  "VR quadrature differs from prepared cell/face metrics");
             auto meshRead = geometry->mesh->AcquireRead(MeshReadRequirements::CellFlux());
             const auto mesh = meshRead.HostView();
             data = std::make_shared<Detail::ReconstructionData>(metrics, settings, capabilities);
@@ -364,10 +365,10 @@ namespace DNDS::CFV
                     mesh.GetCoordsOnFace(iFace, coords);
                     area = 0;
                     const auto element = mesh.GetFaceElement(iFace);
-                    const Quadrature quadrature(element, geometry->intOrder);
+                    const Quadrature quadrature(element, geometry->faceIntOrder);
                     for (int iG = 0; iG < quadrature.GetNumPoints(); ++iG)
                     {
-                        const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, geometry->intOrder, iG);
+                        const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, geometry->faceIntOrder, iG);
                         area += FacialJacobianToNormVec<2>(ShapeJacobianCoordD01Nj(coords, shape)).norm() * quadrature.GetWeight(iG);
                     }
                 }

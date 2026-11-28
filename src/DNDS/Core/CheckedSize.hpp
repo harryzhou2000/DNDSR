@@ -10,8 +10,10 @@ namespace DNDS::CheckedSize
     T Add(T a, T b)
     {
         static_assert(std::is_integral_v<T>);
-        DNDS_check_throw_info(a >= 0 && b >= 0 && a <= std::numeric_limits<T>::max() - b,
-                              "negative size or size addition overflow");
+        if constexpr (std::is_signed_v<T>)
+            DNDS_check_throw_info(a >= 0 && b >= 0, "negative size in size addition");
+        DNDS_check_throw_info(a <= std::numeric_limits<T>::max() - b,
+                              "size addition overflow");
         return a + b;
     }
 
@@ -31,8 +33,10 @@ namespace DNDS::CheckedSize
     T Multiply(T a, T b)
     {
         static_assert(std::is_integral_v<T>);
-        DNDS_check_throw_info(a >= 0 && b >= 0 && (b == 0 || a <= std::numeric_limits<T>::max() / b),
-                              "negative size or size multiplication overflow");
+        if constexpr (std::is_signed_v<T>)
+            DNDS_check_throw_info(a >= 0 && b >= 0, "negative size in size multiplication");
+        DNDS_check_throw_info(b == 0 || a <= std::numeric_limits<T>::max() / b,
+                              "size multiplication overflow");
         return a * b;
     }
 }

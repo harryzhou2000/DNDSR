@@ -982,4 +982,28 @@ namespace DNDS::Cauchy
         return ApplyCorrectionImpl(state, increment, scale, components);
     }
 
+    void NonlinearSolver::UpdateImplicitSettings(const ImplicitSettings &settings)
+    {
+        DNDS_check_throw_info(_data, "nonlinear solver was moved");
+        _data->settings.iterations = settings.iterations;
+        _data->settings.minIterations = settings.minIterations;
+        _data->settings.pseudoCFL = settings.pseudoCFL;
+        _data->settings.maxPseudoCFL = settings.maxPseudoCFL;
+        _data->settings.pseudoGrowth = settings.pseudoGrowth;
+        _data->settings.pseudoGrowthStart = settings.pseudoGrowthStart;
+        _data->settings.relaxation = settings.relaxation;
+        _data->settings.ransRelaxation = settings.ransRelaxation;
+        _data->settings.relativeTolerance = settings.relativeTolerance;
+        _data->settings.absoluteTolerance = settings.absoluteTolerance;
+        _data->settings.linear.iterations = settings.linear.iterations;
+        _data->settings.linear.relativeTolerance = settings.linear.relativeTolerance;
+        _data->settings.linear.absoluteTolerance = settings.linear.absoluteTolerance;
+        if (_data->setup)
+            _data->setup->settings = _data->settings;
+        if (_data->linear)
+            _data->linear->UpdateTolerances(settings.linear.iterations,
+                                            settings.linear.relativeTolerance,
+                                            settings.linear.absoluteTolerance);
+    }
+
 }

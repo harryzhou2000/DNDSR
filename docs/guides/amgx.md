@@ -223,15 +223,9 @@ and owner retirement separately. Production numerical kernels contain no
 allocation-statistics atomics.
 
 
-The maintained `dnds_benchmark_amgx` target emits one JSON record at each
-matrix/setup/apply/refresh/retirement boundary for a reproducible block-CSR
-microbenchmark. For example, separately run `65536 5 upload 8` and
-`65536 5 native 8` on the same selected device. Repeat without
-`AMGX_TRACK_ALLOCATIONS` for timing; allocation-traced setup is diagnostic work.
-These synthetic operators qualify ownership/copy cost and do not replace CFD
-convergence evidence. `LocalAMGPreconditioner::MemorySnapshot` forwards the same
-explicit diagnostics for a prepared flow operator after the caller drains its
-engine; do not query during host-progressed communication.
+`LocalAMGPreconditioner::MemorySnapshot` exposes explicit memory diagnostics
+for a prepared flow operator after the caller drains its engine; do not query
+during host-progressed communication.
 
 For a bounded real flow run, `DNDS_AMGX_FLOW_DIAGNOSTICS=1` prints
 `AMGX_FLOW_MEMORY` JSON records at provider creation, initial setup, value

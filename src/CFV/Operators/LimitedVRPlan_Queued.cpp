@@ -12,6 +12,7 @@ namespace DNDS::CFV
     {
         ValidateSeeds(meanScalars, baseGates, previous, output, region);
         const auto parameters = LimitedVRKernelParameters::FromSettings(settings);
+        DNDS_check_throw_info(output.Width() == settings.GateWidth(), "LVR seed output width does not match settings.GateWidth()");
         DNDS_check_throw_info(stream.Context().device == Device(), "LVR stream placement differs");
 #ifndef DNDS_USE_CUDA
         DNDS_check_throw_info(Device() == R::Device::Host(), "CUDA LVR kernels are not built");
@@ -38,6 +39,16 @@ namespace DNDS::CFV
                                         const R::Array<real> *base, unsigned mergeMask) const
     {
         ValidateMaximum(input, output, caps, region);
+        DNDS_check_throw_info((mergeMask & ~3u) == 0, "LVR mergeMask only supports base columns 0 and 1");
+        DNDS_check_throw_info(mergeMask == 0 || base != nullptr, "LVR mergeMask requires a base array");
+        if (base)
+        {
+            DNDS_check_throw_info(base->GetDevice() == Device() && !base->Layout().IsVariable() &&
+                                      base->RowCount() == _metrics.NumCell() && base->Layout().Width() >= 2,
+                                  "LVR merge base shape or placement differs");
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(base->Storage(), output.Owned().Storage()),
+                                  "LVR maximum output aliases merge base");
+        }
         DNDS_check_throw_info(stream.Context().device == Device(), "LVR stream placement differs");
 #ifndef DNDS_USE_CUDA
         DNDS_check_throw_info(Device() == R::Device::Host(), "CUDA LVR kernels are not built");

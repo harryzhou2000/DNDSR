@@ -372,6 +372,8 @@ namespace DNDS::Cauchy
                                   "Strang source splitting requires a configured chemical source");
             DNDS_check_throw_info(data->time.method != "bdf2",
                                   "Strang source splitting only supports single-step time methods (multistep BDF2 is forbidden)");
+            DNDS_check_throw_info(!data->time.steady,
+                                  "Strang source splitting is incompatible with steady BDF1 mode");
         }
         if (data->time.steady)
         {
@@ -417,7 +419,10 @@ namespace DNDS::Cauchy
                                   (data->output.consoleBold == "auto" || data->output.consoleBold == "always" || data->output.consoleBold == "never") &&
                                   std::find(diagnosticLevels.begin(), diagnosticLevels.end(), data->output.diagnostics.level) != diagnosticLevels.end() &&
                                   data->output.diagnostics.maxBytes > 0 && data->output.diagnostics.rotatedFiles > 0 &&
-                                  data->output.diagnostics.allocationWarmupSteps >= -1 && !data->output.prefix.empty(),
+                                  data->output.diagnostics.allocationWarmupSteps >= -1 && !data->output.prefix.empty() &&
+                                  !data->output.control.host.empty() &&
+                                  data->output.control.port >= 0 && data->output.control.port <= 65535 &&
+                                  data->output.control.portScanCount >= 1,
                               "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
         const auto internalVisualization = data->output.implicit.visualizationInterval < 0

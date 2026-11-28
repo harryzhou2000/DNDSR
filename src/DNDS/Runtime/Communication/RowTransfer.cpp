@@ -581,7 +581,6 @@ namespace DNDS::Runtime
         bool started = false, destinationReady = false;
         bool sendsStarted = false, unpackStarted = false, packingSubmitted = false;
         Completion packedReady, unpackReady;
-        std::exception_ptr error;
         AccessTrackingContext::Submission checked;
         std::shared_ptr<const AccessOrder> order;
         bool Prepare(bool scheduled, bool checkedAccess, bool callerValid);
@@ -1111,14 +1110,28 @@ namespace DNDS::Runtime
                                                    StreamEvent producer, bool callerValid) const
     {
         DNDS_check_throw_info(engine.Owns(communication), "transfer stream belongs to another runtime");
-        if (!_provider && !HasEmptyDirectPayload())
+        try
         {
-            // Portable MPI posting needs the producer visible to its controller.
-            // Do not enqueue a CPU waiter that would occupy a worker or call MPI
-            // from a thread forbidden by the initialized MPI thread level.
-            producer.WaitHost();
+            if (!_provider)
+            {
+                // Portable MPI posting (and empty-payload CUDA communication
+                // lanes waiting on non-CUDA producers) needs the producer
+                // visible on the host before WaitFor / collective Preflight.
+                if (!HasEmptyDirectPayload() ||
+                    (communication.Context().device.space == MemorySpace::CUDA && !producer.Ready()))
+                {
+                    producer.WaitHost();
+                }
+            }
+            communication.WaitFor(std::move(producer));
         }
-        communication.WaitFor(std::move(producer));
+        catch (...)
+        {
+            MPI::AbortIfSolverFailure("transfer producer wait failed");
+            if (_provider)
+                throw;
+            callerValid = false;
+        }
         return SubmitReady(engine, communication, callerValid);
     }
     void TransferOperation::EnqueueWait(const ExecutionStream &consumer) const
@@ -1171,7 +1184,7 @@ namespace DNDS::Runtime
         {
             try
             {
-                if (!_managed && !_nativeCompletion)
+                if (!_managed && !_nativeCompletion && (!_provider || !_provider->Finished()))
                     Wait();
             }
             catch (...)
@@ -1188,7 +1201,7 @@ namespace DNDS::Runtime
     }
     TransferOperation::~TransferOperation()
     {
-        if (_managed || _nativeCompletion)
+        if (_managed || _nativeCompletion || (_provider && _provider->Finished()))
             return; // Runtime inventory, not handle scope, owns retirement.
         // Waiting while unwinding a rank-local exception can strand this rank
         // before the application reaches its fatal handler: a peer may never
@@ -1274,8 +1287,6 @@ namespace DNDS::Runtime
     }
     bool TransferOperation::CompleteDestination(bool wait)
     {
-        if (_state && _state->error)
-            std::rethrow_exception(_state->error);
         if (!_state || !_state->started || _state->destinationReady)
             return true;
         if (!PostPackedSends(wait))
@@ -1385,8 +1396,6 @@ namespace DNDS::Runtime
             _provider->Wait();
             return;
         }
-        if (_state && _state->error)
-            std::rethrow_exception(_state->error);
         if (!_state || !_state->started)
             return;
         WaitDestinationReady();
@@ -1411,8 +1420,6 @@ namespace DNDS::Runtime
             std::lock_guard<std::mutex> lock(b.mutex);
             b.active = false;
         }
-        if (s.error)
-            std::rethrow_exception(s.error);
     }
     bool TransferOperation::Test()
     {
@@ -1424,8 +1431,6 @@ namespace DNDS::Runtime
             return _worker->Test();
         if (_provider)
             return _provider->Test();
-        if (_state && _state->error)
-            std::rethrow_exception(_state->error);
         if (!_state || !_state->started)
             return true;
         auto &b = *_state->binding;

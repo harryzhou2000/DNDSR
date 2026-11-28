@@ -9,7 +9,7 @@ namespace DNDS::Multigrid
 
 namespace DNDS::Cauchy
 {
-    class NonlinearSolveSetup;
+    struct NonlinearSolveSetup;
     class DomainExecutionContext;
     /// Same-cell FAS hierarchy: high-order VR -> direct-gradient O2 -> first
     /// order convection. All levels retain viscous gradients/physical BCs.

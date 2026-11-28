@@ -1,3 +1,4 @@
+#pragma once
 #include "Cauchy/Discretization/CUDA/FiniteVolumeSourceKernels_Launch.hpp"
 #include "Cauchy/Discretization/RANSReconstruction.hpp"
 
@@ -28,7 +29,8 @@ namespace DNDS::Cauchy::CUDA::Detail
         const bool jacobian = request.evaluation != SourceEvaluation::QuadratureResidual;
         for (index iRow = index(blockIdx.x) * blockDim.x + threadIdx.x; iRow < selected.RowCount(); iRow += index(gridDim.x) * blockDim.x)
         {
-            const index iCell = selected.Visit([&](auto rows) { return rows(iRow); });
+            const index iCell = selected.Visit([&](auto rows)
+                                               { return rows(iRow); });
             NumericalStatus status;
             if (physics.rans.ComponentNumber() + flow != Components || !physics.rans.Supported())
             {

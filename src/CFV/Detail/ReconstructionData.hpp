@@ -30,7 +30,7 @@ namespace DNDS::CFV::Detail
         std::optional<Runtime::RowTransferPlan> halo;
         mutable std::once_flag partitionOnce;
         mutable std::optional<Geom::EntityWorkPartition> workPartition;
-        int dim, intOrder, geometryOrder;
+        int dim, intOrder, faceIntOrder, geometryOrder;
         bool axisymmetric;
         // Separate semantic cell geometry arrays (no raw column packing).
         Runtime::Array<real> cellVolume;
@@ -57,19 +57,19 @@ namespace DNDS::CFV::Detail
         /// and copies only the requested topology when placed on a device.
         /// Operator read scopes pin the source generation through queued use.
         std::optional<Geom::CellFaceIncidenceStorage> topology;
-        FiniteVolumeData(ssp<Geom::UnstructuredMesh> m, int order, int geomOrder, bool axis, std::shared_ptr<Runtime::CommunicationContext> context)
+        FiniteVolumeData(ssp<Geom::UnstructuredMesh> m, int order, int faceOrder, int geomOrder, bool axis, std::shared_ptr<Runtime::CommunicationContext> context)
             : mesh(std::move(m)), stamp(mesh->versions.Stamp(Runtime::Change::Topology | Runtime::Change::Geometry |
                                                              Runtime::Change::Distribution | Runtime::Change::Layout)),
               cells(mesh->Entities(Geom::EntityKind::Cell)),
               communication(std::move(context)), dofs(communication, cells.NumOwned(), cells.NumGhost(), "FV cells"),
-              dim(mesh->getDim()), intOrder(order), geometryOrder(geomOrder), axisymmetric(axis)
+              dim(mesh->getDim()), intOrder(order), faceIntOrder(faceOrder), geometryOrder(geomOrder), axisymmetric(axis)
         {
             topology.emplace(Geom::CellFaceIncidenceStorage::Capture(mesh));
         }
         FiniteVolumeData(const FiniteVolumeData &source, Runtime::Device device, Runtime::ExecutionContext context)
             : mesh(source.mesh), stamp(source.stamp), cells(source.cells), communication(source.communication),
               dofs(source.dofs), halo(source.halo), workPartition(source.workPartition),
-              dim(source.dim), intOrder(source.intOrder), geometryOrder(source.geometryOrder), axisymmetric(source.axisymmetric),
+              dim(source.dim), intOrder(source.intOrder), faceIntOrder(source.faceIntOrder), geometryOrder(source.geometryOrder), axisymmetric(source.axisymmetric),
               cellVolume(source.cellVolume.To(device, context)),
               cellCent(source.cellCent.To(device, context)),
               cellBary(source.cellBary.To(device, context)),

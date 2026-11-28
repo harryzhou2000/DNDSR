@@ -68,6 +68,8 @@ namespace DNDS::CFV::Detail
                                   defect.Width() == input.Width() && defect.RowCount() == input.RowCount(),
                               "VR AMG defect shape differs");
         R::CheckKernelArgumentBudget<ReconstructionAMGGeometry, Read, Read, Read, Write>();
+        if (!defect.RowCount() || !mean.Width())
+            return;
         Defect<<<Blocks(defect.RowCount() * mean.Width()), 128, 0, ::DNDS::Runtime::CUDAStream(context)>>>(
             geometry, R::ProjectKernelView<R::TableRows>(mean), R::ProjectKernelView<R::TableRows>(input),
             R::ProjectKernelView<R::TableRows>(boundary), R::ProjectKernelView<R::TableRows>(defect));
@@ -81,6 +83,8 @@ namespace DNDS::CFV::Detail
                                   (component + 1) * modes <= source.Width() && packed.Width() == 1 &&
                                   packed.RowCount() == source.RowCount() * modes,
                               "VR AMG gather shape differs");
+        if (!packed.RowCount())
+            return;
         Component<false><<<Blocks(packed.RowCount()), 128, 0, ::DNDS::Runtime::CUDAStream(context)>>>(
             R::ProjectKernelView<R::TableRows>(source), {}, R::ProjectKernelView<R::TableRows>(packed), component, modes);
         CheckLaunch();
@@ -94,6 +98,8 @@ namespace DNDS::CFV::Detail
                                   packed.RowCount() == input.RowCount() * modes && output.RowCount() == input.RowCount() &&
                                   output.Width() == input.Width(),
                               "VR AMG scatter shape differs");
+        if (!packed.RowCount())
+            return;
         Component<true><<<Blocks(packed.RowCount()), 128, 0, ::DNDS::Runtime::CUDAStream(context)>>>(
             R::ProjectKernelView<R::TableRows>(input), R::ProjectKernelView<R::TableRows>(packed),
             R::ProjectKernelView<R::TableRows>(output), component, modes);

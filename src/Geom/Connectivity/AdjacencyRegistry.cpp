@@ -658,10 +658,14 @@ namespace DNDS::Geom
                 for (index entity = first; entity < end; ++entity)
                 {
                     const auto &parents = rows->entity2parent[size_t(entity)];
+                    bool anyOwned = false;
                     ranks.clear();
                     for (auto parent : parents)
+                    {
+                        anyOwned = anyOwned || parent < ownedParents;
                         ranks.push_back(parentOwner[size_t(parent)]);
-                    owned[size_t(entity)] = resolver(parents, ranks, ownedParents).owned;
+                    }
+                    owned[size_t(entity)] = anyOwned ? resolver(parents, ranks, ownedParents).owned : 0;
                 }
             }); });
         int entityKinds[]{int(entityKind), -int(entityKind)};

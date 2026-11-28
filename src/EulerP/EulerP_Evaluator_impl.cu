@@ -13,6 +13,14 @@ namespace DNDS::EulerP
 {
     static constexpr DeviceBackend B = DeviceBackend::CUDA;
 
+    static int CheckedThreadsPerBlock(Evaluator &self)
+    {
+        const int threadsPerBlock = self.get_config()["threadsPerBlock"];
+        DNDS_check_throw_info(threadsPerBlock > 0 && threadsPerBlock <= 128,
+                              "EulerP CUDA kernels require 0 < threadsPerBlock <= 128");
+        return threadsPerBlock;
+    }
+
 #define DNDS_EULERP_DEFINE_CUDA_SIMPLE_POINTWISE_KERNEL(FNAME, ARGTYPE) \
     DNDS_GLOBAL static void CUDA_Simple_PointWise_Call_##FNAME(         \
         EvaluatorDeviceView<B> *self_view,                              \
@@ -54,7 +62,7 @@ namespace DNDS::EulerP
         DNDS_check_throw(faceBCBuffer.father.Size() >= mesh.NumFace());
 
         DNDS_CUDA_DEVICE_VIEW_COPY_OBJ(self_view)
-        int threadsPerBlock0 = arg.self.get_config()["threadsPerBlock"];
+        int threadsPerBlock0 = CheckedThreadsPerBlock(arg.self);
         /*********************** */
         // bc handling
         {
@@ -96,7 +104,7 @@ namespace DNDS::EulerP
         auto &phy = self_view.physics;
 
         DNDS_CUDA_DEVICE_VIEW_COPY_OBJ(self_view)
-        int threadsPerBlock0 = arg.self.get_config()["threadsPerBlock"];
+        int threadsPerBlock0 = CheckedThreadsPerBlock(arg.self);
         /*********************** */
         // limit
 
@@ -140,7 +148,7 @@ namespace DNDS::EulerP
         auto &phy = self_view.physics;
 
         DNDS_CUDA_DEVICE_VIEW_COPY_OBJ(self_view)
-        int threadsPerBlock0 = arg.self.get_config()["threadsPerBlock"];
+        int threadsPerBlock0 = CheckedThreadsPerBlock(arg.self);
         {
             auto [blocksPerGrid, threadsPerBlock] =
                 CUDA::calckernelSizeSimple(u.Size(), threadsPerBlock0);
@@ -171,7 +179,7 @@ namespace DNDS::EulerP
         auto &phy = self_view.physics;
 
         DNDS_CUDA_DEVICE_VIEW_COPY_OBJ(self_view)
-        int threadsPerBlock0 = arg.self.get_config()["threadsPerBlock"];
+        int threadsPerBlock0 = CheckedThreadsPerBlock(arg.self);
         {
             auto [blocksPerGrid, threadsPerBlock] =
                 CUDA::calckernelSizeSimple(u.Size(), threadsPerBlock0);
@@ -208,7 +216,7 @@ namespace DNDS::EulerP
         int nVarsScalar = 0; // no uScalar here
         int nVars = nVarsFlow + nVarsScalar;
         DNDS_CUDA_DEVICE_VIEW_COPY_OBJ(self_view)
-        int threadsPerBlock0 = arg.self.get_config()["threadsPerBlock"];
+        int threadsPerBlock0 = CheckedThreadsPerBlock(arg.self);
         {
             auto [blocksPerGrid, threadsPerBlock] =
                 CUDA::calckernelSizeSimple(mesh.NumFaceProc(), threadsPerBlock0);
@@ -235,7 +243,7 @@ namespace DNDS::EulerP
         int nVars = nVarsFlow + nVarsScalar;
 
         DNDS_CUDA_DEVICE_VIEW_COPY_OBJ(self_view)
-        int threadsPerBlock0 = arg.self.get_config()["threadsPerBlock"];
+        int threadsPerBlock0 = CheckedThreadsPerBlock(arg.self);
         {
             auto [blocksPerGrid, threadsPerBlock] =
                 CUDA::calckernelSizeSimple(mesh.NumCell(), threadsPerBlock0);
@@ -266,7 +274,7 @@ namespace DNDS::EulerP
         int nVars = nVarsScalar + nVarsFlow;
 
         DNDS_CUDA_DEVICE_VIEW_COPY_OBJ(self_view)
-        int threadsPerBlock0 = arg.self.get_config()["threadsPerBlock"];
+        int threadsPerBlock0 = CheckedThreadsPerBlock(arg.self);
         {
             auto [blocksPerGrid, threadsPerBlock] =
                 CUDA::calckernelSizeSimple(mesh.NumFaceProc(), threadsPerBlock0);
@@ -297,7 +305,7 @@ namespace DNDS::EulerP
         int nVarsScalar = uScalarFL.size();
         int nVars = nVarsScalar + nVarsFlow;
         DNDS_CUDA_DEVICE_VIEW_COPY_OBJ(self_view)
-        int threadsPerBlock0 = arg.self.get_config()["threadsPerBlock"];
+        int threadsPerBlock0 = CheckedThreadsPerBlock(arg.self);
         {
             auto [blocksPerGrid, threadsPerBlock] =
                 CUDA::calckernelSizeSimple(mesh.NumFaceProc(), threadsPerBlock0);

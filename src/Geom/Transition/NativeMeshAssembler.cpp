@@ -555,8 +555,10 @@ namespace DNDS::Geom
         companion(data.edgeNodesPbi, owned.edgeNodesPbi, EntityKind::Edge, bits);
         std::map<EntityKind, RArray> ids;
         std::map<EntityKind, EntitySpace> spaces;
-        for (const auto &[kind, values] : owned.ids)
+        for (const auto &entry : owned.ids)
         {
+            const auto kind = entry.first;
+            const auto &values = entry.second;
             auto pair = Ghost(values, kind, publication, Runtime::ElementSchema::Arithmetic<index>());
             owned.LocalStage(mpi, [&]
                              {

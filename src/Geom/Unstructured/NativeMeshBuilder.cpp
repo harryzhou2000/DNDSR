@@ -319,6 +319,7 @@ namespace DNDS::Geom
     NativeOwnedMeshData NativeMeshBuilder::Build(NativeMeshInput input, NativeMeshBuildOptions options)
     {
         const auto mpi = input.mpi;
+        DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native mesh builder requires a communicator");
         const auto audit = options.audit.value_or(MeshAuditOptions{});
         const auto communication = options.communication ? options.communication : input.cells.Communication();
         Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
@@ -328,7 +329,6 @@ namespace DNDS::Geom
                 input.cells = input.cells.WithCommunication(communication);
                 input.nodes = input.nodes.WithCommunication(communication);
                 input.boundaries = input.boundaries.WithCommunication(communication); });
-        DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native mesh builder requires a communicator");
         LocalStage(input.cells, "input validation", [&]
                    {
             int actualRank = -1, actualSize = 0;

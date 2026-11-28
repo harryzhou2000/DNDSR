@@ -576,6 +576,7 @@ namespace DNDS::Cauchy
                         s.equation.viscosityReferenceTemperature == 1 && s.equation.sutherlandConstant == 0,
                     "mixture transport uses its material, not a perfect-gas viscosity law");
         }
+        require(Riemann::RiemannFlux::Available(s.numerics.flux), "numerical flux " + s.numerics.flux);
         if (extended && !acm)
         {
             require(s.initialProfile.kind == "constant", "nonconstant extended equation initialization");
@@ -591,7 +592,6 @@ namespace DNDS::Cauchy
             require(!s.implicit.roeDissipation, "extended equation Roe Jacobian");
         }
         require(s.initialField.Empty() || s.initialProfile.kind == "constant", "spatial overrides require a constant background profile");
-        require(Riemann::RiemannFlux::Available(s.numerics.flux), "numerical flux " + s.numerics.flux);
         require(s.numerics.reconstruction == "constant" || s.numerics.reconstruction == "gradient" || s.numerics.reconstruction == "variational", "reconstruction " + s.numerics.reconstruction);
         require(!s.numerics.ransP1Overlay || (rans && s.numerics.reconstruction == "variational"),
                 "RANS P1 overlay requires RANS and variational reconstruction");

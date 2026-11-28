@@ -73,13 +73,8 @@ Subtracting a constant pressure changes the gauge and cannot remove a spatial
 continuity residual. BDF1 and BDF2 start directly with the implicit solve and
 check continuity there.
 
-For the supplied 20×20 periodic vortex, the separate
-`cauchy_experiment_acm_vortex_projection` target prepares discretely
-consistent time-zero means. Run it from the mesh checkout with the case JSON
-and a fresh checkpoint filename. It holds the analytical pressure fixed,
-corrects the horizontal velocity, and verifies the resulting rate with the
-same finite-volume operator used by the solver. Supply this checkpoint with
-`--restart` to use identical initial data across integrators. A time-zero
+To compare integrators from identical discretely divergence-free initial data,
+supply a pre-projected time-zero checkpoint via `--restart`. A time-zero
 snapshot containing only means carries no active nonlinear iteration. An
 internal checkpoint still requires its original method and update policy.
 

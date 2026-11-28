@@ -20,16 +20,19 @@ namespace DNDS::Geom
     class CellFaceIncidenceRead
     {
         struct Data;
+        struct Scope;
         std::shared_ptr<const Data> _data;
         Runtime::VersionTracker::ReadLease _generation;
-        explicit CellFaceIncidenceRead(std::shared_ptr<const Data> data);
+        std::unique_ptr<Scope> _scope;
+        explicit CellFaceIncidenceRead(std::shared_ptr<const Data> data, Runtime::ExecutionContext context);
         friend class CellFaceIncidenceStorage;
 
     public:
         CellFaceIncidenceRead(const CellFaceIncidenceRead &) = delete;
         CellFaceIncidenceRead &operator=(const CellFaceIncidenceRead &) = delete;
-        CellFaceIncidenceRead(CellFaceIncidenceRead &&) noexcept = default;
+        CellFaceIncidenceRead(CellFaceIncidenceRead &&) noexcept;
         CellFaceIncidenceRead &operator=(CellFaceIncidenceRead &&) = delete;
+        ~CellFaceIncidenceRead();
         CellFaceIncidenceView View() const;
     };
 
@@ -50,6 +53,7 @@ namespace DNDS::Geom
         static CellFaceIncidenceStorage Capture(std::shared_ptr<UnstructuredMesh> source);
         CellFaceIncidenceStorage Placed(Runtime::Device device, Runtime::ExecutionContext context) const;
         CellFaceIncidenceRead AcquireRead() const;
+        CellFaceIncidenceRead AcquireRead(Runtime::ExecutionContext context) const;
         Runtime::Device GetDevice() const;
         /// Allocation identities include shared row metadata. Deduplicate IDs
         /// when combining this view's attribution with another mesh owner.

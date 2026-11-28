@@ -58,9 +58,8 @@ namespace DNDS::Geom
             auto owned = ownedMask.Write(), ghost = ghostMask.Write();
             for (size_t row = 0; row < ownedMask.RowCount(); ++row) owned.View()(row, 0) = 1;
             for (size_t row = 0; row < ghostMask.RowCount(); ++row) ghost.View()(row, 0) = 0;
-            if (view.IsPeriodic())
-                for (index cell = 0; cell < cells->NumOwned(); ++cell)
-                {
+            for (index cell = 0; cell < cells->NumOwned(); ++cell)
+            {
                     const auto cone = view.CellNodes(cell);
                     const auto bits = view.CellNodePeriodicBits(cell);
                     for (size_t slot = 0; slot < cone.size(); ++slot)

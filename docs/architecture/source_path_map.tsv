@@ -113,7 +113,6 @@ src/Geom/Mesh/MeshAccess_bind.hpp	src/Geom/Access/MeshAccess_bind.hpp
 src/Geom/Mesh/MeshConnectivity.cpp	src/Geom/Connectivity/MeshConnectivity.cpp
 src/Geom/Mesh/MeshConnectivity.hpp	src/Geom/Connectivity/MeshConnectivity.hpp
 src/Geom/Mesh/MeshConnectivity_Ghost.cpp	src/Geom/Connectivity/MeshConnectivity_Ghost.cpp
-src/Geom/Mesh/MeshConnectivity_Interpolate.hxx	src/Geom/Connectivity/MeshConnectivity_Interpolate.hxx
 src/Geom/Mesh/MeshConnectivity_Native.cpp	src/Geom/Connectivity/MeshConnectivity_Native.cpp
 src/Geom/Mesh/MeshEdit.cpp	src/Geom/Geometry/MeshEdit.cpp
 src/Geom/Mesh/MeshEdit.hpp	src/Geom/Geometry/MeshEdit.hpp

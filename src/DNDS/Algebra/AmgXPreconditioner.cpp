@@ -171,7 +171,7 @@ namespace DNDS::Algebra
         uint64_t weightEpoch = 0;
         index rows = 0, entries = 0;
         int blockSize = 1;
-        bool pattern = false, uploaded = false, ready = false;
+        bool pattern = false, uploaded = false, vectorsBound = false, solverSetup = false, ready = false;
         std::optional<Runtime::Array<real>> nativeValues;
         uint64_t nativeEpoch = 0;
         AmgXCopyStatistics copies;
@@ -186,7 +186,7 @@ namespace DNDS::Algebra
         void SetupOrRefresh(Runtime::ExecutionContext context)
         {
             const auto start = std::chrono::steady_clock::now();
-            const bool refresh = geometricAggregation && uploaded;
+            const bool refresh = geometricAggregation && solverSetup;
             if (refresh)
             {
                 Check(AMGX_solver_resetup(solver, matrix));
@@ -203,6 +203,7 @@ namespace DNDS::Algebra
                     CheckCUDA(cudaDeviceSynchronize());
                 }
                 Check(AMGX_solver_setup(solver, matrix));
+                solverSetup = true;
             }
             CheckCUDA(cudaDeviceSynchronize());
             const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -338,7 +339,7 @@ namespace DNDS::Algebra
         _state->blockSize = blockSize;
         _state->separateDiagonal = separateDiagonal;
         _state->pattern = true;
-        _state->uploaded = _state->ready = false;
+        _state->uploaded = _state->vectorsBound = _state->solverSetup = _state->ready = false;
     }
 
     void AmgXPreconditioner::SetGeometricWeights(const Runtime::Array<real> &weights)
@@ -380,11 +381,15 @@ namespace DNDS::Algebra
             {
                 Check(AMGX_matrix_upload_all(_state->matrix, int(_state->rows), int(_state->entries), _state->blockSize, _state->blockSize,
                                              _state->offsetRead->View().data, _state->columnRead->View().data, values.data, diagonal ? diagonal->data : nullptr));
+                _state->copies.patternHostToDevice += uint64_t(sizeof(int)) * (_state->rows + 1 + _state->entries);
+                _state->uploaded = true;
+            }
+            if (!_state->vectorsBound)
+            {
                 Check(AMGX_vector_bind(_state->rhs, _state->matrix));
                 Check(AMGX_vector_bind(_state->solution, _state->matrix));
+                _state->vectorsBound = true;
             }
-            if (!_state->uploaded)
-                _state->copies.patternHostToDevice += uint64_t(sizeof(int)) * (_state->rows + 1 + _state->entries);
             _state->copies.matrixDeviceToDevice += uint64_t(sizeof(real)) * (_state->entries + (_state->separateDiagonal ? _state->rows : 0)) * _state->blockSize * _state->blockSize;
             _state->SetupOrRefresh(context);
         }
@@ -403,17 +408,17 @@ namespace DNDS::Algebra
                               "AmgX attachment requires one compatible compact native values allocation");
         DNDS_check_throw_info(!_state->geometricAggregation || !_state->nativeValues || (values.Identity() == _state->nativeValues->Identity() && values.Storage().SameRange(_state->nativeValues->Storage())),
                               "geometric AmgX refresh requires the originally attached coefficient range");
-        _state->ready = false;
         auto read = values.Read(context);
-        // Retain before entering the provider so failed setup cannot leave a
-        // dangling external numeric view during provider retirement.
-        _state->nativeValues = values;
+        _state->ready = false;
 #ifdef DNDS_USE_AMGX
         std::lock_guard<std::mutex> lock(Provider().mutex);
         DeviceScope scope(context.device.ordinal);
         CheckCUDA(cudaStreamSynchronize(::DNDS::Runtime::CUDAStream(context)));
         if (_state->rows)
         {
+            // Retain before entering the provider so failed setup cannot leave a
+            // dangling external numeric view during provider retirement.
+            _state->nativeValues = values;
             // Matrix owns only a non-owning numeric view; this retained Array
             // owns the actual allocation until after provider destruction.
             if (!_state->geometricAggregation || !_state->uploaded)
@@ -422,14 +427,20 @@ namespace DNDS::Algebra
                                                        _state->offsetRead->View().data, _state->columnRead->View().data,
                                                        const_cast<real *>(read.View().data), size_t(elements), _state->separateDiagonal));
                 _state->copies.patternHostToDevice += uint64_t(sizeof(int)) * (_state->rows + 1 + _state->entries);
+                _state->uploaded = true;
             }
-            if (!_state->uploaded)
+            if (!_state->vectorsBound)
             {
                 Check(AMGX_vector_bind(_state->rhs, _state->matrix));
                 Check(AMGX_vector_bind(_state->solution, _state->matrix));
+                _state->vectorsBound = true;
             }
             _state->SetupOrRefresh(context);
         }
+        else
+            _state->nativeValues = values;
+#else
+        _state->nativeValues = values;
 #endif
         _state->nativeEpoch = values.MutationEpoch();
         _state->uploaded = _state->ready = true;

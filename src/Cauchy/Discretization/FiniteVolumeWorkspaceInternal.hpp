@@ -6,6 +6,7 @@
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include "Cauchy/Discretization/BoundaryForceReduction.hpp"
+#include "Cauchy/Discretization/BoundaryFluxReduction.hpp"
 
 #include <chrono>
 #include <atomic>
@@ -123,6 +124,7 @@ namespace DNDS::Cauchy
         const bool meanOnly;
         const bool captureBoundaryFlux;
         mutable std::optional<BoundaryForceReduction> boundaryForceReduction;
+        mutable std::optional<BoundaryFluxReduction> boundaryFluxReduction;
         index componentNumber = 0, physicalFieldNumber = 0;
         std::vector<Field> fields;
         EquationDofs boundary;

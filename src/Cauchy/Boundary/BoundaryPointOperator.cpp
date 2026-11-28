@@ -97,9 +97,9 @@ namespace DNDS::Cauchy
             if (!ACM::ExteriorAt(params, kind, point, condition, normal, location, frame.KernelParameters(), exterior, int(_components), omega))
                 return {NumericalError::UnsupportedRequest};
             for (int j = 0; j < _components; ++j)
-                point[j] = stateKind == BoundaryPointStateKind::ViscousPenaltyTrace
-                               ? ACM::PenaltyFaceValue(kind, point[j], exterior[j])
-                               : (stateKind == BoundaryPointStateKind::ExteriorState ? exterior[j] : .5 * (point[j] + exterior[j]));
+                point[j] = stateKind == BoundaryPointStateKind::ExteriorState
+                               ? exterior[j]
+                               : ACM::PenaltyFaceValue(kind, point[j], exterior[j]);
             return {};
         }
         FlowState inside{};

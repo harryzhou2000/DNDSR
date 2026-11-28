@@ -1557,9 +1557,11 @@ TEST_CASE("SerializerH5 string round-trip")
         S::SerializerH5 ser(mpi);
         ser.OpenFile(fname, false);
         ser.CreatePath("/meta");
+        ser.CreatePath("/empty_group");
         ser.GoToPath("/meta");
         ser.WriteString("solver", "euler3D");
         ser.WriteString("version", "1.2.3");
+        ser.WriteString("empty", "");
         ser.CloseFile();
     }
 
@@ -1568,14 +1570,17 @@ TEST_CASE("SerializerH5 string round-trip")
     {
         S::SerializerH5 ser(mpi);
         ser.OpenFile(fname, true);
+        ser.GoToPath("/empty_group");
         ser.GoToPath("/meta");
 
-        std::string solver, version;
+        std::string solver, version, empty = "sentinel";
         ser.ReadString("solver", solver);
         ser.ReadString("version", version);
+        ser.ReadString("empty", empty);
 
         CHECK(solver == "euler3D");
         CHECK(version == "1.2.3");
+        CHECK(empty.empty());
 
         ser.CloseFile();
     }

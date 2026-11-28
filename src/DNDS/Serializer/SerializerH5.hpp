@@ -110,6 +110,7 @@ namespace DNDS::Serializer
         int GetMPIRank() override { return mpi.rank; }
         int GetMPISize() override { return mpi.size; }
         const MPIInfo &getMPI() override { return mpi; }
+        MPI_Comm getComm() override { return commDup != MPI_COMM_NULL ? commDup : mpi.comm; }
 
         void WriteInt(const std::string &name, int v) override;
         void WriteIndex(const std::string &name, index v) override;
@@ -162,7 +163,10 @@ namespace DNDS::Serializer
             if (std::uncaught_exceptions())
                 MPI::AbortIfSolverFailure("solver unwinding before parallel HDF5 close");
             CloseFileNonVirtual();
-            MPI_Comm_free(&commDup);
+            int finalized = 0;
+            MPI_Finalized(&finalized);
+            if (!finalized && commDup != MPI_COMM_NULL)
+                MPI_Comm_free(&commDup);
         }
     };
 }

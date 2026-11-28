@@ -457,7 +457,10 @@ namespace DNDS::Runtime
             .def("__enter__", [](PythonAccess &a) -> PythonAccess &
                  { DNDS_check_throw(a.Active()); return a; }, py::return_value_policy::reference_internal)
             .def("__exit__", [](PythonAccess &a, py::object error, py::object, py::object)
-                 { a.Finish(!error.is_none()); })
+                 {
+                     const bool failed = !error.is_none();
+                     py::gil_scoped_release release;
+                     a.Finish(failed); })
             .def_property_readonly("active", &PythonAccess::Active)
             .def("row", &PythonAccess::Row, "Return an independent NumPy row snapshot.")
             .def("assign_row", &PythonAccess::AssignRow)
@@ -467,7 +470,9 @@ namespace DNDS::Runtime
                  { a.Set(index.first, index.second, value); })
             .def("complete", &PythonAccess::Complete)
             .def("wait", [](PythonAccess &a)
-                 { a.Finish(false); })
+                 {
+                     py::gil_scoped_release release;
+                     a.Finish(false); })
             .def("unsafe_address", [](const PythonAccess &a)
                  { return reinterpret_cast<uintptr_t>(a.Pointer()); }, "Borrowed pointer for native kernels only; retain lease and complete its stream before release.");
         py::class_<CopyOperation>(m, "CopyOperation")
@@ -559,9 +564,11 @@ namespace DNDS::Runtime
             .def("element_schema", &Schema)
             .def("write_serializer", [](const PythonArray &a, Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, const std::string &schema)
                  { DNDS_check_throw_info(s, "null Array serializer");
-                   Detail::IOCheck(schema.empty() || schema == a.Schema().Identity(), mpi, s->IsPerRank(), "Python I/O identity differs from its element registration");
+                   const auto elementSchema = a.Schema();
+                   py::gil_scoped_release release;
+                   Detail::IOCheck(schema.empty() || schema == elementSchema.Identity(), mpi, s->IsPerRank(), "Python I/O identity differs from its element registration");
                    auto storage = Detail::IOPublishedStorage(a, mpi, s->IsPerRank());
-                   WriteArrayStorage(storage->Values(), storage->Layout(), a.Schema(), s, name, mpi); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "", "Native host-only row I/O without a payload staging allocation. Finish producers, commit shape edits and match collective calls. A rank-local unpublished shape rejects the collective write before file mutation. Uses the same registered schema as MPI/Python; device buffers are rejected. Separate fields are not a transaction.")
+                   WriteArrayStorage(storage->Values(), storage->Layout(), elementSchema, s, name, mpi); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("schema") = "", "Native host-only row I/O without a payload staging allocation. Finish producers, commit shape edits and match collective calls. A rank-local unpublished shape rejects the collective write before file mutation. Uses the same registered schema as MPI/Python; device buffers are rejected. Separate fields are not a transaction.")
             .def_static("read_serializer", [](Serializer::SerializerBaseSSP s, const std::string &name, const MPIInfo &mpi, py::object dtype, Serializer::ArrayGlobalOffset partition, Device device, const std::string &schema)
                         {
                      DNDS_check_throw_info(s, "null Array serializer");
@@ -575,9 +582,17 @@ namespace DNDS::Runtime
                      catch (...)
                      {
                      }
-                     Detail::IOCheck(bool(prototype), mpi, s->IsPerRank(), "Array checkpoint read requires a valid registered dtype on every rank");
-                     auto archive = ReadArrayStorage(s, name, mpi, partition, device, prototype->Schema(), {}, schema);
-                     return prototype->WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), prototype->Dtype().itemsize())); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Read directly into host storage, dynamically validate logical shape, and swap declared words when file endian differs. Invalid dtype/class registration is rejected collectively before reading. Device destinations require a direct I/O backend and are currently rejected; match collective calls and mesh/field identities.");
+                     const auto itemsize = prototype ? size_t(prototype->Dtype().itemsize()) : size_t(0);
+                     std::optional<ElementSchema> protoSchema;
+                     if (prototype)
+                         protoSchema.emplace(prototype->Schema());
+                     ArrayArchive archive;
+                     {
+                         py::gil_scoped_release release;
+                         Detail::IOCheck(bool(prototype), mpi, s->IsPerRank(), "Array checkpoint read requires a valid registered dtype on every rank");
+                         archive = ReadArrayStorage(s, name, mpi, partition, device, *protoSchema, {}, schema);
+                     }
+                     return prototype->WithStorage(ArrayStorage::FromBuffer(std::move(archive.layout), std::move(archive.storage), itemsize)); }, py::arg("serializer"), py::arg("name"), py::arg("mpi"), py::arg("dtype") = py::dtype::of<double>(), py::arg("partition") = Serializer::ArrayGlobalOffset_Unknown, py::arg("device") = Device::Host(), py::arg("schema") = "", "Read directly into host storage, dynamically validate logical shape, and swap declared words when file endian differs. Invalid dtype/class registration is rejected collectively before reading. Device destinations require a direct I/O backend and are currently rejected; match collective calls and mesh/field identities.");
         BindMPIOptions(m);
         py::class_<TransferLayout>(m, "TransferLayout", "Destination storage policy. Preserve the local table width/stride, padded capacity or CSR family by default, including empty ranks. Incompatible incoming rows reject collectively; compact CSR is explicit.")
             .def(py::init<>())
@@ -686,8 +701,8 @@ namespace DNDS::Runtime
                  { p.CheckLayouts(src.Layout(), dst.Layout(), src.Dtype().itemsize(), src.SameElement(dst) && p.Compatible(ArrayTypeIdentity(src)));
                    return reducer ? p.Bind(src.Storage(), dst.Storage(), *reducer, transport, options) : p.Bind(src.Storage(), dst.Storage(), transport, options); }, py::arg("source"), py::arg("destination"), py::arg("reducer") = py::none(), py::arg("transport") = TransferTransport::Direct, py::arg("options") = TransferOptions{});
         py::class_<TransferBinding>(m, "TransferBinding", "Binding pins allocations, not variable names. Match collective begin order/tags, finish producers, and drain before mutation or MPI_Finalize.")
-            .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host(), "Collectively begin on all ranks; CPU producers must be complete. Retain/wait the operation and use an MPI-permitted thread.")
-            .def("begin_scheduled", py::overload_cast<ExecutionContext, bool>(&TransferBinding::BeginScheduled, py::const_), py::arg("context") = ExecutionContext::Host(), py::arg("caller_valid") = true, "Borrowed-context interop. Caller owns request progress and stream lifetime; no ordering is inferred. caller_valid joins the existing preflight.")
+            .def("begin", &TransferBinding::Begin, py::arg("context") = ExecutionContext::Host(), py::call_guard<py::gil_scoped_release>(), "Collectively begin on all ranks; CPU producers must be complete. Retain/wait the operation and use an MPI-permitted thread.")
+            .def("begin_scheduled", py::overload_cast<ExecutionContext, bool>(&TransferBinding::BeginScheduled, py::const_), py::arg("context") = ExecutionContext::Host(), py::arg("caller_valid") = true, py::call_guard<py::gil_scoped_release>(), "Borrowed-context interop. Caller owns request progress and stream lifetime; no ordering is inferred. caller_valid joins the existing preflight.")
             .def("begin_scheduled", py::overload_cast<const ExecutionStream &, bool>(&TransferBinding::BeginScheduled, py::const_), py::arg("stream"), py::arg("caller_valid") = true, py::call_guard<py::gil_scoped_release>(), "Managed MPI begin: runtime registers requests before posting and owns completion even when the operation handle is dropped. Caller still supplies all dependency edges.")
             .def("begin_checked", &TransferBinding::BeginChecked, py::arg("stream"), py::arg("caller_valid") = true, py::call_guard<py::gil_scoped_release>(), "Managed MPI begin with declared-access checking. Requires a checked stream; registers ownership before posting and preserves the caller's explicit dependencies.")
             .def("submit_ready", &TransferBinding::SubmitReady, py::arg("engine"), py::arg("stream"), py::arg("caller_valid") = true,

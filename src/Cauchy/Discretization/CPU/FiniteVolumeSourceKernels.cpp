@@ -148,8 +148,11 @@ namespace DNDS::Cauchy::CPU
                             }
                     }
                     else if (request.ransFirst >= 0)
-                        for (int d = 0; d < dimension; ++d)
+                    {
+                        const int gradDim = std::min(dimension, 3);
+                        for (int d = 0; d < gradDim; ++d)
                             point.gradient(logical, d) = request.gradients[location.physicalField][d](inputRow, physical);
+                    }
                 }
             }
         }

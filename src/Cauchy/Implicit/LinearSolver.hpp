@@ -7,8 +7,6 @@
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 
-
-
 namespace DNDS::Cauchy
 {
     /// Resolved numerical choices, independent of frontend configuration layout.
@@ -149,6 +147,7 @@ namespace DNDS::Cauchy
         Linear::LinearIterationReport Solve(const EquationDofs &rhs,
                                             OptionalRef<const EquationDofs> initialGuess = {},
                                             const std::vector<real> &componentScales = {}, OptionalRef<IterationChecks> checks = {});
+        void UpdateTolerances(index maxIterations, real relativeTolerance, real absoluteTolerance);
         EquationDofs Solution() const;
     };
 }

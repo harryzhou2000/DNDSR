@@ -892,3 +892,25 @@ TEST_CASE("One CPU AMG correction follows logical block order in a permuted equa
         for (int j = 0; j < 5; ++j)
             CHECK(layout.View()(i, j) == doctest::Approx(expected.At(i, j)).epsilon(1e-13));
 }
+
+TEST_CASE("LinearSolver accepts all five G14 ILU orderings and converges")
+{
+    Fixture fixture(1, false, true);
+    const auto bind = [&](Field &field)
+    { return fixture.Bind(field); };
+    for (const char *ordering : {"natural", "rcm", "boostRcm", "boostMmd", "metis"})
+    {
+        CAPTURE(ordering);
+        C::LinearSolveSettings settings;
+        settings.method = "gmres";
+        settings.preconditioner = "ilu";
+        settings.iluOrdering = ordering;
+        settings.iluFill = 0;
+        settings.maxIterations = 20;
+        settings.relativeTolerance = 1e-10;
+        C::LinearSolver solver(fixture.problem, fixture.rhs, bind, settings);
+        const auto result = solver.Solve(fixture.rhs);
+        REQUIRE(result.usable);
+        CHECK(result.converged);
+    }
+}

@@ -2,12 +2,6 @@
 
 Each row is a collected pytest case or parameterization. The columns show its minimum level and the CI lanes that select it. Runtime skips still depend on hardware, optional packages, and rank count.
 
-## [test/CFV/test_cfv_dissdisp.py](../../test/CFV/test_cfv_dissdisp.py)
-
-| Level | MPI ranks | Case |
-|---|---|---|
-| 1 | 1 | `test_native_affine_shear_geometry` |
-
 ## [test/CFV/test_fv_correctness.py](../../test/CFV/test_fv_correctness.py)
 
 | Level | MPI ranks | Case |

@@ -21,7 +21,7 @@ namespace DNDS::Direct
     /// Preserve fixed matrix dimensions supplied by a kernel specialization;
     /// dynamic callers retain the same dynamic result. No size dispatch here.
     template <class Derived>
-    auto TryInvertDiagonalBlock(const Eigen::MatrixBase<Derived> &matrix, int refinementSteps = 0) noexcept
+    auto TryInvertDiagonalBlock(const Eigen::MatrixBase<Derived> &matrix, int refinementSteps = 0)
         -> NumericalResult<DiagonalBlockInverseResult<typename Derived::PlainObject>>
     {
         using Matrix = typename Derived::PlainObject;
@@ -72,9 +72,9 @@ namespace DNDS::Direct
             Matrix residual(matrix.rows(), matrix.cols()), trial(matrix.rows(), matrix.cols());
             RefineInverse(normalized, result.value, residual, trial, int(matrix.rows()), refinementSteps);
         }
+        result.value = (result.value * scale.asDiagonal()).eval();
         if (!result.value.allFinite())
             return NumericalStatus{NumericalError::InvalidState, 2};
-        result.value = (result.value * scale.asDiagonal()).eval();
         return result;
     }
 

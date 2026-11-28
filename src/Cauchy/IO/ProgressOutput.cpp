@@ -259,7 +259,8 @@ namespace DNDS::Cauchy
                                                        std::string bareHistory, bool writer,
                                                        std::shared_ptr<OperationalLogger> logger,
                                                        std::optional<CsvLogPosition> resume,
-                                                       std::function<void(const CsvRow &)> retain)
+                                                       std::function<void(const CsvRow &)> retain,
+                                                       std::vector<BoundaryFluxSinkConfig> boundarySinks)
         : _schema(std::move(schema)), _settings(std::move(settings)), _domain(std::move(domain)), _writer(writer),
           _logger(std::move(logger))
     {
@@ -267,9 +268,85 @@ namespace DNDS::Cauchy
         // Multi-domain coordinators pass the configured domain name.
         DNDS_check_throw_info(_logger, "invalid Cauchy progress-output controller");
         if (_writer)
+        {
             _history = std::make_unique<ProgressHistory>(DetailedHistorySchema(_schema, _settings.historyStateBounds), bareHistory,
                                                          _settings.historySegmentRows, _settings.historyPrecision, resume,
                                                          std::move(retain));
+            if (!boundarySinks.empty())
+            {
+                const auto bndSchema = BoundaryFluxHistorySchema(_schema);
+                _boundarySinks.reserve(boundarySinks.size());
+                for (auto &cfg : boundarySinks)
+                {
+                    std::function<void(const CsvRow &)> bndRetain;
+                    if (cfg.retain)
+                        bndRetain = [cb = std::move(cfg.retain), zone = cfg.spec.zone](const CsvRow &row)
+                        { cb(zone, row); };
+                    _boundarySinks.push_back({std::move(cfg.spec),
+                                              std::make_unique<ProgressHistory>(bndSchema, cfg.barePath,
+                                                                                _settings.historySegmentRows,
+                                                                                _settings.historyPrecision,
+                                                                                cfg.resume, std::move(bndRetain))});
+                }
+            }
+        }
+    }
+
+    CsvSchema BoundaryFluxHistorySchema(const EquationSchema &schema)
+    {
+        using T = CsvColumnType;
+        std::vector<CsvColumn> cols{
+            {"step", T::Integer},
+            {"stage", T::Integer},
+            {"coupled_stage", T::Integer},
+            {"iteration", T::Integer},
+            {"attempt", T::Integer},
+            {"time", T::Real},
+            {"dt", T::Real},
+            {"wall", T::Real},
+            {"status", T::Integer},
+            {"area", T::Real}};
+        for (const auto &name : EquationComponentNames(schema))
+            cols.push_back({"flux_" + name, T::Real});
+        cols.push_back({"force_t_x", T::Real});
+        cols.push_back({"force_t_y", T::Real});
+        cols.push_back({"force_t_z", T::Real});
+        return CsvSchema(std::move(cols));
+    }
+
+    void ProgressOutputController::WriteBoundaryFluxes(const ProgressLocation &location, ProgressRecordStatus status,
+                                                       const std::vector<BoundaryFluxIntegral> &fluxes)
+    {
+        if (!_writer || _boundarySinks.empty() || fluxes.empty())
+            return;
+        const auto names = EquationComponentNames(_schema);
+        for (const auto &entry : fluxes)
+        {
+            const auto it = std::find_if(_boundarySinks.begin(), _boundarySinks.end(),
+                                         [zone = entry.zone](const BoundarySink &sink)
+                                         { return sink.spec.zone == zone; });
+            if (it == _boundarySinks.end())
+                continue;
+            DNDS_check_throw_info(entry.flux.size() == names.size(),
+                                  "Cauchy boundary flux integral shape differs from equation schema");
+            auto row = it->history->NewRow();
+            row.Set("step", location.step);
+            row.Set("stage", location.stage);
+            row.Set("coupled_stage", location.coupledStage);
+            row.Set("iteration", location.iteration);
+            row.Set("attempt", location.attempt);
+            row.Set("time", location.time);
+            row.Set("dt", location.dt);
+            row.Set("wall", location.wall);
+            row.Set("status", index(status));
+            row.Set("area", entry.area);
+            for (size_t j = 0; j < names.size(); ++j)
+                row.Set("flux_" + names[j], entry.flux[j]);
+            row.Set("force_t_x", entry.tangentialForce[0]);
+            row.Set("force_t_y", entry.tangentialForce[1]);
+            row.Set("force_t_z", entry.tangentialForce[2]);
+            it->history->Write(row);
+        }
     }
     ProgressRow ProgressOutputController::Base(const ProgressLocation &location, ProgressRecordStatus status) const
     {
@@ -404,6 +481,7 @@ namespace DNDS::Cauchy
                 FillNonlinear(row, entry.progress);
                 row.Set("stage_iteration_wall_mean", stageAverage);
                 _history->Write(row);
+                WriteBoundaryFluxes(observation, ProgressRecordStatus::NonlinearIteration, entry.progress.boundaryFluxes);
             }
             if (_settings.implicit.consoleInterval > 0 &&
                 (entry.location.iteration % _settings.implicit.consoleInterval == 0 || entry.progress.terminal ||
@@ -495,6 +573,8 @@ namespace DNDS::Cauchy
                 FillResiduals(row, progress.residual);
             FillStateBounds(row, progress.stateBounds);
             _history->Write(row);
+            if (!progress.boundaryFluxes.empty())
+                WriteBoundaryFluxes(location, ProgressRecordStatus::AcceptedStepEnd, progress.boundaryFluxes);
         }
         if (printConsole)
         {
@@ -523,11 +603,23 @@ namespace DNDS::Cauchy
         FlushIterations();
         if (_history)
             _history->Flush();
+        for (auto &sink : _boundarySinks)
+            if (sink.history)
+                sink.history->Flush();
         _logger->Flush();
     }
     CsvLogPosition ProgressOutputController::HistoryPosition() const
     {
         DNDS_check_throw_info(_writer && _history, "history position is available only on its writer");
         return _history->Position();
+    }
+    std::map<std::string, CsvLogPosition> ProgressOutputController::BoundaryHistoryPositions() const
+    {
+        DNDS_check_throw_info(_writer, "boundary history positions are available only on their writer");
+        std::map<std::string, CsvLogPosition> result;
+        for (const auto &sink : _boundarySinks)
+            if (sink.history)
+                result.emplace(sink.spec.canonicalName, sink.history->Position());
+        return result;
     }
 }

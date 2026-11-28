@@ -19,7 +19,7 @@ namespace DNDS::CFV::Math
             const rowsize slot = rowsize(entry - plan.offsets(iCell, 0));
             const index face = plan.topology.CellFaces(iCell)[slot];
             const index other = plan.topology.CellFaceOther(iCell, face, slot);
-            const index boundaryRow = other == UnInitIndex ? plan.boundaryIds(entry, 0) : UnInitIndex;
+            const index boundaryRow = other == UnInitIndex ? index(plan.boundaryIds(entry, 0)) : index(UnInitIndex);
             // Pure extrapolation has no prescribed sample or weight in the fit.
             if (other == UnInitIndex && boundaryRow == UnInitIndex)
                 continue;
@@ -60,7 +60,7 @@ namespace DNDS::CFV::Math
                     destination[component * modes + d] = source[component * dimension + d] * scale;
         }
         else
-            for (index component = 0; component < components; ++component)
+            for (index component = firstComponent; component < end; ++component)
                 for (int d = 0; d < dimension; ++d)
                     destination[component * dimension + d] = source[component * modes + d] / scale;
     }

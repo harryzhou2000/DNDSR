@@ -22,6 +22,7 @@
 #include "doctest.h"
 
 #include "CFV/Math/Limiters.hpp"
+#include "CFV/Math/WBAPScalar.hpp"
 
 #include <Eigen/Core>
 #include <cmath>
@@ -602,6 +603,33 @@ TEST_CASE("All limiters handle near-zero inputs without NaN")
     SUBCASE("FWBAP_L2_Biway_PolynomialOrth")
     {
         FWBAP_L2_Biway_PolynomialOrth(u1, u2, out, 1.0);
+        CHECK_FALSE(out.hasNaN());
+    }
+}
+
+TEST_CASE("WBAPScalar extreme scale ratios and zero neighbors avoid Inf/Inf NaN")
+{
+    CHECK(std::isfinite(DNDS::CFV::Math::WBAPBiway(1e100, 1e-100)));
+    CHECK(std::isfinite(DNDS::CFV::Math::WBAPBiway(-1e100, 1e-100)));
+    CHECK(DNDS::CFV::Math::WBAPBiway(1e100, 0.0) == 0.0);
+    const double r = DNDS::CFV::Math::WBAPClampedRatio(1e100, 1e-100, 1e-50);
+    CHECK(std::isfinite(r));
+    CHECK(std::isfinite(r * r * r * r));
+}
+
+TEST_CASE("FWBAP_L2_Multiway_Polynomial<3> handles 3D polynomial row counts without NaN")
+{
+    for (int nRows : {3, 6, 10})
+    {
+        std::vector<Eigen::ArrayXXd> uOthers(4);
+        for (auto &u : uOthers)
+        {
+            u.resize(nRows, 2);
+            u.setRandom();
+        }
+        Eigen::ArrayXXd out;
+        out.resizeLike(uOthers[0]);
+        FWBAP_L2_Multiway_Polynomial<3>(uOthers, 4, out, 1.0);
         CHECK_FALSE(out.hasNaN());
     }
 }

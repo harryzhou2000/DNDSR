@@ -145,7 +145,7 @@ namespace DNDS::CFV
                                               std::abs(view.Periodic().translation[frame].map()[1]) < 1e-12,
                                           "axisymmetric periodic transforms must preserve radius=y");
                 }
-            data = std::make_shared<Detail::FiniteVolumeData>(mesh, intOrder, geomOrder, axisymmetric, communication);
+            data = std::make_shared<Detail::FiniteVolumeData>(mesh, intOrder, faceIntOrder, geomOrder, axisymmetric, communication);
             const index nCellProc = view.NumCellProc();
             data->cellVolume = R::Array<real>(R::RowLayout::Dense(nCellProc, 1));
             data->cellCent = R::Array<real>(R::RowLayout::Dense(nCellProc, 3));

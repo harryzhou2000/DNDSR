@@ -16,15 +16,28 @@ namespace DNDS::Cauchy
         Json positions = Json::array();
         for (const auto cursor : history)
             positions.push_back({{"block", cursor.block}, {"rows", cursor.line}});
-        return {{"schema_version", schemaVersion},
-                {"prefix", prefix},
-                {"checkpoint_interval", checkpointInterval},
-                {"visualization_interval", visualizationInterval},
-                {"checkpoint_time_interval", checkpointTimeInterval},
-                {"visualization_time_interval", visualizationTimeInterval},
-                {"next_checkpoint_time", nextCheckpointTime},
-                {"next_visualization_time", nextVisualizationTime},
-                {"history", std::move(positions)}};
+        Json out{{"schema_version", schemaVersion},
+                 {"prefix", prefix},
+                 {"checkpoint_interval", checkpointInterval},
+                 {"visualization_interval", visualizationInterval},
+                 {"checkpoint_time_interval", checkpointTimeInterval},
+                 {"visualization_time_interval", visualizationTimeInterval},
+                 {"next_checkpoint_time", nextCheckpointTime},
+                 {"next_visualization_time", nextVisualizationTime},
+                 {"history", std::move(positions)}};
+        if (!boundaryHistory.empty())
+        {
+            Json bndArr = Json::array();
+            for (const auto &domMap : boundaryHistory)
+            {
+                Json obj = Json::object();
+                for (const auto &[name, cursor] : domMap)
+                    obj[name] = {{"block", cursor.block}, {"rows", cursor.line}};
+                bndArr.push_back(std::move(obj));
+            }
+            out["boundary_history"] = std::move(bndArr);
+        }
+        return out;
     }
     OutputControllerState OutputControllerState::FromJson(const Json &value)
     {
@@ -39,6 +52,17 @@ namespace DNDS::Cauchy
         state.nextVisualizationTime = value.at("next_visualization_time").get<uint64_t>();
         for (const auto &cursor : value.at("history"))
             state.history.push_back({cursor.at("block").get<int>(), cursor.at("rows").get<int64_t>()});
+        if (value.contains("boundary_history") && value.at("boundary_history").is_array())
+        {
+            for (const auto &domObj : value.at("boundary_history"))
+            {
+                std::map<std::string, CsvLogPosition> domMap;
+                if (domObj.is_object())
+                    for (const auto &[name, cursor] : domObj.items())
+                        domMap.emplace(name, CsvLogPosition{cursor.at("block").get<int>(), cursor.at("rows").get<int64_t>()});
+                state.boundaryHistory.push_back(std::move(domMap));
+            }
+        }
         DNDS_check_throw_info(state.schemaVersion == 1 && !state.prefix.empty() &&
                                   state.checkpointInterval >= 0 && state.visualizationInterval >= 0 &&
                                   std::isfinite(state.checkpointTimeInterval) && state.checkpointTimeInterval >= 0 &&
@@ -79,6 +103,11 @@ namespace DNDS::Cauchy
         return _settings.prefix + "-D" + std::to_string(domain);
     }
     std::string OutputPlan::HistoryBare(index domain) const { return DomainPrefix(domain) + "-history"; }
+    std::string OutputPlan::BoundaryIntegrationBare(index domain, const std::string &canonicalName) const
+    {
+        DNDS_check_throw_info(!canonicalName.empty(), "canonical boundary name is empty");
+        return DomainPrefix(domain) + "-bc-" + canonicalName;
+    }
     OutputControllerState OutputPlan::InitialState(real time) const
     {
         DNDS_check_throw_info(std::isfinite(time) && time >= 0, "invalid initial output-controller time");

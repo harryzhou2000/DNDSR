@@ -28,16 +28,9 @@ PYTHONPATH=python pytest test/CFV/ -v
 | `cfv_test_reconstruction` | `cfv_reconstruction_np{1,2,4,8}` | test_Reconstruction.cpp | MPI |
 | `cfv_test_reconstruction3d` | `cfv_reconstruction3d_np{1,2,4,8}` | test_Reconstruction3D.cpp | MPI integration |
 | Same binary | `cfv_reconstruction3d_contract_np{1,2,4,8}` | Generated connected 64-cell hex mesh | MPI routine |
-| `cfv_test_device_transferable` | `cfv_device_transferable_np1` | test_DeviceTransferable.cu | MPI (CUDA) |
 | — | — | test_fv_correctness.py | pytest |
 | — | — | test_vr_correctness.py | pytest |
-| — | — | test_basic_fv.py | pytest |
-| — | — | test_cfv_dissdisp.py::test_native_affine_shear_geometry | pytest |
-
-The print-only legacy reconstruction example runs with
-`PYTHONPATH=python python test/demos/legacy_cfv.py`.
-Run the dispersion study directly with
-`PYTHONPATH=python python test/CFV/test_cfv_dissdisp.py`.
+| — | — | test_fv_facility.py | pytest (MPI + CUDA) |
 
 ---
 

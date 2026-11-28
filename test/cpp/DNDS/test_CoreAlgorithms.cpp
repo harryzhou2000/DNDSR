@@ -3,6 +3,7 @@
 
 #include "DNDS/Core/Algorithm.hpp"
 #include "DNDS/Core/FormatSpec.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include "DNDS/Core/Offsets.hpp"
 #include "DNDS/Core/Permutation.hpp"
 #include "DNDS/Core/Ranges.hpp"
@@ -145,4 +146,28 @@ TEST_CASE("RequirePairwiseDisjoint catches aliased outputs and output-vs-input o
     CHECK_NOTHROW(DNDS::Algebra::Detail::RequirePairwiseDisjoint({&a, static_cast<const R::Array<double> *>(nullptr)}, {&b, &c}));
     CHECK_THROWS(DNDS::Algebra::Detail::RequirePairwiseDisjoint({&a, &a}, {&b}));
     CHECK_THROWS(DNDS::Algebra::Detail::RequirePairwiseDisjoint({&a}, {&b, &a}));
+}
+
+TEST_CASE("OMP::ExclusivePrefixRowsWithThreads handles requested threads exceeding available threads")
+{
+    constexpr DNDS::index n = 100;
+    std::vector<DNDS::index> counts(static_cast<size_t>(n), 0);
+    std::vector<DNDS::index> offsets(static_cast<size_t>(n) + 1, -1);
+    for (DNDS::index i = 0; i < n; ++i)
+        counts[size_t(i)] = (i % 7) + 1;
+    // Request more threads than typical OMP_NUM_THREADS to verify all worker chunks are counted.
+    const DNDS::index total = DNDS::OMP::ExclusivePrefixRowsWithThreads(
+        n, 32,
+        [&](DNDS::index row)
+        { return counts[size_t(row)]; },
+        [&](DNDS::index row, DNDS::index off)
+        { offsets[size_t(row)] = off; });
+    offsets[size_t(n)] = total;
+    DNDS::index expected = 0;
+    for (DNDS::index i = 0; i < n; ++i)
+    {
+        CHECK(offsets[size_t(i)] == expected);
+        expected += counts[size_t(i)];
+    }
+    CHECK(total == expected);
 }

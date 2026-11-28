@@ -1,6 +1,7 @@
 #include "DNDS/Runtime/Execution/CUDAStream.hpp"
 #include "CFV/Detail/ReconstructionDeviceKernels.hpp"
 #include "CFV/Detail/ReconstructionSweepArguments.hpp"
+#include "CFV/Math/WBAPScalar.hpp"
 #include <cuda_runtime.h>
 #include <cmath>
 
@@ -28,12 +29,6 @@ namespace DNDS::CFV::Detail
             for (index i = threadIdx.x; i < output.width; i += blockDim.x)
                 if (!isfinite(output(selection.RowAt(iWork), i)))
                     atomicExch(&status(0, 0), 1);
-    }
-    __device__ real Biway(real center, real other, real epsilon)
-    {
-        const real ratio = center / (fabs(other) + epsilon) * ((other > 0) - (other < 0));
-        const real r2 = ratio * ratio;
-        return other == 0 ? 0 : center * (1 + r2 * ratio) / (1 + r2 * r2);
     }
     /// Limiter-only projection keeps unrelated raw/inverse/sweep tables out
     /// of the aggregate CUDA argument block.
@@ -138,7 +133,7 @@ namespace DNDS::CFV::Detail
                     __syncthreads();
                 }
                 for (index i = threadIdx.x; i < count; i += blockDim.x)
-                    scratch(row + 2, i) = Biway(scratch(row, i), scratch(row + 1, i), epsilon);
+                    scratch(row + 2, i) = Math::WBAPBiway(scratch(row, i), scratch(row + 1, i));
                 __syncthreads();
                 if (transform.count)
                 {
@@ -159,18 +154,24 @@ namespace DNDS::CFV::Detail
                 {
                     const index mode = i % modes, component = i / modes;
                     const real value = scratch(row + 2, i);
-                    const real ratio = input(iCell, component * plan.n + begin + mode) / (fabs(value) + epsilon) * ((value > 0) - (value < 0));
-                    scratch(row + 3, i) += ratio * ratio * ratio;
-                    scratch(row + 4, i) += ratio * ratio * ratio * ratio;
                     if (value == 0)
+                    {
                         scratch(row + 5, i) = 0;
+                        continue;
+                    }
+                    const real ratio = Math::WBAPClampedRatio(input(iCell, component * plan.n + begin + mode), value, epsilon);
+                    const real r2 = ratio * ratio;
+                    scratch(row + 3, i) += r2 * ratio;
+                    scratch(row + 4, i) += r2 * r2;
                 }
                 __syncthreads();
             }
             for (index i = threadIdx.x; i < count; i += blockDim.x)
             {
                 const index mode = i % modes, component = i / modes;
-                output(iCell, component * plan.n + begin + mode) *= scratch(row + 5, i) * scratch(row + 3, i) / scratch(row + 4, i);
+                const real v = scratch(row + 5, i);
+                output(iCell, component * plan.n + begin + mode) =
+                    v == 0 ? 0 : output(iCell, component * plan.n + begin + mode) * scratch(row + 3, i) / scratch(row + 4, i);
             }
             __syncthreads();
         }
@@ -249,11 +250,15 @@ namespace DNDS::CFV::Detail
                               "CUDA limited Jacobi penalty/target shape mismatch");
         R::CheckKernelArgumentBudget<RawReconstructionSweepView, decltype(selection), decltype(blocks), decltype(mean), decltype(input),
                                      decltype(boundary), decltype(output), decltype(status), decltype(target), decltype(alpha)>();
-        if (!selection.RowCount())
-            return;
         // A separate stream-ordered validation pass avoids a status read/write
         // race between cell blocks and prevents partial publication on error.
-        ValidatePenalty<<<unsigned(std::min<index>(256, (alpha.rows + 127) / 128)), 128, 0, ::DNDS::Runtime::CUDAStream(context)>>>(alpha, status);
+        if (alpha.rows)
+            ValidatePenalty<<<unsigned(std::min<index>(256, (alpha.rows + 127) / 128)), 128, 0, ::DNDS::Runtime::CUDAStream(context)>>>(alpha, status);
+        if (!selection.RowCount())
+        {
+            DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA limited Jacobi penalty validation failed");
+            return;
+        }
         if (pipeline)
             LaunchLimitedStagedJacobi(context, plan, selection, blocks, mean, input, boundary, output, status.ConstView(), target, alpha, options, arithmetic);
         else

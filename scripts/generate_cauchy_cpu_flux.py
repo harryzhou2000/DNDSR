@@ -17,13 +17,14 @@ def generate(manifest, directory, families, dimensions):
             continue
         shapes = read_shapes(manifest, acm, dimensions)
         for c, m, d in shapes:
-            profile = ("ACM" if acm else "PerfectGas") + ("", "SA", "TwoEquation")[c - (4 if acm else 5)]
+            profile = ("ACM" if acm else "PerfectGas") + \
+                ("", "SA", "TwoEquation")[c - (4 if acm else 5)]
             for form in (("Modal",) if m else ("MeanOnly", "DirectGradient")):
                 name = f"Flux_{profile}_{form}_C{c}_M{m}_D{d}"
                 tag = f"EquationPhysicsProfile::{profile}, ReconstructionForm::{form}"
                 path = directory / f"FiniteVolumeCPUFluxCatalog_{name}.cpp"
                 write_if_changed(path, f'''// Generated CPU specialization.
-#include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation_Impl.cpp.inc"
+#include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation_Impl.hxx"
 namespace DNDS::Cauchy::CPU
 {{
     NumericalResult<index> {name}(const FluxRowsRequest &a) noexcept
@@ -37,8 +38,10 @@ namespace DNDS::Cauchy::CPU
 }}
 ''')
                 sources.append(path)
-                declarations.append(f"    NumericalResult<index> {name}(const FluxRowsRequest &) noexcept;")
-                entries.append(f"            {{{tag}, {c}, {d}, {m}, {name}}},")
+                declarations.append(
+                    f"    NumericalResult<index> {name}(const FluxRowsRequest &) noexcept;")
+                entries.append(
+                    f"            {{{tag}, {c}, {d}, {m}, {name}}},")
     write_if_changed(header, '''#pragma once
 #include "Cauchy/Discretization/CPU/FiniteVolumeFluxShapes.hpp"
 namespace DNDS::Cauchy::CPU
@@ -71,4 +74,5 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", required=True, type=Path)
     add_feature_arguments(parser)
     args = parser.parse_args()
-    generate(args.manifest, args.output_dir.resolve(), args.families, args.dimensions)
+    generate(args.manifest, args.output_dir.resolve(),
+             args.families, args.dimensions)

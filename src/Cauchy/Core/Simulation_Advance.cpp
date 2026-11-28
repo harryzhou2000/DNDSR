@@ -236,6 +236,16 @@ namespace DNDS::Cauchy
                     };
                 // Exactly one dispatch. The selected policy owns its entire
                 // nonlinear loop and orders interface/domain sweeps itself.
+                struct ActiveSessionsGuard
+                {
+                    std::vector<std::optional<NonlinearSession>> *&slot;
+                    ActiveSessionsGuard(std::vector<std::optional<NonlinearSession>> *&s,
+                                        std::vector<std::optional<NonlinearSession>> &target) : slot(s)
+                    {
+                        slot = &target;
+                    }
+                    ~ActiveSessionsGuard() { slot = nullptr; }
+                } activeGuard(_activeSessions, sessions);
                 SolveNonlinearGroup(group);
                 return group.Interrupted();
             };

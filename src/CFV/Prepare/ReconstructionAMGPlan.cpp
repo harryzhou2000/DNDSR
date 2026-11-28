@@ -48,7 +48,7 @@ namespace DNDS::CFV
         DNDS_check_throw_info(!space.Distributed() || MPIInfo(space.Communicator()).size == 1,
                               "VR AMG currently supports one rank/device; no hidden principal extraction");
         const index rows = host.metrics.NumCell(), n = host.n;
-        DNDS_check_throw_info(n > 0 && n <= 19 && rows <= INT_MAX / n, "VR AMG rows/modes exceed provider extent");
+        DNDS_check_throw_info(rows > 0 && n > 0 && n <= 19 && rows <= INT_MAX / n, "VR AMG rows/modes exceed provider extent");
         const auto offsetRead = host.offsets.Read(), neighborRead = host.neighbors.Read(), faceRead = host.faces.Read();
         const auto boundaryRead = host.boundaryOffsets.Read();
         const auto offsets = offsetRead.View(), neighbors = neighborRead.View(), faces = faceRead.View(), boundary = boundaryRead.View();
@@ -142,12 +142,13 @@ namespace DNDS::CFV
         // healthy engine.Close(), late scope fences observe retired completion
         // without another native call. Do not mark a scope complete before its
         // view is formed: Complete intentionally revokes further view access.
+        const R::ExecutionContext retainedContext{context.device, nullptr};
         for (const auto *array : {&data.deviceOffsets, &data.deviceColumns})
-            data.intReads.push_back(array->Read(context));
+            data.intReads.push_back(array->Read(retainedContext));
         for (const auto *array : {&data.incidenceOffsets, &data.neighbors, &data.boundaryOffsets})
-            data.indexReads.push_back(array->Read(context));
+            data.indexReads.push_back(array->Read(retainedContext));
         for (const auto *array : {&data.values, &data.vectors, &data.injection})
-            data.realReads.push_back(array->Read(context));
+            data.realReads.push_back(array->Read(retainedContext));
         data.geometry = {data.indexReads[0].View(), data.indexReads[1].View(), data.indexReads[2].View(),
                          data.realReads[1].View(), data.realReads[2].View(), data.intReads[0].View(), data.intReads[1].View(), data.realReads[0].View(), int(n)};
         return result;
@@ -223,7 +224,7 @@ namespace DNDS::CFV
                 data->provider->ApplyBorrowed(stream.Context(), read.View(), write.View());
             }
             R::SubmitArrays(engine, stream, [data, component](R::ExecutionContext context, auto source, auto packed, auto destination)
-                            { Detail::ScatterReconstructionAMGComponent(context, source, packed, destination, component, data->modes); }, R::Read(input.Owned()), R::Read(work.packedCorrection), R::Write(output.Owned()));
+                            { Detail::ScatterReconstructionAMGComponent(context, source, packed, destination, component, data->modes); }, R::Read(input.Owned()), R::Read(work.packedCorrection), component == 0 ? R::Write(output.Owned()) : R::ReadWrite(output.Owned()));
         }
     }
     Algebra::AmgXMemorySnapshot ReconstructionAMGPlan::MemorySnapshot() const

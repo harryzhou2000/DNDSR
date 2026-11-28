@@ -105,7 +105,7 @@ namespace DNDS::Cauchy
             DNDS_assert(_problem.admissibility);
             int valid = 0;
             _problem.finiteVolume.Reductions().LocalStage([&]
-                            {
+                                                          {
                 if (!_execution.meanCheck)
                     _execution.meanCheck.emplace(_problem.finiteVolume.Metrics().Space(), *_problem.admissibility,
                                                  _execution.ComputeStream().Context());
@@ -135,7 +135,7 @@ namespace DNDS::Cauchy
             request.meanThermodynamics = request.cellSpectralSum = true;
             std::optional<AuxiliaryValues> prepared;
             _problem.finiteVolume.Reductions().LocalStage([&]
-                            { prepared.emplace(_problem.finiteVolume.BuildAuxiliaryValues(request)); });
+                                                          { prepared.emplace(_problem.finiteVolume.BuildAuxiliaryValues(request)); });
             std::vector<R::TransferBinding> halos;
             for (index iField = 0; iField < _state.accepted.PhysicalFieldNumber(); ++iField)
             {
@@ -170,7 +170,7 @@ namespace DNDS::Cauchy
         }
         real local = 0;
         _problem.finiteVolume.Reductions().LocalStage([&]
-                        {
+                                                      {
             _problem.finiteVolume.ValidateAuxValues(_state.accepted, *_execution.timeAuxiliary, _state.time);
             DNDS_check_throw_info(_execution.timeAuxiliary->cellSpectralSum, "CFL selection requires cell spectral sums");
             if (!_execution.timeStages)
@@ -195,7 +195,7 @@ namespace DNDS::Cauchy
         // Trial initialization is an explicit publication boundary before the
         // method may take immediate reconstruction/history reservations.
         _problem.finiteVolume.Reductions().LocalStage([&]
-                        {
+                                                      {
             _execution.Synchronize();
             EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.accepted);
             EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.initial, _state.accepted);
@@ -213,7 +213,7 @@ namespace DNDS::Cauchy
         {
             ChemicalHalfStep(_state.accepted, _state.trial, .5 * dt);
             _problem.finiteVolume.Reductions().LocalStage([&]
-                            { EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.initial, _state.trial);
+                                                          { EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.initial, _state.trial);
                               _execution.Synchronize(); });
             // Euler's physical split does not reuse multistep transport
             // history across source jumps. Accepted split history is empty.
@@ -224,23 +224,25 @@ namespace DNDS::Cauchy
     void Domain::ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt)
     {
         _problem.finiteVolume.Reductions().LocalStage([&]
-                        {
+                                                      {
             _execution.Synchronize();
             const auto &workers = _execution.ChemicalWorkers();
             DNDS_check_throw_info(_problem.equation.HasMixture() && workers, "chemical source step requires its explicit mixture worker");
             AdvanceChemicalSource(_problem.equation, input, output, *workers, dt, _reactorControls); });
     }
-    void Domain::FinishChemicalStep()
+    StepResult Domain::FinishChemicalStep()
     {
         if (!_sourceStrang)
-            return;
+            return {};
         // The transport method has finished using its initial state. Reuse
         // that allocation as a distinct source output, then copy into trial.
         ChemicalHalfStep(_state.trial, _state.initial, .5 * _state.trialDt);
         _problem.finiteVolume.Reductions().LocalStage([&]
-                        { EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.initial);
+                                                      { EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.initial);
                           _execution.Synchronize(); });
-        DNDS_check_throw_info(Admissible(_state.trial), "chemical source candidate is inadmissible; accepted state unchanged");
+        if (!Admissible(_state.trial))
+            return StepResult::Rejected("chemical source candidate is inadmissible");
+        return {};
     }
     StepResult Domain::PrepareStep(real dt)
     {
@@ -517,7 +519,8 @@ namespace DNDS::Cauchy
         _state.stageGroup.reset();
         if (++_state.coordinatedStage == GroupNumber())
         {
-            FinishChemicalStep();
+            if (auto chem = FinishChemicalStep(); !chem)
+                return chem;
             if (!Admissible(_state.trial))
                 return StepResult::Rejected("coordinated candidate is inadmissible");
             _state.trialTime = _steady ? _state.time : _state.time + _state.trialDt;
@@ -528,7 +531,7 @@ namespace DNDS::Cauchy
     void Domain::CommitStep()
     {
         _problem.finiteVolume.Reductions().LocalStage([&]
-                        { DNDS_check_throw_info(_state.trialReady && (!_state.timeStepper || _state.timeStepper->HasPendingTrial()), "no prepared Cauchy candidate"); });
+                                                      { DNDS_check_throw_info(_state.trialReady && (!_state.timeStepper || _state.timeStepper->HasPendingTrial()), "no prepared Cauchy candidate"); });
         auto epoch = _state.trialEpoch;
         ++epoch.acceptedStep;
         epoch.stage = 0;
@@ -574,7 +577,7 @@ namespace DNDS::Cauchy
         try
         {
             _problem.finiteVolume.Reductions().LocalStage([&]
-                            { destination.emplace(_state.accepted.WriteOwned(_execution.ComputeStream().Context()));
+                                                          { destination.emplace(_state.accepted.WriteOwned(_execution.ComputeStream().Context()));
                               source.emplace(_state.trial.ReadOwned(_execution.ComputeStream().Context())); });
         }
         catch (...)
@@ -599,7 +602,7 @@ namespace DNDS::Cauchy
         _state.trialReady = false;
         DNDS_check_throw_info(Admissible(_state.accepted), "accepted Cauchy mean is inadmissible");
         _problem.finiteVolume.Reductions().LocalStage([&]
-                        {
+                                                      {
             _execution.Synchronize();
             EquationDofOperations::Copy(_execution.Engine(), _execution.ComputeStream(), _state.trial, _state.accepted);
             _execution.Synchronize(); });
@@ -622,13 +625,21 @@ namespace DNDS::Cauchy
         return _execution.stateDiagnostics->MeasureBounds(_execution.Engine(), _execution.ComputeStream(), trial ? _state.trial : _state.accepted);
     }
 
+    std::vector<BoundaryFluxIntegral> Domain::MeasureBoundaryFluxes(const std::vector<int> &zones)
+    {
+        if (zones.empty())
+            return {};
+        _execution.Synchronize();
+        return _problem.finiteVolume.LastBoundaryFluxIntegrals(*_execution.workspace, zones, _execution.ComputeStream());
+    }
+
     std::array<real, 14> Domain::Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones)
     {
         _execution.Synchronize();
         const auto rhs = _problem.finiteVolume.LastSpatialResidual(*_execution.workspace);
         std::array<real, 14> result{};
         _problem.finiteVolume.Reductions().LocalStage([&]
-                        {
+                                                      {
             if (!_execution.stateDiagnostics)
                 _execution.stateDiagnostics.emplace(_problem.finiteVolume.Metrics(), _problem.equation,
                     _execution.ComputeStream().Context(), _execution.ChemicalWorkers(), _problem.finiteVolume.Reductions());
@@ -659,7 +670,7 @@ namespace DNDS::Cauchy
         if (!_problem.equation.IsACM() && !_problem.equation.HasMixture() && !_problem.equation.HasRANS() && settings.initialProfile.kind == "isentropicVortex")
         {
             _problem.finiteVolume.Reductions().LocalStage([&]
-                            {
+                                                          {
                 if (!_execution.flowError)
                     _execution.flowError.emplace(_problem.finiteVolume, _execution.ComputeStream().Context()); });
             const auto error = _execution.flowError->Evaluate(_execution.Engine(), _execution.ComputeStream(),
@@ -692,10 +703,10 @@ namespace DNDS::Cauchy
     PreparedVisualization Domain::CaptureInternalVisualization(int hdfDeflateLevel, OutputStaging &staging)
     {
         _problem.finiteVolume.Reductions().LocalStage([&]
-                        { DNDS_check_throw_info(_state.timeStepper && _state.trialEpoch.trial &&
-                                                    (!_problem.finiteVolume.PolynomialReconstruction() || _state.restoreReconstruction) &&
-                                                    std::isfinite(_state.progressTime),
-                                                "Cauchy internal visualization has no active implicit trial"); });
+                                                      { DNDS_check_throw_info(_state.timeStepper && _state.trialEpoch.trial &&
+                                                                                  (!_problem.finiteVolume.PolynomialReconstruction() || _state.restoreReconstruction) &&
+                                                                                  std::isfinite(_state.progressTime),
+                                                                              "Cauchy internal visualization has no active implicit trial"); });
         return _problem.finiteVolume.PackVisualization(_state.trial, *_state.reconstruction, *_execution.workspace, _state.progressTime,
                                                        hdfDeflateLevel, _execution.ChemicalWorkers(), _execution.Engine(),
                                                        _execution.ComputeStream(), staging, true);

@@ -1559,15 +1559,6 @@ Each heading is a build target. The table gives the minimum CI level of each CTe
 - Queued matrix production validates once before modal WBAP without a host drain
 - Queued gradient WBAP shares the producer validation contract and leaves scalar components scalar
 
-## `cfv_test_device_transferable`
-
-| Level | CTest registrations |
-|---|---|
-| 1 | `cfv_device_transferable_np1` |
-
-[test_DeviceTransferable.cu](../../test/cpp/CFV/test_DeviceTransferable.cu)
-
-
 ## `cfv_test_fv_completion`
 
 | Level | CTest registrations |
@@ -1937,17 +1928,6 @@ Each heading is a build target. The table gives the minimum CI level of each CTe
 - Reserved weighted products and finite checks use deterministic resident reductions
 - Distributed coupled Jacobi and left GMRES share queued orchestration
 - Copy-free local AmgX consumes native int32 unsorted row-major blocks
-
-## `dnds_test_cauchy_multidomain_mesh`
-
-| Level | CTest registrations |
-|---|---|
-| 1 | `dnds_cauchy_multidomain_mesh_np1`, `dnds_cauchy_multidomain_mesh_np2` |
-| 2 | `dnds_cauchy_multidomain_mesh_np4`, `dnds_cauchy_multidomain_mesh_np8` |
-
-[test_MultidomainMesh.cpp](../../test/cpp/Cauchy/test_MultidomainMesh.cpp)
-
-- P1 Delaunay disk and periodic box-hole fixtures have complementary area and moving boundary matches
 
 ## `dnds_test_cauchy_nonlinear`
 

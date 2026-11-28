@@ -178,6 +178,7 @@ namespace DNDS::Direct
                     localPartStarts.resize(2);
                     localPartStarts[0] = 0;
                     localPartStarts[1] = this->Num();
+                    nParts = 1;
                 }
 
                 DNDS_assert(physicalWorkers.empty() || physicalWorkers.size() == size_t(nParts));

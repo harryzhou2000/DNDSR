@@ -108,11 +108,12 @@ namespace DNDS::Runtime
             std::vector<size_t> rowCapacity;
             std::mutex slabMutex;
 
-            State(size_t n, size_t bytes, RowLayoutKind layout, size_t cap, Buffer values = {}, WriteAccess access = {})
-                : rows(n), elementBytes(bytes), capacity(cap), width(cap), kind(layout)
+            State(size_t n, size_t bytes, RowLayoutKind layout, size_t cap, Buffer values = {}, WriteAccess access = {},
+                  std::optional<size_t> logicalWidth = std::nullopt)
+                : rows(n), elementBytes(bytes), capacity(cap), width(logicalWidth.value_or(cap)), kind(layout)
             {
-                DNDS_check_throw_info(n <= size_t(INT64_MAX) && cap <= size_t(INT64_MAX),
-                                      "row builder shape exceeds signed index range");
+                DNDS_check_throw_info(n <= size_t(INT64_MAX) && cap <= size_t(INT64_MAX) && width <= cap,
+                                      "row builder shape exceeds signed index range or table width exceeds stride");
                 DNDS_check_throw_info(bytes && (layout == RowLayoutKind::CSR || layout == RowLayoutKind::Padded || layout == RowLayoutKind::Table),
                                       "invalid row builder element size/layout");
                 lengths = Buffer::Allocate(CheckedSize::Multiply(n, sizeof(size_t)));
@@ -220,8 +221,10 @@ namespace DNDS::Runtime
         {
             const auto &shape = source.Layout();
             DNDS_check_throw_info(shape.IsContiguousRows(), "incremental row builder requires contiguous rows; convert explicitly");
-            RowBuilder draft(shape.RowCount(), source.ElementBytes(), shape.Kind(),
-                             shape.IsVariable() ? shape.Stride() : shape.Width());
+            RowBuilder draft(std::make_unique<State>(shape.RowCount(), source.ElementBytes(), shape.Kind(),
+                                                     shape.IsVariable() ? shape.Stride() : shape.Stride(),
+                                                     Buffer{}, WriteAccess{},
+                                                     shape.Kind() == RowLayoutKind::Table ? std::optional<size_t>(shape.Width()) : std::nullopt));
             const auto device = source.Values().GetDevice();
             auto read = source.Read({device, nullptr});
             const auto *values = read.View<std::byte>().data;

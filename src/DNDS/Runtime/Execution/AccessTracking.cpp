@@ -125,11 +125,15 @@ namespace DNDS::Runtime
             }
             std::lock_guard<std::mutex> lock(registry.mutex);
             if (!(registry.commands++ % 64))
+            {
                 for (auto it = registry.allocations.begin(); it != registry.allocations.end();)
+                {
                     if (it->second.lifetime.expired())
                         it = registry.allocations.erase(it);
                     else
                         ++it;
+                }
+            }
             for (const auto &entry : declared)
             {
                 const auto found = registry.allocations.find(entry.first);

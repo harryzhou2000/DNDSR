@@ -76,7 +76,8 @@ class Solver:
                 ``inner_process_parts``, ``readMeshMode``, etc.).
         """
         if not native:
-            raise ValueError("Solver.ReadMesh requires native mesh construction; native=False is retired")
+            raise ValueError(
+                "Solver.ReadMesh requires native mesh construction; native=False is retired")
         other_options = {} if other_options is None else other_options
         _LEGACY_TO_READ = {
             "meshElevation": "elevation",
@@ -120,14 +121,17 @@ class Solver:
             else:
                 raise ValueError(f"Unknown ReadMesh option: {k!r}")
 
-        result = read_mesh(mesh_file, mpi=self.mpi, dim=dim, native=native, **read_kw)
+        result = read_mesh(mesh_file, mpi=self.mpi, dim=dim,
+                           native=native, **read_kw)
         prepare_mesh(result.mesh, result.reader, **prep_kw)
         mesh = result.mesh
         if boundary_names is not None and result.name_to_id is not None and boundary_names.n2id_map != result.name_to_id.n2id_map:
-            raise ValueError("boundary_names differs from the CGNS-assigned boundary dictionary")
+            raise ValueError(
+                "boundary_names differs from the CGNS-assigned boundary dictionary")
         names = boundary_names if boundary_names is not None else result.name_to_id
         if names is None:
-            raise ValueError("Mesh archives retain zone IDs but no BC names; provide boundary_names=Geom.AutoAppendName2ID() with the matching name mapping")
+            raise ValueError(
+                "Mesh archives retain zone IDs but no BC names; provide boundary_names=Geom.AutoAppendName2ID() with the matching name mapping")
         bnd = build_bnd_mesh(mesh)
         self.mesh = mesh
         self.reader = result.reader
@@ -524,7 +528,7 @@ class Solver:
 
         # data = self.data
         data = (
-            self.data.Wrapped()
+            self.data.Wrapped() if hasattr(self.data, "Wrapped") else self.data
         )  # !caution, the wrapped objects cannot be put into pybind11 fields
         eval.RecGradient(solver.LoadArg_RecGradient())
         # print(data["p"].min())
