@@ -122,7 +122,8 @@ TEST_CASE("Queued FV gradients and linear-mode projection share CPU and CUDA inc
         C::GradientMethod method;
         bool sector;
     };
-    for (const auto profile : {Profile{2, 5, C::GradientMethod::GreenGauss, false},
+    for (const auto profile : {Profile{2, 4, C::GradientMethod::GreenGauss, false},
+                               Profile{2, 5, C::GradientMethod::GreenGauss, false},
                                Profile{2, 6, C::GradientMethod::LeastSquares, true},
                                Profile{3, 7, C::GradientMethod::GGMP, false}})
     {
@@ -196,7 +197,7 @@ TEST_CASE("Queued FV gradients and linear-mode projection share CPU and CUDA inc
                 write.View()(iCell, 0) = iCell % 2;
         }
         auto deviceActivation = activation.To(device, context);
-        for (const I transformed : {I(0), I(5)})
+        for (const I transformed : {I(0), std::min(I(5), components)})
         {
             auto transform = gradientPlan.BuildFaceTransform(0, transformed);
             if (transformed)

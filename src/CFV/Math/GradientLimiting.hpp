@@ -10,16 +10,20 @@ namespace DNDS::CFV::Math
      * Only [first,first+count) uses face characteristics; count==0 never reads
      * matrix data. All other components are limited as scalars. The frozen
      * input is never overwritten, so selected cells are independent.
+     * Optional static component/dimension bounds must match the input row;
+     * validated CUDA wrappers supply them, while CPU callers use runtime bounds.
      * @pre scratch has at least six times the gradient row width elements.
      */
-    template <class Vectors>
+    template <int StaticComponents = 0, int StaticDimension = 0, class Vectors>
     DNDS_DEVICE_CALLABLE void LimitGradientCell(const Detail::GradientLimiterView &plan, Vectors vectors,
                                                 const Detail::GradientLimiterValues &values, Detail::GradientOutput output,
                                                 index iCell, SpanView<real> scratch) noexcept
     {
         const auto center = values.input[iCell];
         const auto result = output[iCell];
-        const index width = center.size(), dim = plan.dimension, components = width / dim;
+        const index dim = StaticDimension ? StaticDimension : plan.dimension;
+        const index width = StaticComponents ? StaticComponents * dim : center.size();
+        const index components = StaticComponents ? StaticComponents : width / dim;
         for (index j = 0; j < width; ++j)
             result[j] = center[j];
         if (values.activated)

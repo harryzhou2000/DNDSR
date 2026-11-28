@@ -81,7 +81,10 @@ namespace DNDS::CFV::Detail
             return;
         real scratch[6 * Components * 3];
         for (index iWork = index(blockIdx.x) * blockDim.x + threadIdx.x; iWork < selection.RowCount(); iWork += index(gridDim.x) * blockDim.x)
-            Math::LimitGradientCell(plan, vectors, values, output, selection.RowAt(iWork), {scratch, 6 * Components * 3});
+            if (plan.dimension == 3)
+                Math::LimitGradientCell<Components, 3>(plan, vectors, values, output, selection.RowAt(iWork), {scratch, 6 * Components * 3});
+            else
+                Math::LimitGradientCell<Components, 2>(plan, vectors, values, output, selection.RowAt(iWork), {scratch, 6 * Components * 3});
     }
     __global__ void ValidateGradientIndicator(GradientInput indicator, R::ArrayView<int> status)
     {
