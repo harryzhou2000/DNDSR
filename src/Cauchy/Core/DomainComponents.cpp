@@ -1,4 +1,5 @@
 #include "Cauchy/Core/DomainComponents.hpp"
+#include "Cauchy/IO/BoundaryName.hpp"
 #include "Cauchy/Core/DomainMesh.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 
@@ -171,8 +172,10 @@ namespace DNDS::Cauchy
         }
         {
             auto workspaceStage = progress.Stage("state/workspace");
+            const bool captureBoundary = problem.finiteVolume.Settings().boundaryFacialFluxes ||
+                                         HasIntegratedBoundaries(problem.finiteVolume.Settings());
             workspace = problem.finiteVolume.BuildWorkspace(state.trial, context.ChemicalWorkers(),
-                                                            FiniteVolume::WorkspaceOptions{FiniteVolume::RHSKernelPolicy::Auto, problem.finiteVolume.Settings().boundaryFacialFluxes, true});
+                                                            FiniteVolume::WorkspaceOptions{FiniteVolume::RHSKernelPolicy::Auto, captureBoundary, true});
         }
     }
 }

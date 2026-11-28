@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Cauchy/Discretization/BoundaryFluxIntegral.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Core/NumericalReductions.hpp"
 #include "Cauchy/Discretization/FiniteVolumeViews.hpp"
@@ -914,6 +915,12 @@ namespace DNDS::Cauchy
         /// no generic per-BC integration history files are implemented.
         Vector3 LastBoundaryForce(const Workspace &workspace, const std::vector<int> &zones,
                                   std::optional<Runtime::ExecutionStream> stream = {}) const;
+        /// Collective per-zone integral of conservative face flux, tangential
+        /// force, and area from the last completed RHS evaluation, preserving
+        /// Cauchy/Euler's negative outward flux sign.
+        std::vector<BoundaryFluxIntegral> LastBoundaryFluxIntegrals(
+            const Workspace &workspace, const std::vector<int> &zones,
+            std::optional<Runtime::ExecutionStream> stream = {}) const;
         /// All conservative blocks plus mean thermodynamic/species fields and
         /// reconstructed boundary traces. Reads the supplied spatial workspace;
         /// does not modify the production reconstruction or any state values.

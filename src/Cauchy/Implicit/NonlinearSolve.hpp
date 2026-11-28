@@ -49,6 +49,9 @@ namespace DNDS::Cauchy
         /// Publish this round. `coordinatedTerminal` is agreed by the
         /// simulation over all participating domain sessions.
         void FinishIteration(bool coordinatedTerminal);
+        /// Apply runtime-steered implicit controls to an active session at a
+        /// collective iteration boundary.
+        void UpdateSettings(const ImplicitSettings &settings, bool updatePseudoCFL = false);
         [[nodiscard]] bool ObservationBeforeUpdate() const;
         [[nodiscard]] int CoupledStageNumber() const;
         [[nodiscard]] index Iteration() const;

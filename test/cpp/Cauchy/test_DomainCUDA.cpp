@@ -219,6 +219,61 @@ TEST_CASE("ACM CUDA exports zero tangential slip-wall flux and nonzero no-slip s
     }
 }
 
+TEST_CASE("Per-boundary flux and tangential force integration matches between CPU and CUDA")
+{
+    auto makeSettings = [](const std::string &device)
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.equation.system = "compressible";
+        settings.equation.eos = "perfectGas";
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .02;
+        settings.boundaries["7"].kind = "noSlipWall";
+        settings.boundaries["7"].integrateFlux = true;
+        settings.boundaries["8"].kind = "slipWall";
+        settings.boundaries["8"].integrateFlux = true;
+        settings.mesh.boundaryIds["NoSlip Wall [1]"] = 7;
+        settings.mesh.boundaryIds["Slip Wall [2]"] = 8;
+        settings.initialPrimitive = {1.0, 0.35, 0.05, 0.0, 1.0};
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 1;
+        settings.numerics.cfv.SORInstead = false;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.execution.device = device;
+        settings.implicit.diagonal = "block";
+        settings.implicit.jacobianAction = "assembled";
+        settings.implicit.linear.method = "jacobi";
+        settings.implicit.linear.stopping = "fixedCount";
+        return settings;
+    };
+    C::TimeSettings time;
+    time.method = "bdf1";
+    C::Domain cpuDomain("cpu", CFVTest::CartesianHexes(mpi, 3, true), makeSettings("cpu"), time);
+    C::Domain cudaDomain("cuda", CFVTest::CartesianHexes(mpi, 3, true), makeSettings("cuda"), time);
+    cpuDomain.Residual();
+    cudaDomain.Residual();
+    const std::vector<int> zones{7, 8};
+    const auto cpuIntegrals = cpuDomain.MeasureBoundaryFluxes(zones);
+    const auto cudaIntegrals = cudaDomain.MeasureBoundaryFluxes(zones);
+    REQUIRE(cpuIntegrals.size() == 2);
+    REQUIRE(cudaIntegrals.size() == 2);
+    for (size_t i = 0; i < zones.size(); ++i)
+    {
+        CHECK(cpuIntegrals[i].zone == zones[i]);
+        CHECK(cudaIntegrals[i].zone == zones[i]);
+        CHECK(cudaIntegrals[i].area == doctest::Approx(cpuIntegrals[i].area).epsilon(1e-12));
+        REQUIRE(cudaIntegrals[i].flux.size() == cpuIntegrals[i].flux.size());
+        for (size_t c = 0; c < cpuIntegrals[i].flux.size(); ++c)
+            CHECK(cudaIntegrals[i].flux[c] == doctest::Approx(cpuIntegrals[i].flux[c]).epsilon(1e-10).scale(1.0));
+        for (int d = 0; d < 3; ++d)
+            CHECK(cudaIntegrals[i].tangentialForce[d] == doctest::Approx(cpuIntegrals[i].tangentialForce[d]).epsilon(1e-10).scale(1.0));
+    }
+    // Slip wall has zero tangential shear; no-slip wall has nonzero shear in x.
+    CHECK(std::abs(cudaIntegrals[1].tangentialForce[0]) < 1e-11);
+    CHECK(std::abs(cudaIntegrals[0].tangentialForce[0]) > 1e-6);
+}
+
 TEST_CASE("ACM polynomial CUDA face mappings match the host on a rotational seam")
 {
     C::DomainSettings settings;

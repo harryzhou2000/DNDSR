@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DNDSR Cauchy Monitor Hub</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="btn-menu" class="icon-btn mobile-only" aria-label="Toggle runs sidebar" title="Runs">
+        <span>&#9776;</span>
+      </button>
+      <div class="brand">
+        <span class="brand-mark">C</span>
+        <div>
+          <div class="brand-title">Cauchy Hub</div>
+          <div id="hub-subtitle" class="brand-sub">Multi-Run Monitor &amp; Steering</div>
+        </div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <label class="toggle-chip" title="Show expanded telemetry, state bounds, audit log, and full JSON">
+        <input id="chk-verbose" type="checkbox">
+        <span>Verbose</span>
+      </label>
+      <label class="toggle-chip" title="Auto-refresh active run every 2 seconds">
+        <input id="chk-live" type="checkbox" checked>
+        <span>Live</span>
+      </label>
+      <button id="btn-attach" class="btn btn-secondary btn-sm">+ Attach</button>
+      <button id="btn-theme" class="icon-btn" title="Toggle light/dark theme" aria-label="Toggle theme">&#9788;</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <aside id="sidebar" class="sidebar" aria-label="Runs">
+      <div class="sidebar-head">
+        <span class="sidebar-title">Runs <span id="run-count" class="pill">0</span></span>
+        <button id="btn-rescan" class="btn btn-ghost btn-xs" title="Rescan registry and watch directories">Refresh</button>
+      </div>
+      <div id="run-list" class="run-list">
+        <div class="empty-hint">No runs discovered yet.<br>Start <code>cauchy.exe</code> or click <strong>+ Attach</strong>.</div>
+      </div>
+      <div class="sidebar-foot">
+        <div id="hub-meta" class="muted-xs">Scanning...</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div id="empty-state" class="empty-stage">
+        <div class="card empty-card">
+          <h2>DNDSR Cauchy Live Monitor</h2>
+          <p>Select a running or bookkept simulation from the sidebar, or attach a run by local control file, output prefix, or SSH-forwarded URL + token.</p>
+          <div class="empty-actions">
+            <button id="btn-attach-empty" class="btn btn-primary">+ Attach Run</button>
+            <button id="btn-rescan-empty" class="btn btn-secondary">Rescan Registry</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="run-workspace" class="workspace" hidden>
+        <section class="run-header card">
+          <div class="run-header-top">
+            <div class="run-ident">
+              <span id="run-status-badge" class="status-badge">offline</span>
+              <h1 id="run-title">—</h1>
+            </div>
+            <div class="run-header-controls">
+              <select id="sel-domain" class="select-sm" aria-label="Domain"></select>
+              <button id="btn-refresh-now" class="btn btn-secondary btn-sm">Refresh</button>
+              <button id="btn-detach" class="btn btn-ghost btn-sm" title="Remove from hub list (files kept)">Detach</button>
+            </div>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <span class="kpi-label">Step / Iter</span>
+              <span id="kpi-step" class="kpi-value">—</span>
+            </div>
+            <div class="kpi">
+              <span class="kpi-label">Physical Time</span>
+              <span id="kpi-time" class="kpi-value">—</span>
+            </div>
+            <div class="kpi">
+              <span class="kpi-label">Primary Residual</span>
+              <span id="kpi-res" class="kpi-value">—</span>
+            </div>
+            <div class="kpi">
+              <span class="kpi-label">Target Ratio</span>
+              <span id="kpi-ratio" class="kpi-value">—</span>
+            </div>
+            <div class="kpi">
+              <span class="kpi-label">Pseudo-CFL</span>
+              <span id="kpi-cfl" class="kpi-value">—</span>
+            </div>
+            <div class="kpi">
+              <span class="kpi-label">Wall Time</span>
+              <span id="kpi-wall" class="kpi-value">—</span>
+            </div>
+          </div>
+          <div id="run-path-line" class="muted-xs verbose-only" hidden></div>
+        </section>
+
+        <nav class="tabbar" role="tablist">
+          <button class="tab active" data-tab="charts" role="tab">Charts</button>
+          <button class="tab" data-tab="boundaries" role="tab">Boundaries <span id="tab-bc-count" class="pill pill-sm">0</span></button>
+          <button class="tab" data-tab="steering" role="tab">Steering</button>
+          <button class="tab" data-tab="details" role="tab">Details</button>
+        </nav>
+
+        <!-- CHARTS TAB -->
+        <section id="panel-charts" class="tab-panel active">
+          <div class="toolbar card">
+            <div class="toolbar-group">
+              <label class="field-inline">
+                <span>Cadence</span>
+                <select id="sel-kind" class="select-sm">
+                  <option value="nonlinear" selected>Nonlinear Iterations</option>
+                  <option value="step">Accepted Steps</option>
+                  <option value="all">All Records</option>
+                </select>
+              </label>
+              <label class="field-inline">
+                <span>X-Axis</span>
+                <select id="sel-xaxis" class="select-sm">
+                  <option value="index" selected>Sample Index</option>
+                  <option value="step">Step</option>
+                  <option value="time">Physical Time</option>
+                  <option value="wall">Wall Seconds</option>
+                </select>
+              </label>
+              <label class="toggle-chip">
+                <input id="chk-log" type="checkbox" checked>
+                <span>Log Y</span>
+              </label>
+            </div>
+            <div id="history-meta" class="muted-xs">—</div>
+          </div>
+
+          <div class="chart-grid">
+            <div class="card chart-card">
+              <div class="card-head">
+                <h3>Residuals &amp; Convergence</h3>
+                <span id="res-series-hint" class="muted-xs"></span>
+              </div>
+              <div id="plot-residuals" class="plot-box"></div>
+            </div>
+
+            <div class="card chart-card">
+              <div class="card-head">
+                <h3>Solver Dynamics (CFL / Linear / VR)</h3>
+                <select id="sel-dynamics" class="select-sm">
+                  <option value="cfl_linear" selected>Pseudo-CFL &amp; Linear Iters</option>
+                  <option value="vr">VR Sweeps &amp; Update</option>
+                  <option value="wall">Iteration / Step Wall Time</option>
+                </select>
+              </div>
+              <div id="plot-dynamics" class="plot-box"></div>
+            </div>
+          </div>
+
+          <div id="verbose-bounds-card" class="card chart-card verbose-only" hidden>
+            <div class="card-head">
+              <h3>State Bounds (Min / Max)</h3>
+              <select id="sel-bound-comp" class="select-sm"></select>
+            </div>
+            <div id="plot-bounds" class="plot-box plot-box-sm"></div>
+          </div>
+        </section>
+
+        <!-- BOUNDARIES TAB -->
+        <section id="panel-boundaries" class="tab-panel" hidden>
+          <div class="toolbar card">
+            <div class="toolbar-group">
+              <label class="field-inline">
+                <span>Boundary</span>
+                <select id="sel-bc" class="select-sm"></select>
+              </label>
+              <span id="bc-area-badge" class="pill">Area: —</span>
+              <span id="bc-sign-badge" class="pill pill-muted">Sign: negative outward RHS (Euler)</span>
+            </div>
+            <div id="bc-meta" class="muted-xs">—</div>
+          </div>
+          <div id="bc-empty" class="card empty-inline" hidden>
+            No boundaries have <code>integrateFlux: true</code> in this domain.
+          </div>
+          <div id="bc-charts" class="chart-grid">
+            <div class="card chart-card">
+              <div class="card-head">
+                <h3>Integrated Conservative Fluxes</h3>
+                <span class="muted-xs">flux_*</span>
+              </div>
+              <div id="plot-bc-flux" class="plot-box"></div>
+            </div>
+            <div class="card chart-card">
+              <div class="card-head">
+                <h3>Integrated Tangential Force (Skin Friction / C<sub>D,f</sub>)</h3>
+                <span class="muted-xs">force_t_x/y/z &amp; |F<sub>t</sub>|</span>
+              </div>
+              <div id="plot-bc-tangent" class="plot-box"></div>
+            </div>
+          </div>
+          <div id="bc-table-card" class="card verbose-only" hidden>
+            <div class="card-head"><h3>Boundary Integration Registry</h3></div>
+            <div class="table-wrap">
+              <table id="tbl-boundaries" class="data-table"></table>
+            </div>
+          </div>
+        </section>
+
+        <!-- STEERING TAB -->
+        <section id="panel-steering" class="tab-panel" hidden>
+          <div id="steering-offline-banner" class="banner banner-muted" hidden>
+            This run is currently offline or finished. Historical telemetry remains readable; live steering is disabled.
+          </div>
+
+          <div class="steering-grid">
+            <!-- OUTPUT-ONLY CONTROLS -->
+            <div class="card steering-card steering-output">
+              <div class="card-head">
+                <div>
+                  <span class="cat-badge cat-output">Output-Only</span>
+                  <h3>Output &amp; Diagnostics Controls</h3>
+                  <p class="muted-xs">Adjusts logging, CSV, checkpoint, and visualization cadences without altering numerical trajectory.</p>
+                </div>
+                <label class="field-inline">
+                  <span>Apply At</span>
+                  <select id="sel-output-boundary" class="select-sm">
+                    <option value="iteration" selected>Iteration End</option>
+                    <option value="step">Step End</option>
+                  </select>
+                </label>
+              </div>
+              <div id="form-output-fields" class="form-grid"></div>
+              <div class="card-actions">
+                <button id="btn-apply-output" class="btn btn-primary">Apply Output Changes</button>
+              </div>
+              <hr class="divider">
+              <div class="snapshot-box">
+                <div class="snapshot-head">
+                  <strong>On-Demand Snapshot</strong>
+                  <div class="snapshot-checks">
+                    <label class="toggle-chip"><input id="chk-snap-ckpt" type="checkbox" checked><span>Checkpoint</span></label>
+                    <label class="toggle-chip"><input id="chk-snap-vis" type="checkbox" checked><span>Visualization</span></label>
+                  </div>
+                </div>
+                <button id="btn-trigger-snapshot" class="btn btn-secondary btn-sm">Trigger Snapshot</button>
+              </div>
+            </div>
+
+            <!-- SIMULATION STEERING CONTROLS -->
+            <div class="card steering-card steering-numerics">
+              <div class="card-head">
+                <div>
+                  <span class="cat-badge cat-steering">Simulation Steering</span>
+                  <h3>Numerical &amp; Stopping Controls</h3>
+                  <p class="muted-xs">Modifies physical time targets, pseudo-CFL, nonlinear/linear tolerances, or stops the solver gracefully.</p>
+                </div>
+                <label class="field-inline">
+                  <span>Apply At</span>
+                  <select id="sel-steering-boundary" class="select-sm">
+                    <option value="iteration">Iteration End</option>
+                    <option value="step" selected>Step End</option>
+                  </select>
+                </label>
+              </div>
+              <div id="form-steering-fields" class="form-grid"></div>
+              <div class="card-actions">
+                <button id="btn-apply-steering" class="btn btn-warn">Apply Steering Changes</button>
+              </div>
+              <hr class="divider">
+              <div class="danger-box">
+                <div>
+                  <strong>Graceful Shutdown</strong>
+                  <p class="muted-xs">Interrupts cleanly at the selected boundary and writes a restartable <code>-stop</code> checkpoint.</p>
+                </div>
+                <div class="danger-controls">
+                  <select id="sel-stop-boundary" class="select-sm">
+                    <option value="auto">Auto (Iter if steady, Step if unsteady)</option>
+                    <option value="iteration">Iteration End</option>
+                    <option value="step">Step End</option>
+                  </select>
+                  <button id="btn-stop-run" class="btn btn-danger">Graceful Stop</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>Live Command &amp; Revision Queue</h3>
+              <span id="updates-count" class="pill pill-sm">0</span>
+            </div>
+            <div class="table-wrap">
+              <table id="tbl-updates" class="data-table"></table>
+            </div>
+          </div>
+        </section>
+
+        <!-- DETAILS TAB -->
+        <section id="panel-details" class="tab-panel" hidden>
+          <div class="details-grid">
+            <div class="card">
+              <div class="card-head"><h3>Latest Telemetry Snapshot</h3></div>
+              <div class="table-wrap">
+                <table id="tbl-latest" class="data-table"></table>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <h3>Effective Configuration JSON</h3>
+                <button id="btn-copy-config" class="btn btn-ghost btn-xs">Copy JSON</button>
+              </div>
+              <pre id="pre-config" class="code-block"></pre>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- ATTACH MODAL -->
+  <div id="attach-modal" class="modal" hidden>
+    <div class="modal-card card">
+      <div class="card-head">
+        <h3>Attach Cauchy Run</h3>
+        <button id="btn-close-attach" class="icon-btn" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-tabs">
+        <button class="tab-mini active" data-attach="local">Local File / Prefix</button>
+        <button class="tab-mini" data-attach="remote">Remote URL + Token (SSH Tunnel)</button>
+      </div>
+      <form id="form-attach-local" class="stack">
+        <label class="field">
+          <span>Control File, Run Manifest, or Output Prefix</span>
+          <input id="inp-attach-path" type="text" placeholder="/path/to/run-control.json or /path/to/prefix" required>
+        </label>
+        <label class="field">
+          <span>Optional Display Label</span>
+          <input id="inp-attach-label-local" type="text" placeholder="e.g. Suboff O3 Re=1e7">
+        </label>
+        <div class="card-actions">
+          <button type="submit" class="btn btn-primary">Attach Local Run</button>
+        </div>
+      </form>
+      <form id="form-attach-remote" class="stack" hidden>
+        <label class="field">
+          <span>Solver Control URL</span>
+          <input id="inp-attach-url" type="text" placeholder="http://127.0.0.1:53000" required>
+        </label>
+        <label class="field">
+          <span>Per-Run Bearer Token</span>
+          <input id="inp-attach-token" type="password" placeholder="Paste token from *-control.json" required>
+        </label>
+        <label class="field">
+          <span>Optional Display Label</span>
+          <input id="inp-attach-label-remote" type="text" placeholder="e.g. cs-gpu-run">
+        </label>
+        <div class="card-actions">
+          <button type="submit" class="btn btn-primary">Connect Remote Run</button>
+        </div>
+      </form>
+      <div id="attach-error" class="error-text" hidden></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/vendor/plotly.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

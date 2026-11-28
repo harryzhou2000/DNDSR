@@ -30,7 +30,7 @@ namespace DNDS::Cauchy
         BasicResidualConvergence<std::vector<real>> convergence;
         index limit = 0, nextIteration = 0, currentIteration = -1;
         int nextCoupledStage = 0;
-        bool localConverged = false, localTerminal = false, held = false;
+        bool localConverged = false, localTerminal = false, held = false, skipNextPseudoGrowth = false;
         std::pair<index, real> reconstructionPositivity{0, 1};
         Phase phase = Phase::Idle;
         std::optional<NonlinearProgress> progress;
@@ -260,6 +260,8 @@ namespace DNDS::Cauchy
         // History samples the observed means after the domain convergence decision.
         if (data.problem.control.measureStateBounds)
             data.report.stateBounds = data.problem.control.measureStateBounds(data.currentIteration, data.localTerminal);
+        if (data.problem.control.measureBoundaryFluxes)
+            data.report.boundaryFluxes = data.problem.control.measureBoundaryFluxes(data.currentIteration, data.localTerminal);
         data.phase = ObservationBeforeUpdate() && !data.localTerminal
                          ? Data::Phase::ReadyForUpdate
                          : Data::Phase::AwaitFinish;
@@ -303,7 +305,8 @@ namespace DNDS::Cauchy
             data.convergence.RelativeRatio(),
             data.currentIteration,
             data.report.stateBounds,
-            data.reconstructionPositivity};
+            data.reconstructionPositivity,
+            data.report.boundaryFluxes};
         if (data.problem.control.progress && reportedIteration > 0)
             data.problem.control.progress(progress);
         if (coordinatedTerminal)
@@ -318,8 +321,13 @@ namespace DNDS::Cauchy
             return;
         }
         data.held = data.localTerminal;
-        if (!data.held && (ObservationBeforeUpdate() || data.currentIteration > 0) &&
-            reportedIteration >= data.settings.pseudoGrowthStart)
+        if (data.skipNextPseudoGrowth)
+        {
+            data.skipNextPseudoGrowth = false;
+            data.report.pseudoCFL = std::min(data.report.pseudoCFL, data.settings.maxPseudoCFL);
+        }
+        else if (!data.held && (ObservationBeforeUpdate() || data.currentIteration > 0) &&
+                 reportedIteration >= data.settings.pseudoGrowthStart)
             data.report.pseudoCFL = std::min(
                 data.settings.maxPseudoCFL,
                 data.report.pseudoCFL * data.settings.pseudoGrowth);
@@ -333,6 +341,32 @@ namespace DNDS::Cauchy
         }
         ++data.nextIteration;
         data.phase = Data::Phase::Idle;
+    }
+
+    void NonlinearSession::UpdateSettings(const ImplicitSettings &settings, bool updatePseudoCFL)
+    {
+        DNDS_check_throw_info(_data, "empty nonlinear session");
+        auto &data = *_data;
+        data.settings.iterations = settings.iterations;
+        data.settings.minIterations = settings.minIterations;
+        data.settings.pseudoCFL = settings.pseudoCFL;
+        data.settings.maxPseudoCFL = settings.maxPseudoCFL;
+        data.settings.pseudoGrowth = settings.pseudoGrowth;
+        data.settings.pseudoGrowthStart = settings.pseudoGrowthStart;
+        data.settings.relaxation = settings.relaxation;
+        data.settings.ransRelaxation = settings.ransRelaxation;
+        data.settings.relativeTolerance = settings.relativeTolerance;
+        data.settings.absoluteTolerance = settings.absoluteTolerance;
+        if (data.problem.control.correctionLimit < 0)
+            data.limit = data.settings.iterations;
+        if (updatePseudoCFL)
+        {
+            data.report.pseudoCFL = data.settings.pseudoCFL;
+            data.skipNextPseudoGrowth = true;
+        }
+        data.report.pseudoCFL = std::min(data.report.pseudoCFL, data.settings.maxPseudoCFL);
+        if (data.problem.control.state)
+            data.problem.control.state->pseudoCFL = data.report.pseudoCFL;
     }
 
     bool NonlinearSession::ObservationBeforeUpdate() const

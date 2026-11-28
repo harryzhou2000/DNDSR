@@ -86,6 +86,7 @@ namespace DNDS::Cauchy
         std::function<std::pair<int, real>()> reconstruction;
         std::function<void(const BoundaryInputs &)> bindBoundary;
         std::shared_ptr<FiniteVolume::ReconstructionState> state;
+        std::function<void(const ImplicitSettings &)> updateSettings;
     };
 
     /// Shared packet-handle publication, retained by queued receiver bindings.

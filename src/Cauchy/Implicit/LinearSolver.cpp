@@ -1066,4 +1066,14 @@ namespace DNDS::Cauchy
         auto session = _data->session.Acquire();
         return _data->Solve(rhs, initialGuess, componentScales, checks);
     }
+    void DofLinearSolver::UpdateTolerances(index maxIterations, real relativeTolerance, real absoluteTolerance)
+    {
+        DNDS_check_throw_info(_data, "linear solver was moved");
+        DNDS_check_throw_info(maxIterations >= 1 && std::isfinite(relativeTolerance) && relativeTolerance >= 0 &&
+                                  std::isfinite(absoluteTolerance) && absoluteTolerance >= 0,
+                              "invalid live linear solver tolerances");
+        _data->settings.maxIterations = maxIterations;
+        _data->settings.relativeTolerance = relativeTolerance;
+        _data->settings.absoluteTolerance = absoluteTolerance;
+    }
 }

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/Discretization/BoundaryFluxIntegral.hpp"
+#include "Cauchy/IO/BoundaryName.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "DNDS/IO/CsvLog.hpp"
 
@@ -86,6 +88,7 @@ namespace DNDS::Cauchy
 
     std::vector<std::string> EquationComponentNames(const EquationSchema &schema);
     CsvSchema DetailedHistorySchema(const EquationSchema &schema, bool stateBounds = true);
+    CsvSchema BoundaryFluxHistorySchema(const EquationSchema &schema);
     std::vector<std::string> DetailedHistoryColumns(const EquationSchema &schema);
 
     enum class ProgressRecordStatus : index
@@ -117,6 +120,15 @@ namespace DNDS::Cauchy
         /// diagnostics. This is not a collective maximum or a device timer.
         real stepWallSeconds = 0;
         bool timeGrowthLimited = false;
+        std::vector<BoundaryFluxIntegral> boundaryFluxes;
+    };
+
+    struct BoundaryFluxSinkConfig
+    {
+        BoundaryIntegrationSpec spec;
+        std::string barePath;
+        std::optional<CsvLogPosition> resume;
+        std::function<void(int zone, const CsvRow &)> retain;
     };
 
     /// The one construction point for detailed CSV and ordinary CLI progress.
@@ -136,6 +148,12 @@ namespace DNDS::Cauchy
         bool _writer = false;
         std::shared_ptr<OperationalLogger> _logger;
         std::unique_ptr<ProgressHistory> _history;
+        struct BoundarySink
+        {
+            BoundaryIntegrationSpec spec;
+            std::unique_ptr<ProgressHistory> history;
+        };
+        std::vector<BoundarySink> _boundarySinks;
         ProgressLocation _attempt;
         std::vector<Captured> _captured;
         std::map<std::tuple<uint64_t, index, index>, std::pair<real, index>> _stageTiming;
@@ -143,6 +161,8 @@ namespace DNDS::Cauchy
         void FillResiduals(ProgressRow &row, const std::vector<real> &residual) const;
         void FillStateBounds(ProgressRow &row, const std::vector<real> &bounds) const;
         void FillNonlinear(ProgressRow &row, const NonlinearProgress &progress) const;
+        void WriteBoundaryFluxes(const ProgressLocation &location, ProgressRecordStatus status,
+                                 const std::vector<BoundaryFluxIntegral> &fluxes);
         void ConsoleNonlinear(const ProgressLocation &location, const NonlinearProgress &progress,
                               real stageAverage) const;
 
@@ -151,7 +171,9 @@ namespace DNDS::Cauchy
                                  std::string bareHistory, bool writer,
                                  std::shared_ptr<OperationalLogger> logger,
                                  std::optional<CsvLogPosition> resume = std::nullopt,
-                                 std::function<void(const CsvRow &)> retain = {});
+                                 std::function<void(const CsvRow &)> retain = {},
+                                 std::vector<BoundaryFluxSinkConfig> boundarySinks = {});
+        void UpdateSettings(const OutputSettings &settings) { _settings = settings; }
         void BeginAttempt(ProgressLocation location);
         /// Capture the frontend's elapsed wall time at observation, not the
         /// attempt-start time or the later sink-flush time.
@@ -165,5 +187,6 @@ namespace DNDS::Cauchy
         void Flush();
         /// Valid only on the designated history writer after Flush.
         CsvLogPosition HistoryPosition() const;
+        std::map<std::string, CsvLogPosition> BoundaryHistoryPositions() const;
     };
 }

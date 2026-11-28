@@ -18,6 +18,7 @@ namespace DNDS::Cauchy
         real checkpointTimeInterval = 0, visualizationTimeInterval = 0;
         uint64_t nextCheckpointTime = 0, nextVisualizationTime = 0;
         std::vector<CsvLogPosition> history;
+        std::vector<std::map<std::string, CsvLogPosition>> boundaryHistory;
 
         Json ToJson() const;
         static OutputControllerState FromJson(const Json &value);
@@ -59,6 +60,7 @@ namespace DNDS::Cauchy
         OutputControllerState RestoreState(const Json &value, real time) const;
         std::string DomainPrefix(index domain) const;
         std::string HistoryBare(index domain) const;
+        std::string BoundaryIntegrationBare(index domain, const std::string &canonicalName) const;
         std::string ResolvedPath() const;
         std::string SummaryPath() const;
         std::string RunManifestPath() const;

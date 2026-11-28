@@ -35,8 +35,10 @@ namespace DNDS::Cauchy
         uint64_t _step = 0;
         std::optional<Json> _restoredOutputController;
         std::function<bool()> _stopAfterCorrection;
+        std::vector<std::optional<NonlinearSession>> *_activeSessions = nullptr;
 
     public:
+        void ApplyLiveImplicitSettings(index domain, const ImplicitSettings &settings, bool updatePseudoCFL = false);
         const DomainSetupTimings &SetupTimings(index iDomain) const { return _setupTimings.at(size_t(iDomain)); }
         using MeshFactory = std::function<ssp<Geom::UnstructuredMesh>(index, const DomainConfig &, const MPIInfo &)>;
         Simulation(SimulationConfig config, MPI_Comm comm, const MeshFactory &factory = {});

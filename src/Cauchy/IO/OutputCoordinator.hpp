@@ -6,6 +6,8 @@
 
 namespace DNDS::Cauchy
 {
+    class OperationalLogger;
+
     enum class RunStop
     {
         None,
@@ -32,6 +34,12 @@ namespace DNDS::Cauchy
         OutputCoordinator(const OutputCoordinator &) = delete;
         OutputCoordinator &operator=(const OutputCoordinator &) = delete;
 
+        /// Live effective settings (incorporating any applied live config patches).
+        const TimeSettings &LiveTime() const;
+        const OutputSettings &LiveOutput() const;
+        std::string RunManifestPath() const;
+        std::shared_ptr<OperationalLogger> Logger() const;
+
         /// Apply exact output/end-time snapping to one proposed physical step.
         OutputPlan::StepTarget SnapStep(real proposedDt) const;
         /// Start one retryable attempt in every local domain's progress sink.
@@ -46,7 +54,8 @@ namespace DNDS::Cauchy
             real dt, index retries,
             const std::vector<PhysicalStepLimit> &limits,
             bool useLimits, bool printConsole);
-        /// Collective check at a step boundary. A queued stop takes precedence
+        /// Collective check at a step boundary (also applies pending step-boundary
+        /// live config updates and snapshots). A queued stop takes precedence
         /// over a simultaneous wall cap so it is guaranteed a checkpoint.
         RunStop PollStop(bool wallLimitReached = false);
         /// Publish summary, flush output, and force a restart archive for a

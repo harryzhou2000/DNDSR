@@ -1,6 +1,7 @@
 #include "Cauchy/Core/DomainMesh.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/Core/StepResult.hpp"
+#include "Cauchy/IO/ControlServer.hpp"
 #include "Cauchy/IO/OutputCoordinator.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/MPI/Failure.hpp"
@@ -96,6 +97,15 @@ static int Run(int argc, char **argv, double started, const UserStopSignal &sign
             arguments.add_argument("--bold")
                 .default_value(std::string{})
                 .help("Terminal emphasis: auto, always or never; overrides output.consoleBold");
+            arguments.add_argument("--no-control")
+                .flag()
+                .help("Disable the embedded rank-0 HTTP query and live steering server");
+            arguments.add_argument("--control-host")
+                .default_value(std::string{})
+                .help("Bind address for embedded HTTP control server; overrides output.control.host");
+            arguments.add_argument("--control-port")
+                .default_value(std::string{})
+                .help("Starting port for embedded HTTP control server; overrides output.control.port");
             arguments.add_argument("-k", "--overwrite_key")
                 .append()
                 .default_value<std::vector<std::string>>({})
@@ -143,9 +153,15 @@ static int Run(int argc, char **argv, double started, const UserStopSignal &sign
                     overrides.push_back({keys[i], DNDS::Cauchy::Json::parse(values[i])});
                 }
                 for (const auto &[flag, key] : std::vector<std::pair<std::string, std::string>>{
-                         {"--color", "/output/consoleColor"}, {"--bold", "/output/consoleBold"}})
+                         {"--color", "/output/consoleColor"},
+                         {"--bold", "/output/consoleBold"},
+                         {"--control-host", "/output/control/host"}})
                     if (const auto value = arguments.get<std::string>(flag); !value.empty())
-                        overrides.push_back({key, value}); });
+                        overrides.push_back({key, value});
+                if (arguments.get<bool>("--no-control"))
+                    overrides.push_back({"/output/control/enabled", false});
+                if (const auto portText = arguments.get<std::string>("--control-port"); !portText.empty())
+                    overrides.push_back({"/output/control/port", std::stoi(portText)}); });
             auto config = DNDS::Cauchy::SimulationConfig::ResolveCollective(
                 input, mpi.comm, overrides);
             if (checkConfig)
@@ -170,8 +186,10 @@ static int Run(int argc, char **argv, double started, const UserStopSignal &sign
                                                     started, &control,
                                                     [&]
                                                     { signals.Poll(control); });
-            const auto &output = config.Output();
-            const auto &time = config.Time();
+            DNDS::Cauchy::ControlServer controlServer(
+                control, config.Output().control, config.Output().prefix,
+                outputs.RunManifestPath(), mpi.rank, outputs.Logger());
+            controlServer.Start();
             const auto domainCount = DNDS::index(config.Domains().size());
             std::vector<DNDS::Cauchy::PhysicalStepLimit> limits(
                 static_cast<size_t>(domainCount));
@@ -185,16 +203,26 @@ static int Run(int argc, char **argv, double started, const UserStopSignal &sign
             using DNDS::Cauchy::RunStop;
             auto stop = RunStop::None;
             bool reached = false;
-            for (DNDS::index step = 0;
-                 time.tEnd > 0
-                     ? !DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(
-                           simulation.Time(), time.tEnd)
-                     : step < time.steps;
-                 ++step)
+            for (DNDS::index step = 0;; ++step)
             {
-                stop = outputs.PollStop(time.wallSeconds > 0 &&
-                                        MPI_Wtime() - started >= time.wallSeconds);
+                {
+                    const auto &liveTime = outputs.LiveTime();
+                    const bool done = liveTime.tEnd > 0
+                                          ? DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(
+                                                simulation.Time(), liveTime.tEnd)
+                                          : step >= liveTime.steps;
+                    if (done)
+                        break;
+                }
+                stop = outputs.PollStop(outputs.LiveTime().wallSeconds > 0 &&
+                                        MPI_Wtime() - started >= outputs.LiveTime().wallSeconds);
                 if (stop != RunStop::None)
+                    break;
+                const auto &time = outputs.LiveTime();
+                if (time.tEnd > 0
+                        ? DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(
+                              simulation.Time(), time.tEnd)
+                        : step >= time.steps)
                     break;
 
                 DNDS::real dt = time.dt;
@@ -254,6 +282,7 @@ static int Run(int argc, char **argv, double started, const UserStopSignal &sign
                 if (stop != RunStop::None)
                     break;
 
+                const auto &output = outputs.LiveOutput();
                 const bool printStep =
                     output.consoleInterval > 0 &&
                     simulation.Step() % uint64_t(output.consoleInterval) == 0;
@@ -267,6 +296,7 @@ static int Run(int argc, char **argv, double started, const UserStopSignal &sign
             if (stop == RunStop::None)
                 stop = outputs.PollStop();
             status = outputs.Finalize(stop, reached);
+            controlServer.Stop();
         }
         catch (const std::exception &exception)
         {

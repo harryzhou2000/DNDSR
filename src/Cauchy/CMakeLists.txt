@@ -40,6 +40,7 @@ set(CPPS
     State/MeanStateCheck.cpp
     State/StateDiagnostics.cpp
     Discretization/BoundaryForceReduction.cpp
+    Discretization/BoundaryFluxReduction.cpp
     Discretization/FlowErrorOperator.cpp
     State/EquationDofCommunication.cpp
     State/DerivedFields.cpp
@@ -172,7 +173,9 @@ set(CPPS
     IO/CPU/OutputFieldsKernels.cpp
     IO/Simulation_Checkpoint.cpp
     IO/ProgressOutput.cpp
+    IO/BoundaryName.cpp
     IO/RunControl.cpp
+    IO/ControlServer.cpp
     IO/OutputPlan.cpp
     IO/OutputCoordinator.cpp
 
@@ -192,7 +195,7 @@ if(DNDS_USE_CUDA)
     list(APPEND CPPS Core/CUDA/TimeStageKernels.cu)
     list(APPEND CPPS State/CUDA/FieldKernels.cu)
     list(APPEND CPPS State/CUDA/StateDiagnosticsKernels.cu)
-    list(APPEND CPPS Discretization/CUDA/BoundaryForceKernels.cu)
+    list(APPEND CPPS Discretization/CUDA/BoundaryForceKernels.cu Discretization/CUDA/BoundaryFluxKernels.cu)
     list(APPEND CPPS IO/CUDA/OutputFieldsKernels.cu IO/CUDA/BoundaryOutputGeometry.cu)
     list(APPEND CPPS Implicit/CUDA/LinearDiagonalKernels.cu)
     list(APPEND CPPS Implicit/CUDA/NonlinearKernels.cu Implicit/CUDA/NonlinearKernels_Positivity.cu)
@@ -288,7 +291,11 @@ if(TARGET cauchy_objects)
 endif()
 foreach(_consumer IN LISTS _cauchy_compile_targets)
     target_include_directories(${_consumer} PRIVATE "${_cpu_flux_include}")
+    target_include_directories(${_consumer} SYSTEM PRIVATE "${DNDS_EXTERNAL_INCLUDE_HTTPLIB}")
     add_dependencies(${_consumer} ${_cpu_flux_codegen})
+    if(WIN32)
+        target_link_libraries(${_consumer} PRIVATE ws2_32)
+    endif()
     if(DNDS_USE_CUDA AND DNDS_CAUCHY_CUDA_REDUCED_PRECISION)
         target_compile_definitions(${_consumer} PRIVATE DNDS_CAUCHY_CUDA_REDUCED_PRECISION)
     endif()

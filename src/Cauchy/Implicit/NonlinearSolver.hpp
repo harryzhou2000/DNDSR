@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Cauchy/Discretization/BoundaryFluxIntegral.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
@@ -59,6 +60,8 @@ namespace DNDS::Cauchy
         std::vector<real> stateBounds;
         /// Global number of cells limited by reconstruction PP and minimum beta.
         std::pair<index, real> reconstructionPositivity{0, 1};
+        /// Per-boundary integrated flux and tangential force at history cadence.
+        std::vector<BoundaryFluxIntegral> boundaryFluxes;
     };
     /// Optional CPU profile. Values are local wall seconds, not
     /// reduced across ranks. Total encloses the disjoint named sections;
@@ -101,6 +104,8 @@ namespace DNDS::Cauchy
         /// Measure bounds on the observed state at configured history points.
         /// All ranks of the domain must install the same cadence.
         std::function<std::vector<real>(index, bool)> measureStateBounds;
+        /// Measure integrated fluxes for opted-in boundaries at configured history points.
+        std::function<std::vector<BoundaryFluxIntegral>(index, bool)> measureBoundaryFluxes;
         /// Optional live setup publication. Iterate updates it before the
         /// progress observer, so checkpoint/console/CSV see one state source.
         /// Shared ownership also covers externally phased prepared sessions;
@@ -140,6 +145,7 @@ namespace DNDS::Cauchy
         bool reconstructionUpdateMeasured = false;
         Linear::LinearIterationReport lastLinear;
         std::vector<real> stateBounds;
+        std::vector<BoundaryFluxIntegral> boundaryFluxes;
     };
     using NonlinearIterationReport = BasicNonlinearIterationReport<std::vector<real>>;
     /// CPU whole-equation stage adapter over the shared nonlinear iteration
@@ -263,6 +269,7 @@ namespace DNDS::Cauchy
         std::pair<index, real> ApplyCorrection(EquationDofs &state, const EquationDofs &correction, real scale = 1,
                                                const std::vector<index> &updateComponents = {});
         std::pair<int, real> ReconstructionStats() const;
+        void UpdateImplicitSettings(const ImplicitSettings &settings);
         const NonlinearSolveState &State() const;
         void RestoreState(const NonlinearSolveState &state);
         /// Bind the shared live setup to an outer nonlinear policy such as

@@ -625,6 +625,14 @@ namespace DNDS::Cauchy
         return _execution.stateDiagnostics->MeasureBounds(_execution.Engine(), _execution.ComputeStream(), trial ? _state.trial : _state.accepted);
     }
 
+    std::vector<BoundaryFluxIntegral> Domain::MeasureBoundaryFluxes(const std::vector<int> &zones)
+    {
+        if (zones.empty())
+            return {};
+        _execution.Synchronize();
+        return _problem.finiteVolume.LastBoundaryFluxIntegrals(*_execution.workspace, zones, _execution.ComputeStream());
+    }
+
     std::array<real, 14> Domain::Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones)
     {
         _execution.Synchronize();

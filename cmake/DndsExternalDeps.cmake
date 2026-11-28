@@ -157,6 +157,10 @@ find_path(DNDS_EXTERNAL_INCLUDE_SPDLOG spdlog/spdlog.h PATHS
     "${PROJECT_SOURCE_DIR}/external/spdlog/include"
     NO_DEFAULT_PATH REQUIRED)
 
+find_path(DNDS_EXTERNAL_INCLUDE_HTTPLIB httplib.h PATHS
+    "${PROJECT_SOURCE_DIR}/external/cpp-httplib"
+    NO_DEFAULT_PATH REQUIRED)
+
 find_path(DNDS_EXTERNAL_INCLUDE_SUPERLU superlu_dist.pc.in PATHS
     "${PROJECT_SOURCE_DIR}/external/superlu_dist-8.2.1" 
     NO_DEFAULT_PATH)
