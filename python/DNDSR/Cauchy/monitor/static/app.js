@@ -18,9 +18,11 @@
     verbose: false,
     live: true,
     timer: null,
+    refreshing: false,
     dirtyOutput: {},
     dirtySteering: {},
     renderedSchemaKey: null,
+    plotVisibility: new Map(),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -90,6 +92,7 @@
     return {
       paper: "rgba(0,0,0,0)",
       plot: "rgba(0,0,0,0)",
+      tooltip: light ? "#ffffff" : "#17202d",
       text: light ? "#111827" : "#e6edf5",
       grid: light ? "#e2e8f0" : "#253141",
     };
@@ -181,16 +184,30 @@
       return;
     }
     const tc = themeColors();
+    const revision = `${state.selectedRunId}:${state.domain}:${containerId}:${state.bcName || ""}`;
+    if (!state.plotVisibility.has(revision)) state.plotVisibility.set(revision, new Map());
+    const visibility = state.plotVisibility.get(revision);
+    el._visibilityState = visibility;
+    // Stable identities preserve legend choices as fresh samples replace arrays.
+    traces = traces.map((trace) => {
+      // Plotly incorporates uid into CSS selectors when retiring GL traces.
+      const uid = "trace_" + Array.from(`${trace.name}:${trace.yaxis || "y"}`)
+        .map(c => c.codePointAt(0).toString(16)).join("_");
+      return { ...trace, uid, ...(visibility.has(uid) ? { visible: visibility.get(uid) } : {}) };
+    });
     const layout = {
-      margin: { l: 58, r: y2Title ? 54 : 18, t: 18, b: 42 },
+      margin: { l: 64, r: y2Title ? 64 : 24, t: 24, b: 100 },
+      uirevision: revision,
       paper_bgcolor: tc.paper,
       plot_bgcolor: tc.plot,
       font: { color: tc.text, size: 11.5 },
       hovermode: "x unified",
-      legend: { orientation: "h", y: -0.22, x: 0 },
-      xaxis: { title: xTitle, gridcolor: tc.grid, zerolinecolor: tc.grid },
+      hoverlabel: { bgcolor: tc.tooltip, bordercolor: tc.grid, font: { color: tc.text } },
+      legend: { orientation: "h", y: -0.25, yanchor: "top", x: 0, uirevision: revision },
+      xaxis: { title: xTitle, automargin: true, gridcolor: tc.grid, zerolinecolor: tc.grid },
       yaxis: {
         title: yTitle,
+        automargin: true,
         type: logY ? "log" : "linear",
         gridcolor: tc.grid,
         zerolinecolor: tc.grid,
@@ -213,11 +230,29 @@
         font: { color: tc.text, size: 13 },
       }];
     }
-    window.Plotly.react(el, traces, layout, {
+    const schema = JSON.stringify(traces.map(t => [t.uid, t.type, t.yaxis || "y"]));
+    // Dropdown changes and polling may otherwise mutate the same Plotly scene
+    // concurrently. Recreate changed trace schemas to retire old GL selections.
+    el._plotQueue = (el._plotQueue || Promise.resolve()).then(async () => {
+      if (el._traceSchema !== undefined && el._traceSchema !== schema) {
+        window.Plotly.purge(el);
+        el._visibilityListener = false;
+      }
+      el._traceSchema = schema;
+      el._visibilityState = visibility;
+      await window.Plotly.react(el, traces, layout, {
       responsive: true,
       displaylogo: false,
       modeBarButtonsToRemove: ["lasso2d", "select2d"],
-    });
+      });
+      if (el._visibilityListener) return;
+      el._visibilityListener = true;
+      el.on("plotly_restyle", () => {
+        for (const trace of el.data) {
+          el._visibilityState.set(trace.uid, trace.visible === undefined ? true : trace.visible);
+        }
+      });
+    }).catch(err => toast(`Plot update failed: ${err.message}`, true));
   }
 
   function pickX(columns, indices) {
@@ -331,7 +366,7 @@
     const logY = $("chk-log").checked;
 
     $("history-meta").textContent =
-      `${h.totalRows} rows (${h.source}${h.downsampled ? `, shown ${h.returnedRows}` : ""})`;
+      `${h.totalRows} rows (${h.source}${h.downsampled ? `, shown ${h.returnedRows}` : ""})${h.warning ? ` · ${h.warning}` : ""}`;
 
     // 1. Residuals
     const resKeys = (h.header || []).filter((k) => k.startsWith("res_"));
@@ -456,7 +491,7 @@
   function renderSteering() {
     const d = state.detail;
     if (!d) return;
-    const online = Boolean(d.summary?.online);
+    const online = Boolean(d.summary?.canSteer);
     $("steering-offline-banner").hidden = online;
     $("btn-apply-output").disabled = !online;
     $("btn-trigger-snapshot").disabled = !online;
@@ -630,10 +665,13 @@
   function startLoop() {
     clearInterval(state.timer);
     state.timer = setInterval(async () => {
-      if (!state.live || document.hidden) return;
-      await refreshRuns(true);
-      if (state.selectedRunId) await refreshSelected();
-    }, 2000);
+      if (!state.live || document.hidden || state.refreshing) return;
+      state.refreshing = true;
+      try {
+        await refreshRuns(true);
+        if (state.selectedRunId) await refreshSelected();
+      } finally { state.refreshing = false; }
+    }, Number($("sel-refresh").value));
   }
 
   function initEvents() {
@@ -662,6 +700,13 @@
     });
 
     $("chk-live").addEventListener("change", (e) => { state.live = e.target.checked; });
+    const refresh = $("sel-refresh");
+    const savedRefresh = localStorage.getItem("cauchy_hub_refresh_ms");
+    if ([...refresh.options].some(o => o.value === savedRefresh)) refresh.value = savedRefresh;
+    refresh.addEventListener("change", () => {
+      localStorage.setItem("cauchy_hub_refresh_ms", refresh.value);
+      startLoop();
+    });
     $("btn-rescan").addEventListener("click", () => refreshRuns(true));
     $("btn-rescan-empty").addEventListener("click", () => refreshRuns(true));
     $("btn-refresh-now").addEventListener("click", () => refreshSelected());
@@ -776,15 +821,6 @@
     $("btn-attach-empty").addEventListener("click", openAttach);
     $("btn-close-attach").addEventListener("click", closeAttach);
     $("attach-modal").addEventListener("click", (e) => { if (e.target === $("attach-modal")) closeAttach(); });
-
-    document.querySelectorAll(".tab-mini").forEach((b) => {
-      b.addEventListener("click", () => {
-        document.querySelectorAll(".tab-mini").forEach((x) => x.classList.toggle("active", x === b));
-        $("form-attach-local").hidden = b.dataset.attach !== "local";
-        $("form-attach-remote").hidden = b.dataset.attach !== "remote";
-        $("attach-error").hidden = true;
-      });
-    });
 
     $("form-attach-local").addEventListener("submit", async (e) => {
       e.preventDefault();

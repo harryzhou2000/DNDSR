@@ -8,6 +8,7 @@
 #include "Cauchy/IO/ControlServer.hpp"
 #include "Cauchy/IO/OutputCoordinator.hpp"
 #include "Cauchy/IO/RunControl.hpp"
+#include "Cauchy/IO/HistoryQuery.hpp"
 
 #include <httplib.h>
 
@@ -236,6 +237,35 @@ TEST_CASE("ControlServer scans from 53000, handles bind failure non-fatally, and
             CHECK(wrongAuth->status == 401);
 
         httplib::Headers goodHeaders{{"Authorization", "Bearer " + serverA.Token()}};
+        {
+            const auto history = dir + "/runA-history.csv";
+            {
+                std::ofstream out(history);
+                out << "iteration,status,time,res_rho\n1,0,0,1\n2,0,0,.5\n";
+            }
+            {
+                std::ofstream out(dir + "/runA-run-manifest.json");
+                out << C::Json{{"domains", C::Json::array({{{"index", 0}, {"history", history}, {"boundaryIntegrations", C::Json::array({{{"canonicalName", "Wall"}, {"csv", history}}})}}})}}.dump();
+            }
+            auto denied = client.Get("/api/v1/history/query?domain=0");
+            REQUIRE(denied);
+            CHECK(denied->status == 401);
+            auto page = client.Get("/api/v1/history/query?domain=0&limit=1", goodHeaders);
+            REQUIRE(page);
+            REQUIRE(page->status == 200);
+            const auto data = C::Json::parse(page->body);
+            CHECK(data["hasMore"].get<bool>());
+            const auto url = "/api/v1/history/query?domain=0&cursor=" + data["nextCursor"].get<std::string>();
+            auto next = client.Get(url, goodHeaders);
+            REQUIRE(next);
+            CHECK(C::Json::parse(next->body)["rows"][0]["iteration"] == 2);
+            auto boundary = client.Get("/api/v1/history/query?domain=0&boundary=Wall&start=2&columns=res_rho", goodHeaders);
+            REQUIRE(boundary);
+            CHECK(C::Json::parse(boundary->body)["rows"].size() == 1);
+            auto bad = client.Get("/api/v1/history/query?domain=0&limit=-1", goodHeaders);
+            REQUIRE(bad);
+            CHECK(bad->status == 400);
+        }
         auto okStatus = client.Get("/api/v1/status", goodHeaders);
         CHECK(bool(okStatus));
         if (okStatus)
@@ -470,6 +500,52 @@ TEST_CASE("Per-boundary flux and tangential force CSV matches Euler sign, MPI in
     {
         const auto lines = ReadCsvLines(noslipCsv);
         CHECK(lines.size() == 1 + rowsAfterStep1 + 3);
+    }
+    RemoveDir(dir);
+}
+
+TEST_CASE("CSV HTTP history pages track append, partial tails and resets")
+{
+    const auto dir = UniqueTempDir("csv-query");
+    if (mpi.rank == 0)
+    {
+        const auto path = dir + "/history.csv";
+        {
+            std::ofstream out(path);
+            out << "iteration,status,time,res_rho\n1,0,0,1\n2,0,0,";
+        }
+        C::HistoryQuery query;
+        auto first = query.Query(path, {{"limit", "1"}});
+        REQUIRE(first["rows"].size() == 1);
+        CHECK(first["totalRows"] == 1);
+        {
+            std::ofstream out(path, std::ios::app);
+            out << "0.5\n3,2,1,0.1\n";
+        }
+        auto next = query.Query(path, {{"cursor", first["nextCursor"].get<std::string>()}, {"kind", "nonlinear"}});
+        REQUIRE(next["rows"].size() == 1);
+        CHECK(next["rows"][0]["iteration"] == 2);
+        CHECK_FALSE(next["hasMore"].get<bool>());
+        {
+            std::ofstream out(dir + "/history_1.csv");
+            out << "iteration,status,time,res_rho\n4,0,2,0.01\n";
+        }
+        auto rotated = query.Query(path, {{"cursor", next["nextCursor"].get<std::string>()}});
+        REQUIRE(rotated["rows"].size() == 1);
+        CHECK(rotated["rows"][0]["iteration"] == 4);
+        auto interval = query.Query(path, {{"axis", "iteration"}, {"start", "2"}, {"end", "3"}, {"columns", "res_rho"}});
+        CHECK(interval["rows"].size() == 2);
+        CHECK(interval["header"].size() == 1);
+        {
+            std::ofstream out(path);
+            out << "iteration,status,time,res_rho\n9,0,0,2\n";
+        }
+        auto reset = query.Query(path, {{"cursor", rotated["nextCursor"].get<std::string>()}});
+        CHECK(reset["reset"].get<bool>());
+        CHECK(reset["rows"][0]["iteration"] == 9);
+        CHECK_THROWS(query.Query(path, {{"limit", "-1"}}));
+        CHECK_THROWS(query.Query(path, {{"columns", "missing"}}));
+        CHECK_THROWS(query.Query(path, {{"start", "nan"}}));
     }
     RemoveDir(dir);
 }

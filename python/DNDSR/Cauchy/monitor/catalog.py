@@ -1,12 +1,9 @@
-"""Multi-run discovery, persistent bookkeeping, CSV parsing, and solver proxy."""
+"""Multi-run discovery, persistent bookkeeping and HTTP-only history/solver proxy."""
 
 from __future__ import annotations
 
-import csv
-import glob
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import threading
@@ -42,68 +39,6 @@ def _read_json_safe(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
-
-
-def _sorted_csv_segments(base_csv: Path) -> list[Path]:
-    """Return segmented CsvLog files (<bare>.csv, <bare>_1.csv, <bare>_2.csv, ...) in order."""
-    parent = base_csv.parent
-    if not parent.is_dir():
-        return []
-    stem = base_csv.stem
-    suffix = base_csv.suffix or ".csv"
-    segments: list[tuple[int, Path]] = []
-    if base_csv.is_file():
-        segments.append((0, base_csv))
-    pattern = str(parent / f"{glob.escape(stem)}_*{suffix}")
-    for candidate_str in glob.glob(pattern):
-        candidate = Path(candidate_str)
-        tail = candidate.stem[len(stem) + 1:]
-        if tail.isdigit():
-            segments.append((int(tail), candidate))
-    segments.sort(key=lambda pair: pair[0])
-    return [p for _, p in segments]
-
-
-def _parse_csv_value(raw: str) -> int | float | str | None:
-    text = raw.strip()
-    if not text:
-        return None
-    try:
-        if "." not in text and "e" not in text and "E" not in text:
-            return int(text)
-    except ValueError:
-        pass
-    try:
-        val = float(text)
-        if math.isfinite(val):
-            return val
-        return None
-    except ValueError:
-        return text
-
-
-def _read_segmented_csv(base_csv: Path) -> tuple[list[str], list[dict[str, Any]]]:
-    segments = _sorted_csv_segments(base_csv)
-    header: list[str] = []
-    rows: list[dict[str, Any]] = []
-    for seg in segments:
-        try:
-            with seg.open("r", encoding="utf-8", newline="") as handle:
-                reader = csv.DictReader(handle)
-                if not reader.fieldnames:
-                    continue
-                if not header:
-                    header = list(reader.fieldnames)
-                for raw_row in reader:
-                    parsed: dict[str, Any] = {}
-                    for col, val in raw_row.items():
-                        if col is None:
-                            continue
-                        parsed[col] = _parse_csv_value(val or "")
-                    rows.append(parsed)
-        except OSError:
-            continue
-    return header, rows
 
 
 def _downsample_indices(total: int, max_points: int) -> list[int]:
@@ -155,8 +90,8 @@ class RunCatalog:
             state_file).expanduser() if state_file else default_state_file()
         self._http_timeout = float(http_timeout)
         self._runs: dict[str, dict[str, Any]] = {}
-        self._csv_cache: dict[str, tuple[tuple[tuple[str, int,
-                                                     int], ...], list[str], list[dict[str, Any]]]] = {}
+        self._http_history: dict[tuple, dict[str, Any]] = {}
+        self._history_lock = threading.RLock()
         self._load_state()
         self.scan()
 
@@ -441,6 +376,12 @@ class RunCatalog:
         return p
 
     def _load_manifest(self, rec: dict[str, Any]) -> dict[str, Any] | None:
+        if rec.get('url') and rec.get('token'):
+            code, data = self._query_live(rec, 'GET', '/api/v1/manifest')
+            if code == 200 and isinstance(data, dict):
+                return data
+            if rec.get('source') == 'remote':
+                return None
         man_path = rec.get("runManifest")
         if man_path:
             data = _read_json_safe(self._resolve_disk_path(rec, man_path))
@@ -452,12 +393,16 @@ class RunCatalog:
         return None
 
     def _load_summary(self, rec: dict[str, Any]) -> dict[str, Any] | None:
+        if rec.get('source') == 'remote':
+            return None
         prefix = rec.get("prefix")
         if not prefix:
             return None
         return _read_json_safe(self._resolve_disk_path(rec, prefix + "-summary.json"))
 
     def _load_resolved_config(self, rec: dict[str, Any], manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+        if rec.get('source') == 'remote':
+            return None
         if manifest and manifest.get("resolvedConfig"):
             data = _read_json_safe(self._resolve_disk_path(
                 rec, str(manifest["resolvedConfig"])))
@@ -467,20 +412,6 @@ class RunCatalog:
         if prefix:
             return _read_json_safe(self._resolve_disk_path(rec, prefix + "-resolved.json"))
         return None
-
-    def _read_csv_cached(self, base_csv: Path) -> tuple[list[str], list[dict[str, Any]]]:
-        segments = _sorted_csv_segments(base_csv)
-        sig = tuple((str(s), s.stat().st_mtime_ns, s.stat().st_size)
-                    for s in segments if s.is_file())
-        key = str(base_csv)
-        with self._lock:
-            cached = self._csv_cache.get(key)
-            if cached and cached[0] == sig:
-                return cached[1], cached[2]
-        header, rows = _read_segmented_csv(base_csv)
-        with self._lock:
-            self._csv_cache[key] = (sig, header, rows)
-        return header, rows
 
     def summarize_run(self, run_id: str) -> dict[str, Any]:
         with self._lock:
@@ -519,7 +450,7 @@ class RunCatalog:
             "label": rec.get("label") or run_id,
             "source": rec.get("source", "unknown"),
             "online": online,
-            "canSteer": online,
+            "canSteer": online and not bool((live_status or {}).get('readOnly', False)),
             "state": state,
             "prefix": rec.get("prefix", ""),
             "url": rec.get("url", ""),
@@ -585,6 +516,42 @@ class RunCatalog:
             "boundaries": live_boundaries or {"domains": {}, "latest": {}},
         }
 
+    def _query_history_rows(self, rec, domain, boundary=None):
+        """Fetch an initial full history, then append pages over HTTP only.
+
+        A server reset discards the cached generation. The page cap keeps a
+        single request bounded; subsequent refreshes continue catch-up.
+        """
+        if not rec.get('url') or not rec.get('token'):
+            return [], [], 'unavailable', 'Attach a running endpoint or Python history companion.'
+        key = (rec['runId'], rec['url'], domain, boundary)
+        with self._history_lock:
+            cache = self._http_history.setdefault(
+                key, {'rows': [], 'header': [], 'cursor': ''})
+            for _ in range(100):
+                args = {'domain': domain, 'limit': 10000}
+                if boundary is not None:
+                    args['boundary'] = boundary
+                if cache['cursor']:
+                    args['cursor'] = cache['cursor']
+                code, data = self._query_live(
+                    rec, 'GET', '/api/v1/history/query', params=args)
+                if code != 200 or not isinstance(data, dict):
+                    return cache['header'], list(cache['rows']), 'http_cache' if cache['rows'] else 'unavailable', \
+                        'History endpoint unavailable; use a current solver or companion server.'
+                if data.get('reset'):
+                    cache['rows'] = []
+                cache['header'] = data['header']
+                cache['rows'].extend(data['rows'])
+                previous = cache['cursor']
+                cache['cursor'] = data['nextCursor']
+                if not data['hasMore']:
+                    return cache['header'], list(cache['rows']), 'http', ''
+                if previous == cache['cursor']:
+                    raise ValueError(
+                        'history server returned a non-advancing cursor')
+            return cache['header'], list(cache['rows']), 'http', 'Catching up with archived history.'
+
     def get_history(
         self,
         run_id: str,
@@ -597,34 +564,7 @@ class RunCatalog:
                 raise KeyError(run_id)
             rec = dict(self._runs[run_id])
 
-        manifest = self._load_manifest(rec)
-        header: list[str] = []
-        rows: list[dict[str, Any]] = []
-        source = "none"
-
-        if manifest and isinstance(manifest.get("domains"), list):
-            for dom in manifest["domains"]:
-                if int(dom.get("index", -1)) == domain and dom.get("history"):
-                    csv_path = self._resolve_disk_path(
-                        rec, str(dom["history"]))
-                    header, rows = self._read_csv_cached(csv_path)
-                    if rows:
-                        source = "disk"
-                    break
-
-        if not rows and rec.get("url") and rec.get("token"):
-            code, data = self._query_live(
-                rec, "GET", "/api/v1/history", params={"domain": domain, "limit": 256})
-            if code == 200 and isinstance(data, dict):
-                recs = data.get("records", [])
-                seen: dict[str, None] = {}
-                for item in recs:
-                    vals = item.get("values", {})
-                    for k in vals:
-                        seen.setdefault(k, None)
-                    rows.append(vals)
-                header = list(seen.keys())
-                source = "live_ring"
+        header, rows, source, warning = self._query_history_rows(rec, domain)
 
         if kind == "nonlinear":
             rows = [r for r in rows if r.get("status") == 0]
@@ -635,7 +575,7 @@ class RunCatalog:
 
         result = _rows_to_columns(header, rows, max_points)
         result.update({"runId": run_id, "domain": domain,
-                      "kind": kind, "source": source, "header": header})
+                      "kind": kind, "source": source, "header": header, "warning": warning})
         return result
 
     def get_boundary_history(
@@ -685,11 +625,12 @@ class RunCatalog:
             "columns": {},
             "header": [],
         }
-        if selected and selected.get("csv"):
-            csv_path = self._resolve_disk_path(rec, str(selected["csv"]))
-            header, rows = self._read_csv_cached(csv_path)
+        if selected:
+            header, rows, source, warning = self._query_history_rows(
+                rec, domain, selected['canonicalName'])
             series = _rows_to_columns(header, rows, max_points)
             series["header"] = header
+            series.update(source=source, warning=warning)
 
         return {
             "runId": run_id,

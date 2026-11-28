@@ -116,6 +116,17 @@
           <div class="toolbar card">
             <div class="toolbar-group">
               <label class="field-inline">
+                <span>Refresh</span>
+                <select id="sel-refresh" class="select-sm">
+                  <option value="1000">1 s</option>
+                  <option value="2000" selected>2 s</option>
+                  <option value="5000">5 s</option>
+                  <option value="10000">10 s</option>
+                  <option value="30000">30 s</option>
+                  <option value="60000">60 s</option>
+                </select>
+              </label>
+              <label class="field-inline">
                 <span>Cadence</span>
                 <select id="sel-kind" class="select-sm">
                   <option value="nonlinear" selected>Nonlinear Iterations</option>
@@ -214,7 +225,7 @@
         <!-- STEERING TAB -->
         <section id="panel-steering" class="tab-panel" hidden>
           <div id="steering-offline-banner" class="banner banner-muted" hidden>
-            This run is currently offline or finished. Historical telemetry remains readable; live steering is disabled.
+            Live steering is unavailable for this offline or read-only endpoint. A history companion can serve archived telemetry.
           </div>
 
           <div class="steering-grid">
@@ -329,11 +340,8 @@
         <h3>Attach Cauchy Run</h3>
         <button id="btn-close-attach" class="icon-btn" aria-label="Close">&times;</button>
       </div>
-      <div class="modal-tabs">
-        <button class="tab-mini active" data-attach="local">Local File / Prefix</button>
-        <button class="tab-mini" data-attach="remote">Remote URL + Token (SSH Tunnel)</button>
-      </div>
-      <form id="form-attach-local" class="stack">
+      <form id="form-attach-local" class="stack attach-section">
+        <h4>Local File / Prefix</h4>
         <label class="field">
           <span>Control File, Run Manifest, or Output Prefix</span>
           <input id="inp-attach-path" type="text" placeholder="/path/to/run-control.json or /path/to/prefix" required>
@@ -346,7 +354,8 @@
           <button type="submit" class="btn btn-primary">Attach Local Run</button>
         </div>
       </form>
-      <form id="form-attach-remote" class="stack" hidden>
+      <form id="form-attach-remote" class="stack attach-section">
+        <h4>Remote URL + Token (SSH Tunnel)</h4>
         <label class="field">
           <span>Solver Control URL</span>
           <input id="inp-attach-url" type="text" placeholder="http://127.0.0.1:53000" required>

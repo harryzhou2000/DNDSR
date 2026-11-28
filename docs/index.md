@@ -31,6 +31,7 @@ The [experimental FV and VR matrix storage guide](architecture/FVMatrixStorage.m
 describes independent layouts, raw VR sweeps, and allocation controls.
 
 Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
+The [HTTP monitoring guide](guides/cauchy_monitor.md) covers remote history queries, the Python companion and hub refresh controls.
 The [finite-volume dispatch guide](architecture/CauchyDispatch.md) maps the
 CPU and CUDA flux, source and Jacobian routes.
 The [constant-density ACM guide](architecture/CauchyACM.md) covers mechanical

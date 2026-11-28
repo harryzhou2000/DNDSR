@@ -1,5 +1,6 @@
 #include "Cauchy/IO/ControlServer.hpp"
 #include "Cauchy/IO/ProgressOutput.hpp"
+#include "Cauchy/IO/HistoryQuery.hpp"
 
 #include <httplib.h>
 
@@ -166,6 +167,7 @@ namespace DNDS::Cauchy
     struct ControlServer::Data
     {
         RunControl &control;
+        HistoryQuery historyQuery;
         ControlSettings settings;
         std::string prefix;
         std::string runManifestPath;
@@ -238,6 +240,36 @@ namespace DNDS::Cauchy
 
         void RegisterRoutes()
         {
+            server->Get("/api/v1/manifest", [this](const httplib::Request &req, httplib::Response &res)
+                        {
+                if (!Authorize(req, res)) return;
+                try { std::ifstream in(runManifestPath); Json manifest; in >> manifest; SendJson(res, 200, manifest); }
+                catch (...) { SendJson(res, 404, {{"error", "manifest_unavailable"}}); } });
+            server->Get("/api/v1/history/query", [this](const httplib::Request &req, httplib::Response &res)
+                        {
+                if (!Authorize(req, res)) return;
+                try
+                {
+                    const auto domText = req.has_param("domain") ? req.get_param_value("domain") : "0";
+                    if (domText.empty() || domText.find_first_not_of("0123456789") != std::string::npos) throw std::invalid_argument("invalid domain");
+                    const auto domain = std::stoll(domText);
+                    std::ifstream in(runManifestPath); Json manifest; in >> manifest;
+                    std::string path;
+                    for (const auto &d : manifest.at("domains"))
+                    {
+                        if (d.at("index").get<int64_t>() != domain) continue;
+                        if (!req.has_param("boundary")) path = d.at("history").get<std::string>();
+                        else for (const auto &b : d.value("boundaryIntegrations", Json::array()))
+                            if (b.at("canonicalName") == req.get_param_value("boundary")) path = b.at("csv").get<std::string>();
+                    }
+                    if (path.empty()) { SendJson(res, 404, {{"error", "history_not_found"}}); return; }
+                    std::map<std::string, std::string> args;
+                    for (const auto &p : req.params) args[p.first] = p.second;
+                    SendJson(res, 200, historyQuery.Query(path, args));
+                }
+                catch (const std::invalid_argument &e) { SendJson(res, 400, {{"error", "invalid_query"}, {"message", e.what()}}); }
+                catch (const std::out_of_range &e) { SendJson(res, 400, {{"error", "invalid_query"}, {"message", e.what()}}); }
+                catch (const std::exception &e) { SendJson(res, 503, {{"error", "history_unavailable"}, {"message", e.what()}}); } });
             server->set_read_timeout(5, 0);
             server->set_write_timeout(5, 0);
             server->set_idle_interval(0, 50000); // 50ms for responsive Stop()

@@ -141,19 +141,19 @@ def test_hub_offline_bookkeeping_history_boundaries_and_auth(tmp_path):
     assert runs[0]["online"] is False
     assert runs[0]["boundaryCount"] == 1
 
-    # History (nonlinear filter vs all)
+    # Disk discovery remains available, but history requires an HTTP endpoint.
     hist_nl = client.get(
         f"/api/runs/{rid}/history?domain=0&kind=nonlinear", headers=headers).get_json()
-    assert hist_nl["totalRows"] == 2
-    assert hist_nl["columns"]["res_rho"] == [0.1, 0.02]
+    assert hist_nl["totalRows"] == 0
+    assert hist_nl["source"] == "unavailable"
+    assert "companion" in hist_nl["warning"]
 
     # Per-BC flux & tangential force
     bnd = client.get(
         f"/api/runs/{rid}/boundaries?domain=0&bc=Wall_Upper", headers=headers).get_json()
     assert bnd["selected"]["canonicalName"] == "Wall_Upper"
-    assert bnd["series"]["totalRows"] == 2
-    assert bnd["series"]["columns"]["force_t_x"] == [-0.05, -0.04]
-    assert bnd["series"]["columns"]["area"] == [2.0, 2.0]
+    assert bnd["series"]["totalRows"] == 0
+    assert bnd["series"]["source"] == "unavailable"
 
     # Persistence across catalog reload
     catalog2 = RunCatalog(watch_dirs=[], registry_dir=tmp_path /
